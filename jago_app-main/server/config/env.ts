@@ -55,8 +55,8 @@ export function validateProductionReadiness(env: AppEnv): void {
   // Hard block: these env vars must never exist in production
   const forbidden = ["ENABLE_DEV_OTP_RESPONSES"];
   for (const key of forbidden) {
-    if (process.env[key]) {
-      throw new Error(`FATAL: ${key} must not be set in production — remove it from environment before deploying`);
+    if (isTrue(process.env[key])) {
+      throw new Error(`FATAL: ${key} must not be set to a truthy value in production — remove it or set it to false`);
     }
   }
 

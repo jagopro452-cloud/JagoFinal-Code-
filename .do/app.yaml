@@ -64,8 +64,6 @@ services:
         value: "24"
       - key: ADMIN_2FA_REQUIRED
         value: "false"
-      - key: ENABLE_DEV_OTP_RESPONSES
-        value: "false"
       - key: ALLOWED_ORIGINS
         value: "https://jagopro.org,https://www.jagopro.org"
       - key: SOCKET_ALLOWED_ORIGINS
