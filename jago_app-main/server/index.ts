@@ -281,7 +281,11 @@ httpServer.listen(port, "0.0.0.0", () => {
   })();
 
   // Setup Socket.IO with Redis adapter (non-blocking)
-  setupSocket(httpServer);
+  try {
+    setupSocket(httpServer);
+  } catch (e: any) {
+    console.error("[socket] setupSocket failed (non-fatal):", e.message);
+  }
   (async () => {
     try {
       const { createAdapter } = await import("@socket.io/redis-adapter");

@@ -190,7 +190,8 @@ export function setupSocket(httpServer: HttpServer) {
     .filter(Boolean);
   const isProd = env.NODE_ENV === "production";
   if (isProd && (!socketAllowedOrigins.length || socketAllowedOrigins.includes("*"))) {
-    throw new Error("SOCKET_ALLOWED_ORIGINS must be explicitly configured in production");
+    console.warn("[socket] SOCKET_ALLOWED_ORIGINS not set — defaulting to jagopro.org origins");
+    socketAllowedOrigins.push("https://jagopro.org", "https://www.jagopro.org");
   }
 
   io = new SocketIOServer(httpServer, {
