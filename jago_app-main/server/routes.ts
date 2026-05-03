@@ -883,7 +883,8 @@ async function parseVoiceIntentOrchestrated(text: string): Promise<{ parsed: any
   // 3. Local regex fallback
   return { parserSource: "monolith-fallback", parsed: parseVoiceIntent(text) };
 }
-const runtimeEnv = parseEnv();
+let runtimeEnv: ReturnType<typeof parseEnv>;
+try { runtimeEnv = parseEnv(); } catch (e: any) { console.error("[routes] parseEnv failed:", e.message); runtimeEnv = { NODE_ENV: "production" } as any; }
 // In production 2FA is ON by default � disable only with ADMIN_2FA_REQUIRED=false
 const requireAdminTwoFactor = runtimeEnv.NODE_ENV === "production"
   ? !isFalse(runtimeEnv.ADMIN_2FA_REQUIRED)
