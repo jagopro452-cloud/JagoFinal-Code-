@@ -14,7 +14,7 @@ import * as schema from "@shared/schema";
 const { Pool } = pg;
 
 if (!process.env.DATABASE_URL) {
-  throw new Error("DATABASE_URL must be set. Did you forget to provision a database?");
+  console.error("[db] WARNING: DATABASE_URL not set — DB operations will fail at runtime");
 }
 
 function normalizeDatabaseUrl(connectionString: string): string {
@@ -36,7 +36,7 @@ function normalizeDatabaseUrl(connectionString: string): string {
 // Fix: disable cert rejection at pool level only (not globally — global setting breaks all HTTPS).
 const isLocalDb = (process.env.DATABASE_URL || "").match(/localhost|127\.0\.0\.1/);
 const isProduction = process.env.NODE_ENV === 'production';
-const normalizedDatabaseUrl = normalizeDatabaseUrl(process.env.DATABASE_URL);
+const normalizedDatabaseUrl = normalizeDatabaseUrl(process.env.DATABASE_URL || "postgres://localhost/jago_placeholder");
 
 // Neon serverless needs enough connections to handle concurrent request bursts.
 // 10 was too low — production peaks can exhaust the pool causing queue buildup.
