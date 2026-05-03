@@ -58,16 +58,13 @@ app.get("/health", (_req, res) => {
   });
 });
 
-app.get("/api/health", (_req, res, next) => {
-  if (bootstrapReady) {
-    return next();
-  }
-
+app.get("/api/health", (_req, res) => {
   return res.status(200).json({
-    status: "starting",
-    ready: false,
+    status: bootstrapReady ? "ok" : "starting",
+    ready: bootstrapReady,
     error: bootstrapError,
     ts: new Date().toISOString(),
+    uptimeSeconds: Math.round(process.uptime()),
   });
 });
 
