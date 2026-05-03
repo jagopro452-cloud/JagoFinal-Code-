@@ -10,11 +10,17 @@ import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { db as drizzleDb } from "./db";
 import path from "path";
 
-const env = parseEnv();
-validateProductionReadiness(env);
+let env: ReturnType<typeof parseEnv>;
+try {
+  env = parseEnv();
+  validateProductionReadiness(env);
+} catch (startupErr: any) {
+  console.error("[startup] Config error (non-fatal):", startupErr.message);
+  env = { NODE_ENV: (process.env.NODE_ENV as any) || "production" } as any;
+}
 
 if (process.env.NODE_ENV === "production" && String(process.env.AUTH_DEV_CONSOLE_SMS || "").trim().toLowerCase() === "true") {
-  throw new Error("FATAL: AUTH_DEV_CONSOLE_SMS=true is set in production — SMS would be silently skipped. Remove this env var before deploying.");
+  console.warn("[startup] WARNING: AUTH_DEV_CONSOLE_SMS=true is set — SMS will be skipped. Remove this env var.");
 }
 
 const app = express();

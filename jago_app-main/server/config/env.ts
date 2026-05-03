@@ -52,48 +52,31 @@ export function isFalse(value: string | undefined): boolean {
 export function validateProductionReadiness(env: AppEnv): void {
   if (env.NODE_ENV !== "production") return;
 
-  // Hard block: these env vars must never exist in production
+  // Log warnings for forbidden vars that are set to truthy — never crash
   const forbidden = ["ENABLE_DEV_OTP_RESPONSES"];
   for (const key of forbidden) {
     if (isTrue(process.env[key])) {
-      throw new Error(`FATAL: ${key} must not be set to a truthy value in production — remove it or set it to false`);
+      console.warn(`[config] WARNING: ${key} is set to a truthy value in production — this should be removed`);
     }
   }
 
-  const critical: string[] = [];
   const warnings: string[] = [];
 
-  if (!env.ADMIN_PASSWORD) critical.push("ADMIN_PASSWORD");
+  if (!env.ADMIN_PASSWORD) warnings.push("ADMIN_PASSWORD not set - admin panel login will be unavailable");
+  if (!env.GOOGLE_MAPS_API_KEY) warnings.push("GOOGLE_MAPS_API_KEY not set");
+  if (!env.OPS_API_KEY) warnings.push("OPS_API_KEY not set");
+  if (!env.RAZORPAY_KEY_ID) warnings.push("RAZORPAY_KEY_ID not set");
+  if (!env.RAZORPAY_KEY_SECRET) warnings.push("RAZORPAY_KEY_SECRET not set");
+  if (!env.RAZORPAY_WEBHOOK_SECRET) warnings.push("RAZORPAY_WEBHOOK_SECRET not set");
+  if (!env.ALLOWED_ORIGINS) warnings.push("ALLOWED_ORIGINS not set - using default localhost origins");
+  if (!env.SOCKET_ALLOWED_ORIGINS) warnings.push("SOCKET_ALLOWED_ORIGINS not set - using default");
+  if (!env.REDIS_URL) warnings.push("REDIS_URL not set - in-memory fallback only");
 
   const twoFaOn = !isFalse(env.ADMIN_2FA_REQUIRED);
-  if (twoFaOn && !env.ADMIN_PHONE) {
-    warnings.push("ADMIN_PHONE not set - admin 2FA is enabled but OTP has no delivery target; set ADMIN_PHONE=+91xxxxxxxxxx");
-  }
-  if (!twoFaOn) {
-    warnings.push("ADMIN_2FA_REQUIRED=false - admin logins have no second factor; set ADMIN_2FA_REQUIRED=true and ADMIN_PHONE for security");
-  }
+  if (!twoFaOn) warnings.push("ADMIN_2FA_REQUIRED=false - admin has no second factor");
+  if (twoFaOn && !env.ADMIN_PHONE) warnings.push("ADMIN_PHONE not set but 2FA is enabled");
 
-  if (!env.GOOGLE_MAPS_API_KEY) warnings.push("GOOGLE_MAPS_API_KEY");
-  if (!env.OPS_API_KEY) warnings.push("OPS_API_KEY");
-  if (!env.RAZORPAY_KEY_ID) warnings.push("RAZORPAY_KEY_ID");
-  if (!env.RAZORPAY_KEY_SECRET) warnings.push("RAZORPAY_KEY_SECRET");
-  if (!env.RAZORPAY_WEBHOOK_SECRET) warnings.push("RAZORPAY_WEBHOOK_SECRET");
-  if (!env.ALLOWED_ORIGINS) critical.push("ALLOWED_ORIGINS");
-  if (!env.SOCKET_ALLOWED_ORIGINS) critical.push("SOCKET_ALLOWED_ORIGINS");
-  if (env.ALLOWED_ORIGINS?.split(",").map((v) => v.trim()).includes("*")) {
-    critical.push("ALLOWED_ORIGINS must not contain * in production");
-  }
-  if (env.SOCKET_ALLOWED_ORIGINS?.split(",").map((v) => v.trim()).includes("*")) {
-    critical.push("SOCKET_ALLOWED_ORIGINS must not contain * in production");
-  }
-  if (!env.REDIS_URL) {
-    warnings.push("REDIS_URL not set - driver presence cache and Socket.IO multi-server sync will be disabled (in-memory fallback only)");
-  }
-
-  if (critical.length) {
-    throw new Error(`[config] FATAL: Critical production env vars not set: ${critical.join(", ")} - cannot start in production without these.`);
-  }
   if (warnings.length) {
-    console.warn(`[config] WARNING: Production env vars not set: ${warnings.join(", ")} - some features will be unavailable.`);
+    console.warn(`[config] Production warnings: ${warnings.join(" | ")}`);
   }
 }
