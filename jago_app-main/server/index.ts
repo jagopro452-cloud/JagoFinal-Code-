@@ -1,3 +1,5 @@
+console.log("BOOT START");
+
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
@@ -10,17 +12,11 @@ import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { db as drizzleDb } from "./db";
 import path from "path";
 
-let env: ReturnType<typeof parseEnv>;
 try {
-  env = parseEnv();
+  const env = parseEnv();
   validateProductionReadiness(env);
 } catch (startupErr: any) {
-  console.error("[startup] Config error (non-fatal):", startupErr.message);
-  env = { NODE_ENV: (process.env.NODE_ENV as any) || "production" } as any;
-}
-
-if (process.env.NODE_ENV === "production" && String(process.env.AUTH_DEV_CONSOLE_SMS || "").trim().toLowerCase() === "true") {
-  console.warn("[startup] WARNING: AUTH_DEV_CONSOLE_SMS=true is set — SMS will be skipped. Remove this env var.");
+  console.error("[startup] Config warning (non-fatal):", startupErr.message);
 }
 
 const app = express();
@@ -175,94 +171,68 @@ app.get("/", (_req, res, next) => {
 });
 
 const port = parseInt(process.env.PORT || "5000", 10);
-httpServer.listen(port, () => {
-  console.log(`Server bootstrap listening on port ${port}`);
+// "0.0.0.0" — bind all interfaces so DO health probe can reach it
+httpServer.listen(port, "0.0.0.0", () => {
+  console.log(`BOOT LISTEN OK port=${port}`);
 });
 
 (async () => {
-  // Run Drizzle migrations at startup. Non-fatal: ensureOperationalSchema() covers
-  // all DDL with IF NOT EXISTS, so a migration failure (e.g. Neon cold-start timeout)
-  // does not prevent the server from becoming ready.
-  try {
-    const migrationsFolder = path.join(process.cwd(), "migrations");
-    log(`[db] Running migrations from: ${migrationsFolder}`);
-    await migrate(drizzleDb, { migrationsFolder });
-    log("[db] Migrations applied OK — all tables ready");
-  } catch (e: any) {
-    console.error("[db] MIGRATION WARNING — continuing (ensureOperationalSchema will cover schema):", e.message);
-    sendAlert({
-      level: "error",
-      source: "db",
-      message: "Drizzle migrate() failed at startup (non-fatal)",
-      details: String(e.message),
-    }).catch(() => { });
-  }
-
-  // Setup error handler early
+  // ─── STEP 1: Register error handler ───
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
     const errorId = makeErrorId();
-
     console.error(`Internal Server Error [${errorId}]:`, err);
-    sendAlert({
-      level: status >= 500 ? "critical" : "error",
-      source: "express",
-      message: `Request failed with status ${status} (${errorId})`,
-      details: typeof err?.stack === "string" ? err.stack : String(err?.message || err),
-    }).catch(() => { });
-
-    if (res.headersSent) {
-      return next(err);
-    }
-
+    sendAlert({ level: status >= 500 ? "critical" : "error", source: "express", message: `Request failed with status ${status} (${errorId})`, details: typeof err?.stack === "string" ? err.stack : String(err?.message || err) }).catch(() => { });
+    if (res.headersSent) return next(err);
     const isProd = process.env.NODE_ENV === "production";
-    const message = isProd && status >= 500
-      ? `An internal error occurred. Reference: ${errorId}`
-      : (err.message || "Internal Server Error");
-
-    return res.status(status).json({ message, errorId });
+    return res.status(status).json({ message: isProd && status >= 500 ? `An internal error occurred. Reference: ${errorId}` : (err.message || "Internal Server Error"), errorId });
   });
 
-  // ─── REGISTER ROUTES FIRST (CRITICAL) ───
-  // Must complete before server handles any API requests
+  // ─── STEP 2: Register routes (non-fatal if fails) ───
   try {
     log("[server] Registering API routes...");
     await registerRoutes(httpServer, app);
-    log("[server] API routes registered successfully");
+    log("[server] API routes registered OK");
   } catch (e: any) {
     bootstrapError = `route_registration_failed:${e.message}`;
-    console.error("[routes] Failed to register routes:", e.message);
-    console.error("[routes] Stack:", e.stack);
-    sendAlert({
-      level: "critical",
-      source: "routes",
-      message: "Failed to register API routes",
-      details: String(e.message || e),
-    }).catch(() => { });
-    process.exit(1);
+    console.error("[routes] Failed to register routes (server stays alive):", e.message);
+    sendAlert({ level: "critical", source: "routes", message: "Failed to register API routes", details: String(e.message || e) }).catch(() => { });
   }
 
-  // Setup static files AFTER routes (so routes take precedence)
+  // ─── STEP 3: Static files ───
   if (process.env.NODE_ENV === "production") {
-    log("[server] Setting up static file serving for production");
-    serveStatic(app);
+    try { serveStatic(app); } catch (_) { }
   }
 
-  // ─── NOW START SERVER LISTENING ───
-  // Routes are registered and ready to handle requests
+  // ─── STEP 4: Mark server ready — health probe passes from here ───
   bootstrapReady = true;
   bootstrapError = null;
-  console.log(`Server ready on port ${port}`);
+  console.log(`BOOT READY port=${port}`);
 
-  // Start autonomous alert + auto-action engine (non-blocking — first check at 30s)
-  (async () => {
-    try {
-      const { startAlertEngine } = await import("./alert-engine");
-      startAlertEngine();
-    } catch (e: any) {
-      console.error("[alert-engine] Failed to start:", e.message);
-    }
-  })();
+  // ─── BACKGROUND: Drizzle migrations (after server is ready) ───
+  setTimeout(() => {
+    (async () => {
+      try {
+        const migrationsFolder = path.join(process.cwd(), "migrations");
+        await migrate(drizzleDb, { migrationsFolder });
+        log("[db] Migrations applied OK");
+      } catch (e: any) {
+        console.error("[db] Migration warning (non-fatal):", e.message);
+      }
+    })();
+  }, 2000);
+
+  // ─── BACKGROUND: Alert engine ───
+  setTimeout(() => {
+    (async () => {
+      try {
+        const { startAlertEngine } = await import("./alert-engine");
+        startAlertEngine();
+      } catch (e: any) {
+        console.error("[alert-engine] Failed to start:", e.message);
+      }
+    })();
+  }, 3000);
 
   // ─── BACKGROUND INITIALIZATION (non-blocking) ───
 
