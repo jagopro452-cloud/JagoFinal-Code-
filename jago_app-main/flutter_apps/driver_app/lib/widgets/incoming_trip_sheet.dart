@@ -170,7 +170,7 @@ class _IncomingTripSheetState extends State<IncomingTripSheet> with TickerProvid
       decoration: BoxDecoration(
         color: Colors.white,
         boxShadow: [
-          BoxShadow(color: _jagoBlue.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 2)),
+          BoxShadow(color: _jagoBlue.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 2)),
         ],
       ),
       child: Row(
@@ -288,9 +288,9 @@ class _IncomingTripSheetState extends State<IncomingTripSheet> with TickerProvid
           margin: const EdgeInsets.only(bottom: 12),
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
           decoration: BoxDecoration(
-            color: _jagoBlue.withOpacity(0.1),
+            color: _jagoBlue.withValues(alpha: 0.1),
             borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: _jagoBlue.withOpacity(0.2)),
+            border: Border.all(color: _jagoBlue.withValues(alpha: 0.2)),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -308,10 +308,10 @@ class _IncomingTripSheetState extends State<IncomingTripSheet> with TickerProvid
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: _jagoLavender.withOpacity(0.3), width: 2),
+            border: Border.all(color: _jagoLavender.withValues(alpha: 0.3), width: 2),
             boxShadow: [
               BoxShadow(
-                color: _jagoBlue.withOpacity(0.08),
+                color: _jagoBlue.withValues(alpha: 0.08),
                 blurRadius: 20,
                 offset: const Offset(0, 8),
               ),
@@ -333,7 +333,7 @@ class _IncomingTripSheetState extends State<IncomingTripSheet> with TickerProvid
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                           decoration: BoxDecoration(
-                            color: _jagoBlue.withOpacity(0.08),
+                            color: _jagoBlue.withValues(alpha: 0.08),
                             borderRadius: BorderRadius.circular(12),
                           ),
                           child: Row(
@@ -421,7 +421,7 @@ class _IncomingTripSheetState extends State<IncomingTripSheet> with TickerProvid
                               shape: BoxShape.circle,
                               color: Colors.white,
                               boxShadow: [
-                                BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 4),
+                                BoxShadow(color: Colors.black.withValues(alpha: 0.1), blurRadius: 4),
                               ],
                             ),
                             child: const Icon(Icons.close_rounded, color: Colors.black, size: 24),
@@ -445,7 +445,7 @@ class _IncomingTripSheetState extends State<IncomingTripSheet> with TickerProvid
                             borderRadius: BorderRadius.circular(32),
                             boxShadow: [
                               BoxShadow(
-                                color: _jagoBlue.withOpacity(0.3),
+                                color: _jagoBlue.withValues(alpha: 0.3),
                                 blurRadius: 12,
                                 offset: const Offset(0, 4),
                               ),
@@ -491,7 +491,7 @@ class _IncomingTripSheetState extends State<IncomingTripSheet> with TickerProvid
                 shape: BoxShape.circle,
                 color: _jagoBlue,
                 border: Border.all(color: Colors.white, width: 2),
-                boxShadow: [BoxShadow(color: _jagoBlue.withOpacity(0.3), blurRadius: 4)],
+                boxShadow: [BoxShadow(color: _jagoBlue.withValues(alpha: 0.3), blurRadius: 4)],
               ),
             ),
             // Dynamic connector
@@ -502,7 +502,7 @@ class _IncomingTripSheetState extends State<IncomingTripSheet> with TickerProvid
                 gradient: LinearGradient(
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
-                  colors: [_jagoBlue, _jagoLavender.withOpacity(0.5)],
+                  colors: [_jagoBlue, _jagoLavender.withValues(alpha: 0.5)],
                 ),
               ),
             ),

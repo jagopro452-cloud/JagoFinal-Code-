@@ -334,6 +334,22 @@ httpServer.listen(port, () => {
     }
   })();
 
+  // ─── DB MIGRATION: production_hardening indexes + constraints ───
+  (async () => {
+    try {
+      const { pool: dbPool } = await import("./db");
+      const fs = await import("fs");
+      const path2 = await import("path");
+      const __dirname2 = path2.dirname(new URL(import.meta.url).pathname);
+      const migrationPath = path2.join(__dirname2, "migrations", "001_production_hardening.sql");
+      const sql = fs.readFileSync(migrationPath, "utf-8");
+      await dbPool.query(sql);
+      log("[migration] 001_production_hardening applied");
+    } catch (e: any) {
+      log(`[migration] 001_production_hardening failed (non-fatal): ${e.message}`);
+    }
+  })();
+
   // ─── INITIALIZE PRODUCTION HARDENING (CRITICAL) ───
   (async () => {
     try {

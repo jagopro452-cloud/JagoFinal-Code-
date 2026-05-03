@@ -11,7 +11,6 @@ const EnvSchema = z.object({
   ADMIN_PHONE: z.string().optional(),
   ADMIN_SESSION_TTL_HOURS: z.string().optional(),
   ADMIN_2FA_REQUIRED: z.string().optional(),
-  ENABLE_DEV_OTP_RESPONSES: z.string().optional(),
 
   GOOGLE_MAPS_API_KEY: z.string().optional(),
   SOCKET_ALLOWED_ORIGINS: z.string().optional(),
@@ -52,6 +51,14 @@ export function isFalse(value: string | undefined): boolean {
 
 export function validateProductionReadiness(env: AppEnv): void {
   if (env.NODE_ENV !== "production") return;
+
+  // Hard block: these env vars must never exist in production
+  const forbidden = ["ENABLE_DEV_OTP_RESPONSES"];
+  for (const key of forbidden) {
+    if (process.env[key]) {
+      throw new Error(`FATAL: ${key} must not be set in production — remove it from environment before deploying`);
+    }
+  }
 
   const critical: string[] = [];
   const warnings: string[] = [];

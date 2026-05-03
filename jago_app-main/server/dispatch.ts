@@ -72,8 +72,17 @@ function dispatchSessionKey(tripId: string): string {
   return `dispatch_session:${tripId}`;
 }
 
+function driverFatigueKey(driverId: string): string {
+  return `driver_fatigue:${driverId}`;
+}
+
 async function tryClaimDriverOffer(driverId: string, tripId: string): Promise<boolean> {
-  driverLastOfferedAt.set(driverId, Date.now());
+  const now = Date.now();
+  driverLastOfferedAt.set(driverId, now);
+  // H11 FIX: Also persist to Redis so fatigue survives pod restarts
+  if (_redisOfferReady && _redisOffer) {
+    _redisOffer.set(driverFatigueKey(driverId), String(now), 'EX', Math.ceil(DRIVER_FATIGUE_BACKOFF_MS / 1000) + 5).catch(() => {});
+  }
   if (_redisOfferReady && _redisOffer) {
     try {
       const result = await _redisOffer.set(driverOfferKey(driverId), tripId, "EX", DRIVER_OFFER_LOCK_TTL_SEC, "NX");
@@ -157,6 +166,11 @@ async function stillOwnsDispatch(session: DispatchSession): Promise<boolean> {
   if (active && active !== session) return false;
   if (!session.ownerToken) return !_redisOfferReady || !_redisOffer;
   const current = await getDispatchOwnerToken(session.tripId);
+  // CRITICAL FIX C4: If token doesn't match, we lost ownership (TTL expired, other pod claimed)
+  if (current && current !== session.ownerToken) {
+    console.warn(`[DISPATCH] Lost ownership of ${session.tripId} — current token: ${current}, our token: ${session.ownerToken}`);
+    return false;
+  }
   return !current || current === session.ownerToken;
 }
 
@@ -173,6 +187,23 @@ async function reacquireDispatchOwner(session: DispatchSession): Promise<boolean
   await persistDispatchSession(session);
   console.info("[DISPATCH] dispatch_owner_acquired", JSON.stringify({ tripId: session.tripId, source: "reaper" }));
   return true;
+}
+
+function attachDispatchOwnerHeartbeat(session: DispatchSession): void {
+  if (session.ownerHeartbeatTimer) {
+    clearInterval(session.ownerHeartbeatTimer);
+    session.ownerHeartbeatTimer = null;
+  }
+  session.ownerHeartbeatTimer = setInterval(async () => {
+    if (session.status !== "searching" && session.status !== "offered") {
+      if (session.ownerHeartbeatTimer) {
+        clearInterval(session.ownerHeartbeatTimer);
+        session.ownerHeartbeatTimer = null;
+      }
+      return;
+    }
+    await refreshDispatchOwner(session.tripId, session.ownerToken ?? undefined);
+  }, 10_000);
 }
 
 async function listPersistedDispatchTripIds(): Promise<string[]> {
@@ -272,6 +303,7 @@ interface DispatchSession {
   acceptedDriverId: string | null;
   pickupOtp: string | null;
   offerTimer: ReturnType<typeof setTimeout> | null;
+  ownerHeartbeatTimer: ReturnType<typeof setInterval> | null;
   notifiedDriverIds: Set<string>;
   rejectedDriverIds: Set<string>;
   status: "searching" | "offered" | "accepted" | "cancelled" | "no_drivers" | "expired";
@@ -604,6 +636,7 @@ async function restoreDispatchSession(tripId: string): Promise<DispatchSession |
     const raw = await _redisOffer.get(dispatchSessionKey(tripId));
     if (!raw) return null;
     const snap = JSON.parse(raw) as DispatchSessionSnapshot;
+    const config = getConfig(snap.serviceType);
     const restored: DispatchSession = {
       tripId: snap.tripId,
       customerId: snap.customerId,
@@ -613,7 +646,7 @@ async function restoreDispatchSession(tripId: string): Promise<DispatchSession |
       vehicleType: snap.vehicleType,
       parcelVehicleCategory: snap.parcelVehicleCategory,
       serviceType: snap.serviceType,
-      config: getConfig(snap.serviceType),
+      config,
       tripMeta: snap.tripMeta,
       radiusIndex: snap.radiusIndex,
       driverQueue: snap.driverQueue || [],
@@ -625,6 +658,7 @@ async function restoreDispatchSession(tripId: string): Promise<DispatchSession |
       acceptedDriverId: snap.acceptedDriverId,
       pickupOtp: snap.pickupOtp,
       offerTimer: null,
+      ownerHeartbeatTimer: null,
       notifiedDriverIds: new Set(snap.notifiedDriverIds || []),
       rejectedDriverIds: new Set(snap.rejectedDriverIds || []),
       status: snap.status,
@@ -636,6 +670,40 @@ async function restoreDispatchSession(tripId: string): Promise<DispatchSession |
       femalePreferenceEnabled: snap.femalePreferenceEnabled,
     };
     activeDispatches.set(tripId, restored);
+    attachDispatchOwnerHeartbeat(restored);
+
+    // Re-attach timers using remaining time so pod restart doesn't reset the clocks
+    if (restored.status === "searching" || restored.status === "offered") {
+      const elapsed = Date.now() - restored.createdAt;
+      const remainingTotalMs = config.maxTotalTimeMs - elapsed;
+      if (remainingTotalMs <= 1000) {
+        await expireDispatch(restored, "expired during recovery");
+        return null;
+      }
+      restored.totalTimer = setTimeout(async () => {
+        try {
+          await expireDispatch(restored, "No pilots available nearby. Please try again.");
+        } catch { /* ignore */ }
+      }, remainingTotalMs);
+
+      if (restored.status === "offered" && restored.offerExpiresAt) {
+        const remainingOfferMs = restored.offerExpiresAt - Date.now();
+        if (remainingOfferMs <= 1000) {
+          if (restored.currentOfferedDriverId) {
+            await onDriverRejected(tripId, restored.currentOfferedDriverId);
+          }
+        } else {
+          restored.offerTimer = setTimeout(async () => {
+            try {
+              if (restored.currentOfferedDriverId) {
+                await onDriverRejected(tripId, restored.currentOfferedDriverId);
+              }
+            } catch { /* ignore */ }
+          }, remainingOfferMs);
+        }
+      }
+    }
+
     return restored;
   } catch {
     return null;
@@ -774,6 +842,7 @@ export async function startDispatch(
     acceptedDriverId: null,
     pickupOtp: null,
     offerTimer: null,
+    ownerHeartbeatTimer: null,
     notifiedDriverIds: new Set(),
     rejectedDriverIds: new Set(initialRejectedDriverIds.filter(Boolean)),
     status: "searching",
@@ -795,6 +864,21 @@ export async function startDispatch(
       await expireDispatch(session, "No pilots available nearby. Please try again.");
     }
   }, config.maxTotalTimeMs);
+
+  attachDispatchOwnerHeartbeat(session);
+  // Tie the interval lifetime to the session's totalTimer so it cleans up automatically
+  const origTotalTimer = session.totalTimer;
+  session.totalTimer = setTimeout(async () => {
+    if (session.ownerHeartbeatTimer) {
+      clearInterval(session.ownerHeartbeatTimer);
+      session.ownerHeartbeatTimer = null;
+    }
+    if (!await stillOwnsDispatch(session)) return;
+    if (session.status === "searching" || session.status === "offered") {
+      await expireDispatch(session, "No pilots available nearby. Please try again.");
+    }
+  }, config.maxTotalTimeMs);
+  clearTimeout(origTotalTimer); // we replaced the timer above
 
   console.log(
     `[DISPATCH] trip=${tripId} service=${serviceType} booking.vehicleType=${vehicleType ?? "missing"} ` +
@@ -1001,6 +1085,32 @@ export async function atomicAcceptDispatchOffer(
     }
   }
 
+  // No Redis: fall back to DB-level atomic state transition so only one accept wins.
+  // CRITICAL FIX C1: Use FOR UPDATE NOWAIT to prevent double-acceptance race condition
+  try {
+    const guardR = await rawDb.execute(rawSql`
+      WITH locked AS (
+        SELECT id FROM trip_requests
+        WHERE id = ${tripId}::uuid
+        FOR UPDATE NOWAIT
+      )
+      UPDATE trip_requests
+      SET current_status = 'accepted',
+          status = 'ACCEPTED',
+          accepted_at = COALESCE(accepted_at, NOW()),
+          driver_id = ${driverId}::uuid,
+          updated_at = NOW()
+      WHERE id = ${tripId}::uuid
+        AND current_status = 'driver_assigned'
+        AND (driver_id IS NULL OR driver_id = ${driverId}::uuid)
+      RETURNING id
+    `);
+    if (!guardR.rows.length) {
+      return { ok: false, code: "ACCEPT_FAILED" };
+    }
+  } catch {
+    return { ok: false, code: "ACCEPT_FAILED" };
+  }
   session.status = "accepted";
   session.acceptedDriverId = driverId;
   session.pickupOtp = options?.pickupOtp || null;
@@ -1348,8 +1458,14 @@ async function dispatchNextDriver(session: DispatchSession): Promise<void> {
       continue; // Skip already-notified or rejected drivers
     }
 
-    // Fatigue backoff — skip if offered recently
-    const lastOffered = driverLastOfferedAt.get(driver.driverId) ?? 0;
+    // H11 FIX: Fatigue backoff — check in-memory first, then Redis fallback for cross-pod accuracy
+    let lastOffered = driverLastOfferedAt.get(driver.driverId) ?? 0;
+    if (lastOffered === 0 && _redisOfferReady && _redisOffer) {
+      try {
+        const redisFatigue = await _redisOffer.get(driverFatigueKey(driver.driverId));
+        if (redisFatigue) { lastOffered = parseInt(redisFatigue, 10) || 0; }
+      } catch { /* ignore Redis errors */ }
+    }
     if (Date.now() - lastOffered < DRIVER_FATIGUE_BACKOFF_MS) continue;
 
     // Atomically claim offer slot (Redis NX across pods, in-process fallback)
@@ -1990,6 +2106,10 @@ function clearTimers(session: DispatchSession): void {
     clearTimeout(session.offerTimer);
     session.offerTimer = null;
   }
+  if (session.ownerHeartbeatTimer) {
+    clearInterval(session.ownerHeartbeatTimer);
+    session.ownerHeartbeatTimer = null;
+  }
   if (session.totalTimer) {
     clearTimeout(session.totalTimer);
     session.totalTimer = null;
@@ -2192,7 +2312,3 @@ export function startDispatchCleanup(): void {
 
   console.log("[DISPATCH] Stale session cleanup started (60s interval)");
 }
-
-
-
-

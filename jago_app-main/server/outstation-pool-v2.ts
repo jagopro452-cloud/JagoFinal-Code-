@@ -327,40 +327,51 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any): void
   // ─── DRIVER: Drop a passenger + settle per-booking fare ──────────────────
 
   app.post("/api/app/driver/outstation-pool/passengers/:bookingId/drop", authApp, async (req: any, res: any) => {
-    try {
-      const driver = req.currentUser;
-      const bookingId = String(req.params.bookingId);
+    const driver = req.currentUser;
+    const bookingId = String(req.params.bookingId);
 
-      // Fetch booking + verify driver ownership
-      const fetchR = await rawDb.execute(rawSql`
-        SELECT opb.*, opr.id as ride_id
-        FROM outstation_pool_bookings opb
-        JOIN outstation_pool_rides opr ON opr.id = opb.ride_id
-        WHERE opb.id = ${bookingId}::uuid
-          AND opr.driver_id = ${driver.id}::uuid
-          AND opr.status = 'active'
-          AND opb.status = 'picked_up'
-        LIMIT 1
-      `);
-      if (!fetchR.rows.length) return res.status(404).json({ message: "Booking not picked up or not found" });
+    const client = await dbPool.connect();
+    try {
+      await client.query("BEGIN");
+
+      // CRITICAL FIX C2: Lock booking row to prevent concurrent double-drop settlement
+      const fetchR = await client.query(
+        `SELECT opb.*, opr.id as ride_id
+         FROM outstation_pool_bookings opb
+         JOIN outstation_pool_rides opr ON opr.id = opb.ride_id
+         WHERE opb.id = $1::uuid
+           AND opr.driver_id = $2::uuid
+           AND opr.status = 'active'
+           AND opb.status = 'picked_up'
+         FOR UPDATE OF opb`,
+        [bookingId, driver.id],
+      );
+      if (!fetchR.rows.length) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ message: "Booking not picked up or not found" });
+      }
 
       const booking = fetchR.rows[0] as any;
       const fare = parseFloat(booking.total_fare || 0);
+      const seatsBooked = parseInt(booking.seats_booked) || 1;
 
-      // Mark dropped + free seat
-      await rawDb.execute(rawSql`
-        UPDATE outstation_pool_bookings
-        SET status = 'dropped', dropped_at = NOW(), payment_status = 'paid', updated_at = NOW()
-        WHERE id = ${bookingId}::uuid
-      `);
-      await rawDb.execute(rawSql`
-        UPDATE outstation_pool_rides
-        SET available_seats = available_seats + ${parseInt(booking.seats_booked) || 1},
-            updated_at = NOW()
-        WHERE id = ${booking.ride_id}::uuid
-      `);
+      await client.query(
+        `UPDATE outstation_pool_bookings
+         SET status = 'dropped', dropped_at = NOW(), payment_status = 'paid', updated_at = NOW()
+         WHERE id = $1::uuid`,
+        [bookingId],
+      );
+      await client.query(
+        `UPDATE outstation_pool_rides
+         SET available_seats = available_seats + $1, updated_at = NOW()
+         WHERE id = $2::uuid`,
+        [seatsBooked, booking.ride_id],
+      );
 
-      // Revenue settlement for this passenger's segment
+      // CRITICAL: Commit BEFORE settlement to release lock and ensure drop is persisted
+      await client.query("COMMIT");
+
+      // Revenue settlement outside the lock (non-critical path)
       let driverEarnings = fare;
       let newWalletBalance = 0;
       try {
@@ -376,8 +387,6 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any): void
         });
         driverEarnings = breakdown.driverEarnings;
         newWalletBalance = settlement.newWalletBalance;
-
-        // Store earnings on booking
         await rawDb.execute(rawSql`
           UPDATE outstation_pool_bookings
           SET driver_earnings = ${driverEarnings}, revenue_model = ${breakdown.model}
@@ -388,15 +397,16 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any): void
       }
 
       io.to(`user:${booking.customer_id}`).emit("outstation_pool:dropped", {
-        bookingId,
-        fare,
-        driverEarnings,
+        bookingId, fare, driverEarnings,
         message: "You've reached your destination! Thanks for riding with Jago Pool.",
       });
 
       res.json({ success: true, fare, driverEarnings, newWalletBalance });
     } catch (e: any) {
+      await client.query("ROLLBACK").catch(() => undefined);
       res.status(500).json({ message: e.message });
+    } finally {
+      client.release();
     }
   });
 
@@ -507,6 +517,14 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any): void
       const dLat = parseFloat(dropLat);
       const dLng = parseFloat(dropLng);
 
+      // Reject GPS-not-yet-resolved coordinates (0,0 is in the Atlantic Ocean)
+      if (Math.abs(pLat) < 0.001 && Math.abs(pLng) < 0.001) {
+        return res.status(400).json({ message: "Invalid pickup coordinates — GPS not yet resolved" });
+      }
+      if (Math.abs(dLat) < 0.001 && Math.abs(dLng) < 0.001) {
+        return res.status(400).json({ message: "Invalid drop coordinates — GPS not yet resolved" });
+      }
+
       // Atomically check seats + lock
       const txClient = await dbPool.connect();
       let ride: any;
@@ -524,6 +542,18 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any): void
           return res.status(409).json({ message: "Ride not available or not enough seats" });
         }
         ride = rideR.rows[0];
+
+        // Prevent duplicate booking by the same customer on this ride
+        const dupR = await txClient.query(
+          `SELECT id FROM outstation_pool_bookings
+           WHERE ride_id = $1 AND customer_id = $2 AND status NOT IN ('cancelled')
+           LIMIT 1`,
+          [rideId, (req as any).currentUser.id],
+        );
+        if (dupR.rows.length) {
+          await txClient.query("ROLLBACK");
+          return res.status(409).json({ message: "You already have an active booking on this ride" });
+        }
 
         // Validate customer's pickup/drop is on this route
         const fromLatR = parseFloat(ride.from_lat || 0);

@@ -38,15 +38,15 @@ const isLocalDb = (process.env.DATABASE_URL || "").match(/localhost|127\.0\.0\.1
 const isProduction = process.env.NODE_ENV === 'production';
 const normalizedDatabaseUrl = normalizeDatabaseUrl(process.env.DATABASE_URL);
 
-// Keep production pool conservative so startup jobs do not exhaust managed DB limits.
-// Development can still use a slightly higher ceiling for local workflows.
-const maxConnections = isProduction ? 10 : 20;
+// Neon serverless needs enough connections to handle concurrent request bursts.
+// 10 was too low — production peaks can exhaust the pool causing queue buildup.
+const maxConnections = isProduction ? 25 : 20;
 
 export const pool = new Pool({
   connectionString: normalizedDatabaseUrl,
   ssl: isLocalDb ? false : { rejectUnauthorized: false },
   max: maxConnections,
-  idleTimeoutMillis: 30000,
+  idleTimeoutMillis: 10000,
   connectionTimeoutMillis: 5000,  // Fail fast instead of hanging (was 10000ms)
   allowExitOnIdle: false,
   application_name: 'jago-api',   // For debugging in pg_stat_statements

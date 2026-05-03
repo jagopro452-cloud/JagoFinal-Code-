@@ -199,8 +199,11 @@ async function findBestSession(
 
   for (const row of r.rows as any[]) {
     const driverBearing = parseFloat(row.current_bearing_deg || 0);
-    const bdiff = bearingDiff(driverBearing, customerBearing);
-    if (bdiff > DIRECTION_TOLERANCE_DEG) continue;
+    // H7 FIX: bearing=0 means uninitialized GPS — skip direction check to avoid wrong rejections
+    if (driverBearing > 0) {
+      const bdiff = bearingDiff(driverBearing, customerBearing);
+      if (bdiff > DIRECTION_TOLERANCE_DEG) continue;
+    }
 
     const cLat = parseFloat(row.current_lat);
     const cLng = parseFloat(row.current_lng);
@@ -610,16 +613,24 @@ export function registerRollingPoolRoutes(app: Express, authApp: any): void {
 
       const sessionId = (sessionR.rows[0] as any).id;
 
-      // Notify and cancel any matched-but-not-picked-up passengers
+      // H8 FIX: Cancel matched AND picked_up passengers on session end
+      // picked_up passengers who didn't complete their drop get a refund
       const pendingR = await rawDb.execute(rawSql`
         UPDATE pool_ride_requests
-        SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW()
-        WHERE session_id = ${sessionId}::uuid AND status = 'matched'
-        RETURNING customer_id
+        SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW(),
+            refund_amount = CASE WHEN status = 'picked_up' THEN COALESCE(fare, 0) ELSE 0 END,
+            cancel_reason = CASE WHEN status = 'picked_up' THEN 'Driver ended session mid-ride' ELSE 'Driver ended pool session' END
+        WHERE session_id = ${sessionId}::uuid AND status IN ('matched', 'picked_up')
+        RETURNING customer_id, status, refund_amount
       `);
       for (const p of pendingR.rows as any[]) {
+        const wasPickedUp = p.status === 'picked_up';
+        const refundAmt = parseFloat(p.refund_amount || 0);
         io.to(`user:${p.customer_id}`).emit("pool:cancelled", {
-          reason: "Driver ended pool session. Please rebook.",
+          reason: wasPickedUp
+            ? "Driver ended session during your ride. A refund has been initiated."
+            : "Driver ended pool session. Please rebook.",
+          refundAmount: wasPickedUp ? refundAmt : 0,
         });
       }
 

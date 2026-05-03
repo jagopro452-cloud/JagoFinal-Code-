@@ -151,19 +151,28 @@ async function cancelPoolDispatch(poolRideId: string, timeout: boolean): Promise
 
   console.log(`[POOL-DISPATCH] cancelling poolRideId=${poolRideId} reason=${timeout ? "timeout" : "no_drivers"}`);
 
-  // Cancel the ride
-  await rawDb.execute(rawSql`
-    UPDATE local_pool_rides
-    SET status = 'cancelled', updated_at = NOW()
-    WHERE id = ${poolRideId}::uuid AND driver_id IS NULL
-  `).catch(() => undefined);
-
-  // Mark all booked passengers as cancelled
-  await rawDb.execute(rawSql`
-    UPDATE local_pool_passengers
-    SET status = 'cancelled', updated_at = NOW()
-    WHERE pool_ride_id = ${poolRideId}::uuid AND status = 'booked'
-  `).catch(() => undefined);
+  // Cancel ride + passengers atomically — both must succeed or neither
+  const client = await (await import("./db")).pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `UPDATE local_pool_rides SET status = 'cancelled', updated_at = NOW()
+       WHERE id = $1::uuid AND driver_id IS NULL`,
+      [poolRideId],
+    );
+    await client.query(
+      `UPDATE local_pool_passengers SET status = 'cancelled', updated_at = NOW()
+       WHERE pool_ride_id = $1::uuid AND status = 'booked'`,
+      [poolRideId],
+    );
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    console.error("[POOL-DISPATCH] cancel transaction failed", (e as any)?.message);
+    return;
+  } finally {
+    client.release();
+  }
 
   // Fetch passengers to notify them
   const passR = await rawDb.execute(rawSql`
@@ -252,14 +261,23 @@ async function runReaper(): Promise<void> {
     `).catch(() => ({ rows: [] as any[] }));
 
     for (const row of readyR.rows as any[]) {
-      // Mark as dispatching then fire dispatch
+      const rideId = String(row.id);
+      // CRITICAL FIX C11: Mark as dispatching, then fire dispatch; reset to 'collecting' on error
       await rawDb.execute(rawSql`
         UPDATE local_pool_rides SET status = 'dispatching', updated_at = NOW()
-        WHERE id = ${row.id}::uuid AND status = 'collecting'
+        WHERE id = ${rideId}::uuid AND status = 'collecting'
       `).catch(() => undefined);
-      triggerPoolDispatch(String(row.id)).catch(e =>
-        console.error("[POOL-DISPATCH] reaper trigger error", e?.message),
-      );
+      
+      try {
+        await triggerPoolDispatch(rideId);
+      } catch (e: any) {
+        console.error("[POOL-DISPATCH] reaper trigger error", e?.message);
+        // Reset back so reaper retries on next cycle
+        await rawDb.execute(rawSql`
+          UPDATE local_pool_rides SET status = 'collecting', updated_at = NOW()
+          WHERE id = ${rideId}::uuid AND status = 'dispatching' AND driver_id IS NULL
+        `).catch(() => undefined);
+      }
     }
 
     // 2. collecting rides whose deadline passed with 0 passengers → cancel silently

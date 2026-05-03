@@ -28,8 +28,11 @@ class AuthService {
   static const _userNameKey = 'user_name';
   static const _userPhoneKey = 'user_phone';
   static const _userIdKey = 'user_id';
+  static const _activeTripKey = 'active_customer_trip_id';
 
   static Completer<void>? _logoutInFlight;
+  static int _handle401RetryCount = 0;
+  static const _handle401MaxRetries = 2;
 
   static const Map<String, String> _base = {
     'Content-Type': 'application/json',
@@ -271,13 +274,34 @@ class AuthService {
       return _logoutInFlight!.future;
     }
 
+    // Guard against infinite retry loops (max 2 refresh attempts before forcing logout)
+    if (_handle401RetryCount >= _handle401MaxRetries) {
+      _handle401RetryCount = 0;
+      await clearLocalSession();
+      navigatorKey.currentState?.pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const SplashScreen()),
+        (route) => false,
+      );
+      return;
+    }
+
     final completer = Completer<void>();
     _logoutInFlight = completer;
 
     try {
+      if (await hasActiveTripSession()) {
+        _handle401RetryCount++;
+        await tryRefreshSession();
+        return;
+      }
+      _handle401RetryCount++;
       final recovered = await tryRefreshSession();
-      if (recovered) return;
+      if (recovered) {
+        _handle401RetryCount = 0;
+        return;
+      }
 
+      _handle401RetryCount = 0;
       debugPrint('[AUTH] Confirmed unauthorized from $source, clearing session');
       await clearLocalSession();
       navigatorKey.currentState?.pushAndRemoveUntil(
@@ -288,6 +312,12 @@ class AuthService {
       completer.complete();
       _logoutInFlight = null;
     }
+  }
+
+  static Future<bool> hasActiveTripSession() async {
+    final prefs = await SharedPreferences.getInstance();
+    final tripId = prefs.getString(_activeTripKey)?.trim() ?? '';
+    return tripId.isNotEmpty;
   }
 
   static Future<Map<String, dynamic>?> getProfile({

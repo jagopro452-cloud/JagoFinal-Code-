@@ -44,12 +44,19 @@ export async function createSessionRecord(
 }
 
 export async function revokeSessionsForUser(userId: string) {
+  // H5 FIX: Revoke BOTH sessions AND refresh tokens together
   await rawDb.execute(rawSql`
     UPDATE sessions
     SET revoked=true, revoked_at=NOW()
     WHERE user_id=${userId}::uuid
       AND revoked=false
   `);
+  await rawDb.execute(rawSql`
+    UPDATE refresh_tokens
+    SET revoked=true, revoked_at=NOW()
+    WHERE user_id=${userId}::uuid
+      AND revoked=false
+  `).catch(() => undefined); // Silently pass if refresh_tokens table doesn't exist yet
 }
 
 export async function revokeSessionByToken(token: string) {

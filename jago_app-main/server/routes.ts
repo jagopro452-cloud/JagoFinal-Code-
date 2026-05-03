@@ -217,6 +217,7 @@ import {
   getTripStatusForCustomer,
   boostrFareOffer,
 } from "./hardening-routes";
+import { verifyDriverAfterAccept, recordNoShow, updateCustomerSearchProgress, sendNotificationWithFailsafe } from "./hardening";
 
 // -- Multer upload setup -------------------------------------------------------
 const uploadsDir = path.join(process.cwd(), "public", "uploads");
@@ -711,6 +712,16 @@ const bookingLimiter = rateLimit({
   validate: { xForwardedForHeader: false },
 });
 
+// H6 FIX: Password reset OTP verification — 5 attempts per 15 minutes prevents brute-force of 6-digit codes
+const resetPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: { message: "Too many password reset attempts. Please try again in 15 minutes." },
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
+});
+
 // Per-phone OTP guard (in-process, complements IP limiter — blocks IP-rotating abuse)
 const phoneOtpWindow = new Map<string, { count: number; resetAt: number }>();
 function checkPhoneOtpLimit(phone: string, maxPerHour = 8): boolean {
@@ -732,10 +743,6 @@ setInterval(() => {
 }, 60 * 60 * 1000);
 
 const ADMIN_SESSION_TTL_HOURS = Math.max(1, Number(process.env.ADMIN_SESSION_TTL_HOURS || 24));
-// SECURITY: Never expose OTPs in production responses, regardless of env var setting
-const isDevOtpResponseEnabled =
-  process.env.ENABLE_DEV_OTP_RESPONSES === "true" &&
-  process.env.NODE_ENV === "development";
 
 // AI microservice is optional — null disables voice intent without crashing server
 const AI_ASSISTANT_SERVICE_URL = process.env.AI_ASSISTANT_SERVICE_URL
@@ -926,7 +933,8 @@ async function issueUserSession(userId: string, context: SessionContext, options
 }
 
 async function issueAdminSession(adminId: string) {
-  const sessionToken = `${adminId}:${crypto.randomBytes(32).toString("hex")}`;
+  // M7 FIX: Use opaque UUID token — do NOT embed adminId in the token (leaks identity)
+  const sessionToken = crypto.randomUUID() + '-' + crypto.randomBytes(16).toString('hex');
   const expiresAt = new Date(Date.now() + ADMIN_SESSION_TTL_HOURS * 60 * 60 * 1000);
   await rawDb.execute(rawSql`
     UPDATE admins
@@ -1388,6 +1396,24 @@ async function ensureOperationalSchema() {
       CREATE INDEX IF NOT EXISTS idx_refresh_tokens_token ON refresh_tokens(token);
       CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_active ON refresh_tokens(user_id, revoked, expires_at DESC);
       CREATE INDEX IF NOT EXISTS idx_otp_request_events_device_created ON otp_request_events(device_id, created_at DESC);
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'uq_users_phone'
+        ) THEN
+          IF NOT EXISTS (
+            SELECT phone
+            FROM users
+            WHERE phone IS NOT NULL AND TRIM(phone) <> ''
+            GROUP BY phone
+            HAVING COUNT(*) > 1
+          ) THEN
+            ALTER TABLE users ADD CONSTRAINT uq_users_phone UNIQUE (phone);
+          ELSE
+            RAISE WARNING 'Skipping uq_users_phone creation because duplicate phone rows already exist';
+          END IF;
+        END IF;
+      END$$;
       CREATE INDEX IF NOT EXISTS idx_users_phone_type ON users(phone, user_type);
       CREATE INDEX IF NOT EXISTS idx_driver_locations_online_updated ON driver_locations(is_online, updated_at DESC);
       CREATE TABLE IF NOT EXISTS outbox_events (
@@ -2664,7 +2690,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         db: dbProbe,
       });
     } catch (e: any) {
-      res.status(500).json({ ok: false, error: e.message });
+      res.status(500).json({ ok: false, error: safeErrMsg(e) });
     }
   });
 
@@ -3395,7 +3421,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // -- COMPREHENSIVE ADMIN DASHBOARD ------------------------------------------
   // Single endpoint with per-service breakdowns, driver wallet health, subscription stats
-  app.get("/api/admin/dashboard", async (_req, res) => {
+  app.get("/api/admin/dashboard", requireAdminAuth, async (_req, res) => {
     try {
       const [tripsR, driversR, customersR, walletR, subscriptionsR, carpoolR, parcelsR, outstationR, settingsR] = await Promise.all([
         // All-time trip counts + revenue per service type
@@ -4268,7 +4294,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // -- ADMIN CONTROL: Ride Ops and Live Monitoring --------------------------
-  app.get("/api/admin/rides/active", async (_req, res) => {
+  app.get("/api/admin/rides/active", requireAdminAuth, async (_req, res) => {
     try {
       const r = await rawDb.execute(rawSql`
         SELECT t.id, t.ref_id, t.trip_type, t.current_status, t.pickup_address, t.destination_address,
@@ -4289,7 +4315,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  app.get("/api/admin/rides/history", async (req, res) => {
+  app.get("/api/admin/rides/history", requireAdminAuth, async (req, res) => {
     try {
       const limit = Math.min(500, Math.max(1, Number(req.query.limit || 100)));
       const r = await rawDb.execute(rawSql`
@@ -4434,7 +4460,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  app.get("/api/admin/system/live-overview", async (_req, res) => {
+  app.get("/api/admin/system/live-overview", requireAdminAuth, async (_req, res) => {
     try {
       const [rides, drivers, sos] = await Promise.all([
         rawDb.execute(rawSql`SELECT COUNT(*)::int as c FROM trip_requests WHERE current_status IN ('searching','driver_assigned','accepted','arrived','on_the_way')`),
@@ -4591,10 +4617,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           admin: { id: admin.id, name: admin.name, email: admin.email, role: admin.role },
           message: `OTP sent to admin phone. Valid for 5 minutes.`,
         };
-        if (process.env.NODE_ENV !== "production" && isDevOtpResponseEnabled) {
-          response.otp = otp;
-          response.dev = true;
-        }
+        // 🔒 SECURITY: NEVER expose OTP in response (C7 FIX)
         return res.status(202).json(response);
       }
 
@@ -4646,7 +4669,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ORDER BY created_at DESC
         LIMIT 1
       `);
-      if (!otpR.rows.length) return res.status(400).json({ message: "Invalid or expired OTP" });
+      // M6 FIX: Track failed OTP attempts and block after 5
+      if (!otpR.rows.length) {
+        await rawDb.execute(rawSql`
+          UPDATE admin_login_otp
+          SET attempts = COALESCE(attempts, 0) + 1
+          WHERE admin_id=${admin.id}::uuid AND is_used=false AND expires_at > NOW()
+        `).catch(() => undefined);
+        const attemptsR = await rawDb.execute(rawSql`
+          SELECT COALESCE(MAX(attempts), 0) as attempts FROM admin_login_otp
+          WHERE admin_id=${admin.id}::uuid AND is_used=false AND expires_at > NOW()
+        `).catch(() => ({ rows: [] as any[] }));
+        const attempts = parseInt((attemptsR.rows[0] as any)?.attempts || '0', 10);
+        if (attempts >= 5) {
+          await rawDb.execute(rawSql`
+            UPDATE admin_login_otp SET is_used=true WHERE admin_id=${admin.id}::uuid AND is_used=false
+          `).catch(() => undefined);
+          return res.status(429).json({ message: "Too many failed attempts. Please request a new OTP." });
+        }
+        return res.status(400).json({ message: "Invalid or expired OTP" });
+      }
 
       await rawDb.execute(rawSql`UPDATE admin_login_otp SET is_used=true WHERE id=${(otpR.rows[0] as any).id}::uuid`);
       const { sessionToken, expiresAt } = await issueAdminSession(admin.id);
@@ -4669,7 +4711,52 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ success: true });
   });
 
-  // -- ADMIN: Forgot Password � send OTP to email ----------------------------
+  // M1 FIX: Change admin password while logged in (no env var dependency)
+  app.post("/api/admin/change-password", async (req, res) => {
+    try {
+      const token = extractBearerToken(req);
+      if (!token) return res.status(401).json({ message: "Authentication required" });
+      
+      const adminR = await rawDb.execute(rawSql`
+        SELECT id, email, password FROM admins 
+        WHERE auth_token=${token} AND auth_token_expires_at > NOW() LIMIT 1
+      `);
+      const admin: any = adminR.rows[0];
+      if (!admin) return res.status(401).json({ message: "Invalid or expired session" });
+
+      const { currentPassword, newPassword } = req.body;
+      if (!currentPassword || !newPassword) {
+        return res.status(400).json({ message: "Current password and new password are required" });
+      }
+      if (newPassword.length < 8) {
+        return res.status(400).json({ message: "New password must be at least 8 characters" });
+      }
+
+      // Verify current password
+      const currentValid = await verifyPassword(currentPassword, admin.password);
+      if (!currentValid) {
+        return res.status(401).json({ message: "Current password is incorrect" });
+      }
+
+      // Hash and update new password
+      const hashedPassword = await hashPassword(newPassword);
+      await rawDb.execute(rawSql`
+        UPDATE admins 
+        SET password=${hashedPassword}, auth_token=NULL, auth_token_expires_at=NULL 
+        WHERE id=${admin.id}::uuid
+      `);
+
+      console.log(`[M1] Admin password changed for ${admin.email} — session invalidated`);
+      res.json({ 
+        success: true, 
+        message: "Password changed successfully. Please login again with your new password." 
+      });
+    } catch (e: any) {
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
+  });
+
+  // -- ADMIN: Forgot Password – send OTP to email ----------------------------
   app.post("/api/admin/forgot-password", async (req, res) => {
     try {
       const { email } = req.body;
@@ -4680,13 +4767,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min
       await rawDb.execute(rawSql`UPDATE admin_otp_resets SET is_used=true WHERE email=${email} AND is_used=false`);
       await rawDb.execute(rawSql`INSERT INTO admin_otp_resets (email, otp, expires_at) VALUES (${email}, ${otp}, ${expiresAt.toISOString()})`);
-      // In production: send via email. For now, log it and return in dev mode.
-      console.log(`[ADMIN-FORGOT-PWD] OTP generated for ${email}`);
-      if (process.env.NODE_ENV === 'production' || !isDevOtpResponseEnabled) {
-        res.json({ success: true, message: "Password reset OTP sent to your email." });
-      } else {
-        res.json({ success: true, message: "Password reset OTP sent (dev mode � check console).", otp, dev: true });
-      }
+      // 🔒 SECURITY: NEVER log or expose OTP (C7 FIX)
+      // In production: send via email/SMS service
+      res.json({ success: true, message: "Password reset OTP sent to your email." });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -9478,7 +9561,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // -- RESET PASSWORD (verify OTP + set new password) ------------------------
-  app.post("/api/app/reset-password", async (req, res) => {
+  app.post("/api/app/reset-password", resetPasswordLimiter, async (req, res) => {
     try {
       const { phone, otp, newPassword, userType = "customer" } = req.body;
       if (!phone || !otp || !newPassword) return res.status(400).json({ message: "Phone, OTP and new password are required" });
@@ -9497,15 +9580,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ORDER BY created_at DESC
         LIMIT 1
       `).catch(() => ({ rows: [] as any[] }));
-      const user = userRes.rows[0] as any;
-      const legacyResetOtpStillValid = user.reset_otp === otp && user.reset_otp_expiry && new Date(user.reset_otp_expiry) > new Date();
-      if (!otpRow.rows.length && !legacyResetOtpStillValid) {
+      if (!otpRow.rows.length) {
         return res.status(400).json({ message: "Invalid or expired OTP. Please try again." });
       }
       const passwordHash = await hashPassword(newPassword);
-      if (otpRow.rows.length) {
-        await rawDb.execute(rawSql`UPDATE otp_logs SET is_used=true WHERE id=${(otpRow.rows[0] as any).id}::uuid`).catch(dbCatch("db"));
-      }
+      await rawDb.execute(rawSql`UPDATE otp_logs SET is_used=true WHERE id=${(otpRow.rows[0] as any).id}::uuid`).catch(dbCatch("db"));
       await rawDb.execute(rawSql`UPDATE users SET password_hash=${passwordHash}, reset_otp=NULL, reset_otp_expiry=NULL WHERE phone=${phoneStr} AND user_type=${userType}`);
       res.json({ success: true, message: "Password reset successfully. Please login with your new password." });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
@@ -10110,6 +10189,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // Notify dispatch engine – clears timers and notifies other drivers
       onDriverAccepted(tripId, driver.id);
 
+      // H19 FIX: Verify driver is still online after accept (ghost acceptance prevention)
+      // Non-blocking — sends 5s ping, auto-reassigns if no response
+      verifyDriverAfterAccept(driver.id, tripId).catch((e: any) => {
+        log(`[DRIVER-VERIFY] ping failed for driver=${driver.id}: ${e?.message}`);
+      });
+
       const tripData = camelize(r.rows[0]) as any;
       const driverVehicleR = await rawDb.execute(rawSql`
         SELECT dd.vehicle_number, dd.vehicle_model, vc.name as vehicle_category
@@ -10178,11 +10263,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // ?? FCM: notify customer
       const custDevRes = await rawDb.execute(rawSql`SELECT fcm_token FROM user_devices WHERE user_id=${tripData.customerId}::uuid`);
       const custFcmToken = (custDevRes.rows[0] as any)?.fcm_token || null;
-      notifyCustomerDriverAccepted({
+      // H20 FIX: Use sendNotificationWithFailsafe for retry logic on critical driver-accepted notification
+      sendNotificationWithFailsafe({
+        recipientId: String(tripData.customerId),
         fcmToken: custFcmToken,
-        driverName: driver.fullName || "Driver",
-        tripId: tripData.id,
-      }).catch(dbCatch("db"));
+        title: '🚗 Driver Found!',
+        body: `${driver.fullName || 'Driver'} is on the way to pick you up`,
+        data: { tripId: String(tripData.id), action: 'trip:accepted', driverName: driver.fullName || 'Driver' },
+        tripId: String(tripData.id),
+        type: 'driver_accepted',
+      }).catch(() => {});
 
       res.json({ success: true, trip: tripData, pickupOtp: otp });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
@@ -10566,10 +10656,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       // Post-commit: admin_revenue + GST wallet (best-effort, not on critical path)
+      // H2 FIX: Log to system_logs on failure so revenue loss is NEVER silent
       rawDb.execute(rawSql`
         INSERT INTO admin_revenue (driver_id, trip_id, amount, revenue_type, breakdown)
         VALUES (${driver.id}::uuid, ${tripId}::uuid, ${deductAmount}, ${breakdown.model === 'launch_free' ? 'gst_only' : 'commission'}, ${JSON.stringify(breakdown)}::jsonb)
-      `).catch(dbCatch("db"));
+      `).catch((e: any) => {
+        console.error('[REVENUE] CRITICAL: admin_revenue insert failed for trip', tripId, e.message);
+        rawDb.execute(rawSql`
+          INSERT INTO system_logs (level, tag, message, details)
+          VALUES ('error', 'REVENUE_LOSS', 'admin_revenue insert failed',
+            ${JSON.stringify({ tripId, driverId: driver.id, amount: deductAmount, error: e.message })}::jsonb)
+        `).catch(() => undefined);
+      });
       if (gstAmount > 0) {
         rawDb.execute(rawSql`
           UPDATE company_gst_wallet SET balance=balance+${gstAmount}, total_collected=total_collected+${gstAmount}, total_trips=total_trips+1, updated_at=NOW() WHERE id=1
@@ -10597,6 +10695,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         console.info("[METRIC] trip_complete_pending_payment", JSON.stringify({ tripId, walletPendingAmount }));
       } else {
         console.info("[METRIC] trip_complete_success", JSON.stringify({ tripId }));
+      }
+
+      // H26 FIX: Notify customer of trip completion via FCM with retry
+      if (tripCustomerId) {
+        notifyTripCompletion(
+          String(tripCustomerId),
+          String(tripId),
+          Math.round(fare),
+          tripPaymentMethod,
+          String(driver.fullName || driver.full_name || 'your pilot')
+        ).catch((e: any) => {
+          log(`[NOTIFY-COMPLETE] notifyTripCompletion failed: ${e?.message}`);
+        });
       }
 
       res.json({
@@ -10628,6 +10739,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       `);
       if (!tripDetails.rows.length) return res.status(400).json({ message: "Cannot cancel this trip" });
       const trip = camelize(tripDetails.rows[0]) as any;
+
+      // H22 FIX: Record customer no-show when driver arrived but customer not present
+      if (trip.currentStatus === 'arrived') {
+        const cancelReasonLow = String(reason || '').toLowerCase();
+        const isCustomerNoShow = cancelReasonLow.includes('customer') || cancelReasonLow.includes('no_show') || cancelReasonLow.includes('not found') || cancelReasonLow.includes('not present');
+        if (isCustomerNoShow && trip.customerId) {
+          recordNoShow(String(trip.customerId), String(tripId), 'customer_not_found').catch((e: any) => {
+            log(`[NO-SHOW] customer recordNoShow failed: ${e?.message}`);
+          });
+        }
+      }
 
       // Reset trip to 'searching' � auto-reassign to next driver
       await rawDb.execute(rawSql`
@@ -10684,6 +10806,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           tripId, message: "Your previous pilot cancelled. Looking for a new one...",
         });
       }
+
+      // H24 FIX: Record driver cancellation for abandonment/no-show tracking
+      recordDriverCancellation(String(tripId), String(driver.id), String(trip.customerId), reason || '').catch((e: any) => {
+        log(`[DRIVER-CANCEL] recordDriverCancellation failed: ${e?.message}`);
+      });
 
       // AI-scored reassignment after driver cancellation
       await restartDispatchForTrip(tripId, { additionalRejectedDriverIds: [driver.id] });
@@ -11372,8 +11499,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         });
       }
 
-      // Idempotency guard: reject if this customer already has an active in-flight booking.
-      // This prevents double-booking on network retry or double-tap within the same session.
+      // H1 FIX: Idempotency guard — soft check that provides a friendly error.
+      // Hard protection is the DB unique partial index idx_one_active_trip_per_customer
+      // in the migration which prevents two active trips per customer at INSERT level.
       const inflightR = await rawDb.execute(rawSql`
         SELECT id, current_status FROM trip_requests
         WHERE customer_id = ${customer.id}::uuid
@@ -11492,8 +11620,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
               const realtimeSurge = await getSurgeFactor(validPickupCoords.lat, validPickupCoords.lng);
               surgeMult = Math.max(surgeMult, realtimeSurge);
             } catch { }
+            // M9 FIX: Correct order — base fare → surge multiplier → minimum cap → max cap → round
             const raw = (base + perKm * dist + perMin * 0) * nightMult * surgeMult;
-            computedFare = Math.max(raw, minFare);
+            const capped = Math.min(raw, 10000); // absolute max ₹10,000 cap
+            computedFare = Math.round(Math.max(capped, minFare)); // minimum floor, then round to nearest rupee
           } else {
             // Absolute fallback: ?30 + ?12/km (standard bike fare)
             const dist = Number(finalDistance) || 0;
@@ -11504,6 +11634,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           const dist = Number(finalDistance) || 0;
           computedFare = Math.max(30 + 12 * dist, 30);
         }
+      }
+
+      // H4 FIX: Reject booking if fare is zero or negative — prevents free rides
+      if (!computedFare || computedFare <= 0) {
+        return res.status(503).json({
+          message: "Fare configuration unavailable. Please try again later.",
+          code: "FARE_CONFIG_MISSING",
+        });
       }
 
       // -- Coupon validation & discount -----------------------------------------
@@ -11870,7 +12008,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         status: "searching",
         uiState: toUiTripState({ current_status: 'searching' }),
       });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+    } catch (e: any) {
+      // H1 FIX: If unique constraint idx_one_active_trip_per_customer fires (SQLSTATE 23505),
+      // it means a concurrent booking just beat us — return 409 with a friendly message.
+      if (e?.code === '23505' && e?.constraint?.includes('one_active_trip')) {
+        return res.status(409).json({
+          message: "You already have an active booking. Complete or cancel it before booking again.",
+          code: "BOOKING_IN_FLIGHT",
+        });
+      }
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
   });
 
   // -- CUSTOMER: Track current trip ------------------------------------------
@@ -12279,11 +12427,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           status: 'cancelled',
         });
       }
+      // H25 FIX: Record customer cancellation for penalty tracking (excessive cancellations)
+      recordCustomerCancellation(String(effectiveTripId), String(customer.id), reason || '').catch((e: any) => {
+        log(`[CUST-CANCEL] recordCustomerCancellation failed: ${e?.message}`);
+      });
+
       res.json({ success: true, walletRefund, cancelFee });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // -- CUSTOMER: Boost trip fare to attract drivers (FIX #6 extension) -----
+  // -- CUSTOMER: Boost trip fare to attract drivers --------------------------
   app.post("/api/app/customer/trip/:id/boost-fare", authApp, requireCustomer, async (req, res) => {
     try {
       const { id: tripId } = req.params;
