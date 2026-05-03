@@ -1,3 +1,12 @@
+// Register crash handlers FIRST — before any imports or async code runs
+process.on("uncaughtException", (err: any) => {
+  console.error("[FATAL uncaughtException]", err?.stack || err);
+  // Don't exit — keep server alive for health checks
+});
+process.on("unhandledRejection", (reason: any) => {
+  console.error("[FATAL unhandledRejection]", reason?.stack || reason);
+});
+
 console.log("BOOT START");
 
 import express, { type Request, Response, NextFunction } from "express";
@@ -459,25 +468,4 @@ httpServer.listen(port, "0.0.0.0", () => {
     }
   }
 
-  process.on("unhandledRejection", (reason: any) => {
-    const errorId = makeErrorId();
-    console.error(`[unhandledRejection] [${errorId}]`, reason);
-    sendAlert({
-      level: "critical",
-      source: "process",
-      message: `Unhandled promise rejection (${errorId})`,
-      details: String(reason?.stack || reason),
-    }).catch(() => { });
-  });
-
-  process.on("uncaughtException", (err: any) => {
-    const errorId = makeErrorId();
-    console.error(`[uncaughtException] [${errorId}]`, err);
-    sendAlert({
-      level: "critical",
-      source: "process",
-      message: `Uncaught exception (${errorId})`,
-      details: String(err?.stack || err),
-    }).catch(() => { });
-  });
 })();
