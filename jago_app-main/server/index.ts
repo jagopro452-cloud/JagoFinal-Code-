@@ -91,9 +91,13 @@ export function log(message: string, source = "express") {
 }
 
 // Security headers
-app.use((_req, res, next) => {
+app.use((req, res, next) => {
+  const isApiRequest =
+    req.path.startsWith("/api") ||
+    req.path.startsWith("/v1/") ||
+    req.path.startsWith("/v2/");
   // CORS headers — allow requests from frontend domain(s)
-  const origin = _req.headers.origin;
+  const origin = req.headers.origin;
   const defaultOrigins = "https://jagopro.org,https://www.jagopro.org,http://localhost:5173,http://localhost:5000,http://127.0.0.1:5173,http://127.0.0.1:5000";
   const allowedOrigins = ((process.env.ALLOWED_ORIGINS || defaultOrigins))
     .split(",")
@@ -102,7 +106,7 @@ app.use((_req, res, next) => {
 
   if (!origin) {
     // Native mobile requests usually do not send Origin.
-  } else if (allowedOrigins.includes(origin)) {
+  } else if (!isApiRequest || allowedOrigins.includes(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
   } else {
     return res.status(403).json({ message: "Origin not allowed" });
@@ -114,7 +118,7 @@ app.use((_req, res, next) => {
   res.setHeader("Access-Control-Max-Age", "3600");
 
   // Handle preflight requests
-  if (_req.method === "OPTIONS") {
+  if (req.method === "OPTIONS") {
     return res.sendStatus(200);
   }
 
