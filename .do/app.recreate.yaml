@@ -1,0 +1,92 @@
+name: jagoproorg
+region: blr
+services:
+  - name: jago
+    source_dir: /
+    github:
+      repo: jagopro452-cloud/jago
+      branch: main
+      deploy_on_push: true
+    build_command: cd jago_app-main && npm ci && npm run build
+    run_command: node jago_app-main/dist/index.js
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-1gb
+    health_check:
+      http_path: /api/health
+      initial_delay_seconds: 60
+      period_seconds: 30
+      timeout_seconds: 15
+      success_threshold: 1
+      failure_threshold: 5
+    envs:
+      - key: NODE_ENV
+        value: "production"
+      - key: PORT
+        value: "8080"
+      - key: ADMIN_EMAIL
+        value: "kiranatmakuri518@gmail.com"
+      - key: ADMIN_NAME
+        value: "Jago Admin"
+      - key: ADMIN_PASSWORD
+        value: "${ADMIN_PASSWORD}"
+        type: SECRET
+        scope: RUN_TIME
+      - key: ADMIN_PASSWORD_SYNC_ON_RESTART
+        value: "true"
+      - key: ADMIN_RESET_KEY
+        value: "${ADMIN_RESET_KEY}"
+        type: SECRET
+        scope: RUN_TIME
+      - key: ADMIN_SESSION_TTL_HOURS
+        value: "24"
+      - key: ADMIN_2FA_REQUIRED
+        value: "false"
+      - key: ENABLE_DEV_OTP_RESPONSES
+        value: "false"
+      - key: GOOGLE_MAPS_API_KEY
+        value: "${GOOGLE_MAPS_API_KEY}"
+        type: SECRET
+        scope: RUN_TIME
+      - key: FIREBASE_WEB_API_KEY
+        value: "${FIREBASE_WEB_API_KEY}"
+        type: SECRET
+        scope: RUN_TIME
+      - key: FIREBASE_SERVICE_ACCOUNT_KEY
+        value: "${FIREBASE_SERVICE_ACCOUNT_KEY}"
+        type: SECRET
+        scope: RUN_TIME
+      - key: OPS_API_KEY
+        value: "${OPS_API_KEY}"
+        type: SECRET
+        scope: RUN_TIME
+      - key: RAZORPAY_KEY_ID
+        value: "${RAZORPAY_KEY_ID}"
+        type: SECRET
+        scope: RUN_TIME
+      - key: RAZORPAY_KEY_SECRET
+        value: "${RAZORPAY_KEY_SECRET}"
+        type: SECRET
+        scope: RUN_TIME
+      - key: RAZORPAY_WEBHOOK_SECRET
+        value: "${RAZORPAY_WEBHOOK_SECRET}"
+        type: SECRET
+        scope: RUN_TIME
+      - key: ANTHROPIC_API_KEY
+        value: "${ANTHROPIC_API_KEY}"
+        type: SECRET
+        scope: RUN_TIME
+      - key: DATABASE_URL
+        value: "${DATABASE_URL}"
+        type: SECRET
+        scope: RUN_TIME
+      - key: ALLOWED_ORIGINS
+        value: "https://jagopro.org,https://www.jagopro.org"
+      - key: SOCKET_ALLOWED_ORIGINS
+        value: "https://jagopro.org"
+domains:
+  - domain: jagopro.org
+    type: PRIMARY
+alerts:
+  - rule: DEPLOYMENT_FAILED
+  - rule: DOMAIN_FAILED

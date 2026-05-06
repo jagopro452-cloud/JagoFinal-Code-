@@ -40,7 +40,8 @@ const normalizedDatabaseUrl = normalizeDatabaseUrl(process.env.DATABASE_URL || "
 
 // Neon serverless needs enough connections to handle concurrent request bursts.
 // 10 was too low — production peaks can exhaust the pool causing queue buildup.
-const maxConnections = Number(process.env.DB_POOL_MAX || (isProduction ? "10" : "10"));
+// Increased to 25 for production, 15 for dev to handle multiple async startup operations.
+const maxConnections = Number(process.env.DB_POOL_MAX || (isProduction ? "25" : "15"));
 
 export const pool = new Pool({
   connectionString: normalizedDatabaseUrl,

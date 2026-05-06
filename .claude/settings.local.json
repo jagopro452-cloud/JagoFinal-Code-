@@ -1,0 +1,45 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c ' *)",
+      "Bash(python3)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(git rebase *)",
+      "Bash(grep -E \"\\\\.\\(dart\\)$\")",
+      "Bash(grep -E \"catch.*\\\\{$\")",
+      "Bash(awk 'NR>=570 && NR<=640')",
+      "Bash(git rm *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" --max-time 10 -H \"User-Agent: Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36\" \"https://jagopro.org/api/health\")",
+      "Bash(curl -s --max-time 15 -H \"User-Agent: Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/120.0.0.0 Safari/537.36\" -H \"Accept: application/json,text/html\" \"https://jagopro.org/api/health\")",
+      "Bash(curl -s --max-time 10 \"https://jagopro.org/api/health\" -H \"CF-Access-Client-Id: bypass\")",
+      "Bash(curl -s --max-time 10 -X POST \"https://jagopro.org/api/health\")",
+      "Bash(dir \"C:\\\\Users\\\\kiran\\\\release-apks\")",
+      "Bash(copy \"C:\\\\Users\\\\kiran\\\\release-apks\\\\jago-customer-2026-05-03.apk\" \"C:\\\\Users\\\\kiran\\\\Downloads\\\\jago-customer-2026-05-03.apk\")",
+      "Bash(copy \"C:\\\\Users\\\\kiran\\\\release-apks\\\\jago-driver-2026-05-03.apk\" \"C:\\\\Users\\\\kiran\\\\Downloads\\\\jago-driver-2026-05-03.apk\")",
+      "Bash(doctl account *)",
+      "Bash(timeout 300 bash -c 'while true; do STATUS=$\\(doctl apps list-deployments a43c00a9-e0f1-4507-802c-7917f46dc884 2>&1 | grep d111e9f0\\); echo \"$\\(date -u +%H:%M:%S\\) $STATUS\"; PHASE=$\\(echo \"$STATUS\" | grep -oE \"BUILDING|DEPLOYING|ACTIVE|ERROR\"\\); if [ \"$PHASE\" = \"ACTIVE\" ] || [ \"$PHASE\" = \"ERROR\" ]; then break; fi; sleep 15; done')",
+      "Bash(timeout 240 bash -c 'while true; do STATUS=$\\(doctl apps list-deployments a43c00a9-e0f1-4507-802c-7917f46dc884 2>&1 | grep d111e9f0\\); PHASE=$\\(echo \"$STATUS\" | grep -oE \"ACTIVE|ERROR\"\\); echo \"$\\(date -u +%H:%M:%S\\) $PHASE $STATUS\"; if [ \"$PHASE\" = \"ACTIVE\" ] || [ \"$PHASE\" = \"ERROR\" ]; then break; fi; sleep 20; done')",
+      "Bash(timeout 300 bash -c 'while true; do R=$\\(doctl apps list-deployments a43c00a9-e0f1-4507-802c-7917f46dc884 2>&1 | grep d111e9f0\\); P=$\\(echo \"$R\" | grep -oE \"ACTIVE|ERROR\"\\); echo \"$\\(date -u +%H:%M:%S\\) [$P]\"; if [ \"$P\" = \"ACTIVE\" ] || [ \"$P\" = \"ERROR\" ]; then echo \"$R\"; break; fi; sleep 20; done')",
+      "Bash(Start-Sleep -Seconds 90)",
+      "Bash(Start-Sleep -Seconds 180)",
+      "Bash(Start-Sleep -Seconds 240)",
+      "Bash(Start-Sleep -Seconds 300)",
+      "Bash(Start-Sleep -Seconds 120)",
+      "Bash(Start-Sleep -Seconds 150)",
+      "Bash(Start-Sleep -Seconds 360)",
+      "Bash(Start-Sleep -Seconds 30)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" https://oyster-app-9e9cd.ondigitalocean.app/api/health)",
+      "Bash(Start-Sleep -Seconds 420)",
+      "Bash(curl -s -o /dev/null -w \"DO direct: %{http_code}\" https://oyster-app-9e9cd.ondigitalocean.app/api/health)",
+      "Bash(curl -s -o /dev/null -w \"DO: %{http_code}\" https://oyster-app-9e9cd.ondigitalocean.app/api/health)",
+      "Bash(Start-Sleep -Seconds 75)",
+      "Bash(curl -s -o /dev/null -w \"DO status: %{http_code}\" https://oyster-app-9e9cd.ondigitalocean.app/api/health)",
+      "Bash(curl -s -w \"\\\\nHTTP: %{http_code}\" https://oyster-app-9e9cd.ondigitalocean.app/api/health)",
+      "Bash(Start-Sleep -Seconds 10)",
+      "Bash(Get-Content \"C:\\\\Users\\\\kiran\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-kiran-Downloads-jago-25-04-jagoupdate\\\\a5e3a709-5a23-46d6-b53d-9d05cdd3333a\\\\tasks\\\\bkp0z5ia2.output\" -ErrorAction SilentlyContinue)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\kiran\\Downloads"
+    ]
+  }
+}

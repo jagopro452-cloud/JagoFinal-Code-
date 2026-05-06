@@ -54,18 +54,20 @@ app.use(express.urlencoded({ extended: false, limit: "1mb", parameterLimit: 100 
 
 app.get("/_health", (_req, res) => {
   return res.status(200).json({
-    ok: true,
+    status: bootstrapReady ? "ok" : "starting",
     ready: bootstrapReady,
     error: bootstrapError,
+    ts: new Date().toISOString(),
     uptimeSeconds: Math.round(process.uptime()),
   });
 });
 
 app.get("/health", (_req, res) => {
   return res.status(200).json({
-    ok: true,
+    status: bootstrapReady ? "ok" : "starting",
     ready: bootstrapReady,
     error: bootstrapError,
+    ts: new Date().toISOString(),
     uptimeSeconds: Math.round(process.uptime()),
   });
 });
@@ -190,7 +192,7 @@ async function setupSocketRedisAdapter() {
 }
 
 async function applyProductionHardeningMigration() {
-  const migrationName = "001_production_hardening.sql";
+  const migrationName = "0001_operational_schema_hardening.sql";
   const migrationCandidates = [
     path.join(__dirname, "migrations", migrationName),
     path.join(process.cwd(), "server", "migrations", migrationName),
@@ -330,10 +332,6 @@ app.get("/", (_req, res, next) => {
 });
 
 const port = parseInt(process.env.PORT || "5000", 10);
-// "0.0.0.0" — bind all interfaces so DO health probe can reach it
-httpServer.listen(port, "0.0.0.0", () => {
-  console.log(`BOOT LISTEN OK port=${port}`);
-});
 
 (async () => {
   // ─── STEP 1: Register error handler ───
@@ -375,26 +373,44 @@ httpServer.listen(port, "0.0.0.0", () => {
 
   // ─── STEP 3: Static files ───
   if (process.env.NODE_ENV === "production") {
-    try { serveStatic(app); } catch (_) { }
+    try { 
+      serveStatic(app); 
+      log("[static] Frontend assets configured");
+    } catch (e: any) { 
+      bootstrapError = `static_files_failed:${e.message}`;
+      console.error("[static] Failed to configure frontend assets:", e.message);
+      sendAlert({ level: "error", source: "static", message: "Failed to configure frontend assets", details: e.message }).catch(() => {});
+    }
   }
 
-  // ─── STEP 4: Mark server ready — health probe passes from here ───
+  // ─── STEP 4: Drizzle migrations (MUST happen before ready flag) ───
+  try {
+    const migrationsFolder = path.join(process.cwd(), "migrations");
+    await migrate(drizzleDb, { migrationsFolder });
+    log("[db] Drizzle migrations applied OK");
+  } catch (e: any) {
+    bootstrapError = `migration_failed:${e.message}`;
+    console.error("[db] Drizzle migration failed:", e.message);
+    sendAlert({ level: "critical", source: "migrations", message: "Drizzle migrations failed", details: e.message }).catch(() => {});
+  }
+
+  // ─── STEP 5: Apply custom hardening migration ───
+  try {
+    await applyProductionHardeningMigration();
+  } catch (e: any) {
+    // Log but don't block if this specific migration fails
+    log(`[migration] 0001_operational_schema_hardening failed (non-fatal): ${e.message}`);
+  }
+
+  // ─── STEP 6: Mark server ready — health probe passes from here ───
   bootstrapReady = true;
   bootstrapError = null;
   console.log(`BOOT READY port=${port}`);
 
-  // ─── BACKGROUND: Drizzle migrations (after server is ready) ───
-  setTimeout(() => {
-    (async () => {
-      try {
-        const migrationsFolder = path.join(process.cwd(), "migrations");
-        await migrate(drizzleDb, { migrationsFolder });
-        log("[db] Migrations applied OK");
-      } catch (e: any) {
-        console.error("[db] Migration warning (non-fatal):", e.message);
-      }
-    })();
-  }, 2000);
+  // ─── START LISTENING (only after all critical setup is done) ───
+  httpServer.listen(port, "0.0.0.0", () => {
+    console.log(`BOOT LISTEN OK port=${port}`);
+  });
 
   // ─── BACKGROUND: Alert engine ───
   setTimeout(() => {

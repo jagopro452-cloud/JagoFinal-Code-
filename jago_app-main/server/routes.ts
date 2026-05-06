@@ -2567,8 +2567,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (publicPaths.has(req.path)) return next();
     const token = extractBearerToken(req);
     if (!token) return res.status(401).json({ message: "Admin authorization required" });
+    
+    // Add 5-second timeout to prevent hanging on slow DB
+    const timeoutPromise = new Promise<never>((_, reject) => 
+      setTimeout(() => reject(new Error("admin_auth_timeout")), 5000)
+    );
+    
     try {
-      const r = await rawDb.execute(rawSql`
+      const authPromise = rawDb.execute(rawSql`
         SELECT id, name, email, role, is_active
         FROM admins
         WHERE auth_token=${token}
@@ -2576,11 +2582,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           AND auth_token_expires_at > NOW()
         LIMIT 1
       `);
+      
+      const r = await Promise.race([authPromise, timeoutPromise]) as any;
       if (!r.rows.length) return res.status(401).json({ message: "Admin session expired. Please login again." });
       (req as any).adminUser = camelize(r.rows[0]);
       next();
-    } catch (_e: any) {
-      res.status(401).json({ message: "Admin authentication failed" });
+    } catch (e: any) {
+      const statusCode = e.message === "admin_auth_timeout" ? 408 : 401;
+      const message = e.message === "admin_auth_timeout" ? "Authentication service timeout" : "Admin authentication failed";
+      res.status(statusCode).json({ message });
     }
   });
 
