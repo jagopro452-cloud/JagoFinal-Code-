@@ -145,7 +145,7 @@ class _JagoCustomerAppState extends State<JagoCustomerApp> with WidgetsBindingOb
     try {
       final socket = SocketService();
       if (socket.isConnected) return;
-      await socket.connect(ApiConfig.baseUrl);
+      await socket.connect(ApiConfig.socketUrl);
     } catch (_) {}
   }
 

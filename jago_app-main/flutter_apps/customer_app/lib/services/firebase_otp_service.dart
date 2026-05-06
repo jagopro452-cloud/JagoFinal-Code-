@@ -30,6 +30,10 @@ class FirebaseOtpService {
         return 'ERROR: Phone Auth is disabled in Firebase OR Identity Toolkit API is restricted in Google Cloud Console. Please check your API Key settings.';
       case 'app-not-authorized':
         return 'Firebase phone auth is not authorized for this app build.';
+      case 'invalid-app-credential':
+        return 'This app build is not authorized for Firebase phone auth.';
+      case 'captcha-check-failed':
+        return 'Firebase phone verification was blocked on this device. Please retry or use SMS fallback.';
       case 'session-expired':
         return 'This OTP session expired. Please resend OTP and try again.';
       case 'invalid-verification-code':
@@ -39,6 +43,22 @@ class FirebaseOtpService {
       default:
         return e.message ?? 'Failed to process OTP. Please try again.';
     }
+  }
+
+  static bool shouldPreferServerFallback(String? error) {
+    final lower = (error ?? '').toLowerCase();
+    return lower.contains('not authorized') ||
+        lower.contains('operation not allowed') ||
+        lower.contains('operation-not-allowed') ||
+        lower.contains('identity toolkit') ||
+        lower.contains('api key') ||
+        lower.contains('invalid app credential') ||
+        lower.contains('invalid-app-credential') ||
+        lower.contains('captcha') ||
+        lower.contains('quota exceeded') ||
+        lower.contains('too many') ||
+        lower.contains('timed out') ||
+        lower.contains('network issue');
   }
 
   static Future<void> resetVerification() async {

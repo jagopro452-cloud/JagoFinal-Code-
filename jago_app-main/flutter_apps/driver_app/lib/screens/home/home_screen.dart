@@ -516,6 +516,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, 
       _socket.connect(ApiConfig.socketUrl);
       _consumeQueuedAlertAction();
       _checkPendingFcmTrip();
+      _recoverActiveTrip();
+      _checkPendingDriverOffer();
       if (_isOnline) {
         _refreshLocationAfterResume();
         _startIncomingTripPolling();

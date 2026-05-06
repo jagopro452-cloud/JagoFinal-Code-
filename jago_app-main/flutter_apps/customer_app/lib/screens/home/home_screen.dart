@@ -654,6 +654,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       // App went to background — pause the nearby-drivers poll to save battery
       _getLocation();
       // App came back to foreground — refresh pickup location and restart polling
+      _socket.connect(ApiConfig.socketUrl);
+      _checkPendingFcmNotification();
+      _checkActiveTrip();
     }
   }
 

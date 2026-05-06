@@ -133,6 +133,23 @@ class _LoginScreenState extends State<LoginScreen> with TickerProviderStateMixin
     return text.isNotEmpty ? text : 'Please check the latest OTP and try again.';
   }
 
+  Future<bool> _sendServerOtpFallback(String phone, {String? preferredMessage}) async {
+    final res = await AuthService.sendOtp(phone, 'driver', true);
+    if (!mounted) return false;
+    if (res['success'] != true) {
+      setState(() => _loading = false);
+      _snack(_friendlyOtpMessage(preferredMessage ?? res['message']), error: true);
+      return false;
+    }
+    _firebaseVerificationId = null;
+    _otpProvider = 'server';
+    setState(() { _otpSent = true; _loading = false; });
+    _startTimer();
+    _snack('OTP sent to +91$phone via SMS');
+    listenForCode();
+    return true;
+  }
+
   Widget _buildOtpHelpCard() {
     final isFirebase = (_otpProvider ?? 'firebase') == 'firebase';
     final title = isFirebase ? 'Use the latest OTP' : 'SMS OTP in progress';
@@ -256,6 +273,10 @@ class _LoginScreenState extends State<LoginScreen> with TickerProviderStateMixin
     }
 
     firebaseError ??= 'OTP send failed. Retrying once...';
+    if (FirebaseOtpService.shouldPreferServerFallback(firebaseError)) {
+      await _sendServerOtpFallback(phone, preferredMessage: firebaseError);
+      return;
+    }
     await FirebaseOtpService.sendOtp(
       phoneNumber: '+91$phone',
       forceResend: true,
@@ -275,20 +296,7 @@ class _LoginScreenState extends State<LoginScreen> with TickerProviderStateMixin
       return;
     }
 
-    // FALLBACK: Server SMS OTP (when Firebase is blocked/unavailable)
-    final res = await AuthService.sendOtp(phone, 'driver', true);
-    if (!mounted) return;
-    if (res['success'] != true) {
-      setState(() => _loading = false);
-      _snack(_friendlyOtpMessage(firebaseError ?? res['message']), error: true);
-      return;
-    }
-    _firebaseVerificationId = null;
-    _otpProvider = 'server';
-    setState(() { _otpSent = true; _loading = false; });
-    _startTimer();
-    _snack('OTP sent to +91$phone via SMS');
-    listenForCode();
+    await _sendServerOtpFallback(phone, preferredMessage: firebaseError);
   }
 
   Future<void> _verifyOtp() async {
