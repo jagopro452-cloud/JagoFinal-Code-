@@ -3,7 +3,7 @@ class ApiConfig {
   static const String compileTimeBaseUrl = String.fromEnvironment('API_BASE_URL', defaultValue: '');
 
   // Production server URL
-  static const String _prodUrl = 'https://oyster-app-9e9cd.ondigitalocean.app';
+  static const String _prodUrl = 'https://sea-lion-app-h5luj.ondigitalocean.app';
 
   // For Android Emulator use 10.0.2.2. For Physical Device use your PC's IP (e.g. 192.168.0.x)
   static const String _lanDevUrl = 'http://192.168.1.89:5000'; // Target specific physical IP

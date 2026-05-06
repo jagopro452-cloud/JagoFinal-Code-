@@ -2060,11 +2060,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, 
             right: 10,
             bottom: -5,
             child: Image.network(
-              'https://oyster-app-9e9cd.ondigitalocean.app/static/vehicles/rider_bike.png',
+              'https://sea-lion-app-h5luj.ondigitalocean.app/static/vehicles/rider_bike.png',
               height: 100,
               fit: BoxFit.contain,
               errorBuilder: (_, __, ___) => Image.network(
-                'https://oyster-app-9e9cd.ondigitalocean.app/static/vehicles/bike.png',
+                'https://sea-lion-app-h5luj.ondigitalocean.app/static/vehicles/bike.png',
                 height: 90,
                 fit: BoxFit.contain,
                 errorBuilder: (_, __, ___) => const SizedBox.shrink(),
