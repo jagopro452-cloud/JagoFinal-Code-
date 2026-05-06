@@ -43,14 +43,17 @@ declare module "http" {
 
 app.use(
   express.json({
-    limit: "2mb",
+    // Driver onboarding and KYC still send some images as base64 JSON payloads.
+    // Keep this comfortably above typical compressed camera captures to avoid
+    // generic submit failures on selfie/document upload.
+    limit: "12mb",
     verify: (req, _res, buf) => {
       req.rawBody = buf;
     },
   }),
 );
 
-app.use(express.urlencoded({ extended: false, limit: "1mb", parameterLimit: 100 }));
+app.use(express.urlencoded({ extended: false, limit: "10mb", parameterLimit: 100 }));
 
 app.get("/_health", (_req, res) => {
   return res.status(200).json({

@@ -94,6 +94,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
       source: type == 'selfie' ? ImageSource.camera : ImageSource.gallery,
       preferredCameraDevice: type == 'selfie' ? CameraDevice.front : CameraDevice.rear,
       imageQuality: 70,
+      maxWidth: 1280,
+      maxHeight: 1280,
     );
     if (picked != null) {
       setState(() {
@@ -110,6 +112,25 @@ class _RegisterScreenState extends State<RegisterScreen> {
   Future<String?> _fileToBase64(File? file) async {
     if (file == null) return null;
     return base64Encode(await file.readAsBytes());
+  }
+
+  String _docLabel(String docType) {
+    switch (docType) {
+      case 'dl_front':
+        return 'DL Front';
+      case 'dl_back':
+        return 'DL Back';
+      case 'rc':
+        return 'RC';
+      case 'insurance':
+        return 'Insurance';
+      case 'vehicle_photo':
+        return 'Vehicle Front Photo';
+      case 'selfie':
+        return 'Selfie';
+      default:
+        return docType;
+    }
   }
 
   Future<void> _submit() async {
@@ -178,11 +199,26 @@ class _RegisterScreenState extends State<RegisterScreen> {
       for (var entry in docs.entries) {
         if (entry.value != null) {
           final b64 = await _fileToBase64(entry.value);
-          await http.post(
+          final uploadRes = await http.post(
             Uri.parse('${ApiConfig.baseUrl}/api/app/driver/upload-document-base64'),
             headers: headers,
-            body: jsonEncode({'docType': entry.key, 'imageData': b64}),
+            body: jsonEncode({
+              'docType': entry.key,
+              'imageData': b64,
+              if (entry.key == 'dl_front' || entry.key == 'dl_back')
+                'expiryDate': _licenseExpiry != null ? DateFormat('yyyy-MM-dd').format(_licenseExpiry!) : null,
+            }),
           );
+          if (uploadRes.statusCode != 200) {
+            String msg = 'Failed to upload ${_docLabel(entry.key)}';
+            try {
+              if ((uploadRes.headers['content-type'] ?? '').contains('application/json')) {
+                final decoded = jsonDecode(uploadRes.body);
+                msg = decoded['message'] ?? msg;
+              }
+            } catch (_) {}
+            throw Exception('${_docLabel(entry.key)} upload failed: $msg');
+          }
         }
       }
 

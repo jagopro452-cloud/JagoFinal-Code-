@@ -14851,6 +14851,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const validTypes = ['dl_front', 'dl_back', 'rc', 'aadhar_front', 'aadhar_back', 'insurance', 'selfie', 'vehicle_photo'];
       if (!validTypes.includes(docType)) return res.status(400).json({ message: "Invalid docType" });
       await rawDb.execute(rawSql`
+        CREATE TABLE IF NOT EXISTS driver_documents (
+          id SERIAL PRIMARY KEY,
+          driver_id UUID,
+          doc_type VARCHAR(50),
+          file_url TEXT,
+          status VARCHAR(20) DEFAULT 'pending',
+          expiry_date TEXT,
+          admin_note TEXT,
+          reviewed_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ DEFAULT now(),
+          updated_at TIMESTAMPTZ DEFAULT now(),
+          UNIQUE(driver_id, doc_type)
+        )
+      `).catch(dbCatch("db"));
+      await rawDb.execute(rawSql`ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS expiry_date TEXT`).catch(dbCatch("db"));
+      await rawDb.execute(rawSql`ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS admin_note TEXT`).catch(dbCatch("db"));
+      await rawDb.execute(rawSql`ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ`).catch(dbCatch("db"));
+      await rawDb.execute(rawSql`
         INSERT INTO driver_documents (driver_id, doc_type, file_url, status, expiry_date, created_at, updated_at)
         VALUES (${user.id}::uuid, ${docType}, ${imageData}, 'pending', ${expiryDate || null}, now(), now())
         ON CONFLICT (driver_id, doc_type) DO UPDATE SET file_url=${imageData}, status='pending', expiry_date=${expiryDate || null}, updated_at=now()
@@ -14892,9 +14910,43 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         WHERE id = ${user.id}::uuid
       `);
       if (vehicleType) {
-        await rawDb.execute(rawSql`
-          UPDATE driver_details SET vehicle_type=${vehicleType}, updated_at=now() WHERE user_id=${user.id}::uuid
-        `).catch(dbCatch("db"));
+        const categoryMatch = await rawDb.execute(rawSql`
+          SELECT id
+          FROM vehicle_categories
+          WHERE LOWER(COALESCE(vehicle_type, '')) = LOWER(${vehicleType})
+             OR LOWER(COALESCE(type, '')) = LOWER(${vehicleType})
+             OR LOWER(COALESCE(name, '')) = LOWER(${vehicleType})
+          ORDER BY
+            CASE
+              WHEN LOWER(COALESCE(vehicle_type, '')) = LOWER(${vehicleType}) THEN 0
+              WHEN LOWER(COALESCE(type, '')) = LOWER(${vehicleType}) THEN 1
+              ELSE 2
+            END,
+            created_at ASC NULLS LAST
+          LIMIT 1
+        `).catch(() => ({ rows: [] as any[] }));
+        const vehicleCategoryId = (categoryMatch.rows[0] as any)?.id || null;
+        const existingDriverDetails = await rawDb.execute(rawSql`
+          SELECT user_id FROM driver_details WHERE user_id=${user.id}::uuid LIMIT 1
+        `).catch(() => ({ rows: [] as any[] }));
+        if (!existingDriverDetails.rows.length) {
+          await rawDb.execute(rawSql`
+            INSERT INTO driver_details (
+              user_id, vehicle_type, vehicle_category_id, availability_status, is_online, total_trips, avg_rating, updated_at
+            )
+            VALUES (
+              ${user.id}::uuid, ${vehicleType}, ${vehicleCategoryId}::uuid, 'offline', false, 0, 5.0, now()
+            )
+          `).catch(dbCatch("db"));
+        } else {
+          await rawDb.execute(rawSql`
+            UPDATE driver_details
+            SET vehicle_type=${vehicleType},
+                vehicle_category_id=COALESCE(${vehicleCategoryId}::uuid, vehicle_category_id),
+                updated_at=now()
+            WHERE user_id=${user.id}::uuid
+          `).catch(dbCatch("db"));
+        }
       }
       res.json({ success: true, message: "Profile updated" });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
