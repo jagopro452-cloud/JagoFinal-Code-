@@ -2594,8 +2594,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const { pool: dbPool } = await import("./db");
       await dbPool.query("SELECT 1");
-      const { presenceHealthy, getOnlineDriverCount } = await import("./presence");
-      const redisOk = await presenceHealthy();
+      const { checkRedis, getOnlineDriverCount } = await import("./presence");
+      const redisHealth = await checkRedis();
+      const redisOk = redisHealth.status === "ok";
       const onlineDrivers = redisOk ? await getOnlineDriverCount() : null;
 
       // Live counters — run in parallel, each isolated so one failure doesn't block the rest
@@ -2625,7 +2626,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json({
         status: "ok",
         db: "connected",
-        redis: redisOk ? "connected" : "unavailable",
+        redis: redisHealth.status,
         metrics: {
           onlineDrivers,
           activeRides,

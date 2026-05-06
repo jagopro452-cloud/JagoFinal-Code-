@@ -21,6 +21,7 @@ const PRESENCE_TTL_SEC = 35;
 const GEO_KEY = "driver:geo";
 
 let redis: IORedis | null = null;
+let redisConnectPromise: Promise<IORedis | null> | null = null;
 
 function getRedis(): IORedis | null {
   if (redis) return redis;
@@ -37,6 +38,46 @@ function getRedis(): IORedis | null {
     return redis;
   } catch {
     return null;
+  }
+}
+
+async function connectRedis(): Promise<IORedis | null> {
+  const r = getRedis();
+  if (!r) return null;
+  if (r.status === "ready") return r;
+  if (redisConnectPromise) return redisConnectPromise;
+
+  redisConnectPromise = (async () => {
+    try {
+      if (r.status === "wait") {
+        await r.connect();
+      }
+      await r.ping();
+      return r;
+    } catch {
+      return null;
+    } finally {
+      redisConnectPromise = null;
+    }
+  })();
+
+  return redisConnectPromise;
+}
+
+export async function checkRedis(): Promise<{ status: "ok" | "down" | "not_configured"; error?: string | null }> {
+  const r = await connectRedis();
+  if (!r) {
+    return {
+      status: process.env.REDIS_URL ? "down" : "not_configured",
+      error: process.env.REDIS_URL ? "ping_failed" : "REDIS_URL not configured",
+    };
+  }
+
+  try {
+    await r.ping();
+    return { status: "ok" };
+  } catch (error: any) {
+    return { status: "down", error: error?.message || "ping_failed" };
   }
 }
 
@@ -134,7 +175,7 @@ export async function getNearbyDriverIds(
 
 /** How many drivers are currently online (Redis count, best-effort). */
 export async function getOnlineDriverCount(): Promise<number | null> {
-  const r = getRedis();
+  const r = await connectRedis();
   if (!r) return null;
   try {
     return await r.zcard(GEO_KEY);
@@ -145,12 +186,6 @@ export async function getOnlineDriverCount(): Promise<number | null> {
 
 /** Health check for presence layer. */
 export async function presenceHealthy(): Promise<boolean> {
-  const r = getRedis();
-  if (!r) return false;
-  try {
-    await r.ping();
-    return true;
-  } catch {
-    return false;
-  }
+  const health = await checkRedis();
+  return health.status === "ok";
 }

@@ -18,8 +18,9 @@ import { parseEnv, validateProductionReadiness } from "./config/env";
 import { makeErrorId, sendAlert } from "./observability";
 import { recordRequest, recordError } from "./metrics";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
-import { db as drizzleDb } from "./db";
+import { db as drizzleDb, pool as dbPool } from "./db";
 import path from "path";
+import fs from "node:fs/promises";
 
 try {
   const env = parseEnv();
@@ -88,6 +89,147 @@ export function log(message: string, source = "express") {
   });
 
   console.log(`${formattedTime} [${source}] ${message}`);
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForDependencies() {
+  const requireRedis = Boolean(process.env.REDIS_URL);
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= 20; attempt++) {
+    try {
+      await dbPool.query("SELECT 1");
+      if (requireRedis) {
+        const { checkRedis } = await import("./presence");
+        const redisHealth = await checkRedis();
+        if (redisHealth.status !== "ok") {
+          throw new Error(redisHealth.error || `redis_${redisHealth.status}`);
+        }
+      }
+      return;
+    } catch (error: any) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      log(`[startup] waiting for dependencies (${attempt}/20): ${lastError.message}`);
+      await sleep(1000);
+    }
+  }
+
+  throw lastError || new Error("dependency_check_failed");
+}
+
+async function loadRuntimeConfigFromDb() {
+  const settingsRes = await dbPool.query(
+    "SELECT key_name, value FROM business_settings WHERE key_name = ANY($1::text[])",
+    [[
+      "razorpay_key_id",
+      "razorpay_key_secret",
+      "razorpay_webhook_secret",
+      "fast2sms_api_key",
+      "two_factor_api_key",
+      "google_maps_key",
+      "twilio_account_sid",
+      "twilio_auth_token",
+      "twilio_phone_number",
+      "anthropic_api_key",
+    ]]
+  );
+
+  const ENV_MAP: Record<string, string> = {
+    razorpay_key_id: "RAZORPAY_KEY_ID",
+    razorpay_key_secret: "RAZORPAY_KEY_SECRET",
+    razorpay_webhook_secret: "RAZORPAY_WEBHOOK_SECRET",
+    fast2sms_api_key: "FAST2SMS_API_KEY",
+    two_factor_api_key: "TWO_FACTOR_API_KEY",
+    google_maps_key: "GOOGLE_MAPS_API_KEY",
+    twilio_account_sid: "TWILIO_ACCOUNT_SID",
+    twilio_auth_token: "TWILIO_AUTH_TOKEN",
+    twilio_phone_number: "TWILIO_PHONE_NUMBER",
+    anthropic_api_key: "ANTHROPIC_API_KEY",
+  };
+
+  for (const row of settingsRes.rows as any[]) {
+    const envKey = ENV_MAP[row.key_name];
+    if (envKey && !process.env[envKey] && row.value?.trim()) {
+      process.env[envKey] = row.value.trim();
+      log(`[config] Loaded ${envKey} from DB settings`);
+    }
+  }
+
+  log("[config] DB settings loaded into runtime config");
+}
+
+async function setupSocketRedisAdapter() {
+  try {
+    const { createAdapter } = await import("@socket.io/redis-adapter");
+    const { default: IORedis } = await import("ioredis");
+    const redisUrl = process.env.REDIS_URL || "redis://localhost:6379";
+    const pubClient = new IORedis(redisUrl, {
+      lazyConnect: true,
+      enableOfflineQueue: false,
+      maxRetriesPerRequest: 0,
+      retryStrategy: () => null,
+    });
+    const subClient = pubClient.duplicate();
+    pubClient.on("error", () => { });
+    subClient.on("error", () => { });
+    const { io: socketIo } = await import("./socket");
+
+    await Promise.all([
+      new Promise<void>((resolve, reject) => { pubClient.once("ready", resolve); pubClient.once("error", reject); pubClient.connect().catch(reject); }),
+      new Promise<void>((resolve, reject) => { subClient.once("ready", resolve); subClient.once("error", reject); subClient.connect().catch(reject); }),
+    ]);
+
+    socketIo.adapter(createAdapter(pubClient, subClient));
+    log("[Socket.IO] Redis adapter connected");
+  } catch (error: any) {
+    log(`[Socket.IO] Redis unavailable, using in-memory adapter: ${error.message}`);
+  }
+}
+
+async function applyProductionHardeningMigration() {
+  const migrationName = "001_production_hardening.sql";
+  const migrationCandidates = [
+    path.join(__dirname, "migrations", migrationName),
+    path.join(process.cwd(), "server", "migrations", migrationName),
+    path.join(process.cwd(), "migrations", migrationName),
+  ];
+
+  await dbPool.query(`
+    CREATE TABLE IF NOT EXISTS migrations (
+      name TEXT PRIMARY KEY,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  const existing = await dbPool.query("SELECT 1 FROM migrations WHERE name = $1 LIMIT 1", [migrationName]);
+  if (existing.rowCount) {
+    log(`[migration] ${migrationName} already marked applied`);
+    return;
+  }
+
+  let migrationSql: string | null = null;
+  for (const candidate of migrationCandidates) {
+    try {
+      migrationSql = await fs.readFile(candidate, "utf8");
+      break;
+    } catch {
+      // Try next candidate path.
+    }
+  }
+
+  if (!migrationSql) {
+    throw new Error(`Missing migration file: ${migrationName}`);
+  }
+
+  await dbPool.query(migrationSql);
+  await dbPool.query(
+    "INSERT INTO migrations (name, applied_at) VALUES ($1, NOW()) ON CONFLICT (name) DO NOTHING",
+    [migrationName]
+  );
+  log(`[migration] ${migrationName} applied`);
 }
 
 // Security headers
@@ -205,6 +347,21 @@ httpServer.listen(port, "0.0.0.0", () => {
     return res.status(status).json({ message: isProd && status >= 500 ? `An internal error occurred. Reference: ${errorId}` : (err.message || "Internal Server Error"), errorId });
   });
 
+  try {
+    await waitForDependencies();
+    log("[startup] Dependencies ready");
+  } catch (e: any) {
+    bootstrapError = `dependency_check_failed:${e.message}`;
+    console.error("[startup] Dependency check failed:", e.message);
+    sendAlert({
+      level: "critical",
+      source: "startup",
+      message: "Dependency check failed during boot",
+      details: String(e.message || e),
+    }).catch(() => { });
+    return;
+  }
+
   // ─── STEP 2: Register routes (non-fatal if fails) ───
   try {
     log("[server] Registering API routes...");
@@ -252,93 +409,28 @@ httpServer.listen(port, "0.0.0.0", () => {
   }, 3000);
 
   // ─── BACKGROUND INITIALIZATION (non-blocking) ───
+  setupSocket(httpServer);
 
-  // Load API keys from business_settings DB (non-blocking)
   (async () => {
     try {
-      const { pool: dbPool } = await import("./db");
-      const settingsRes = await dbPool.query(
-        "SELECT key_name, value FROM business_settings WHERE key_name = ANY($1::text[])",
-        [[
-          "razorpay_key_id",
-          "razorpay_key_secret",
-          "razorpay_webhook_secret",
-          "fast2sms_api_key",
-          "two_factor_api_key",
-          "google_maps_key",
-          "twilio_account_sid",
-          "twilio_auth_token",
-          "twilio_phone_number",
-          "anthropic_api_key",
-        ]]
-      );
-      const ENV_MAP: Record<string, string> = {
-        razorpay_key_id: "RAZORPAY_KEY_ID",
-        razorpay_key_secret: "RAZORPAY_KEY_SECRET",
-        razorpay_webhook_secret: "RAZORPAY_WEBHOOK_SECRET",
-        fast2sms_api_key: "FAST2SMS_API_KEY",
-        two_factor_api_key: "TWO_FACTOR_API_KEY",
-        google_maps_key: "GOOGLE_MAPS_API_KEY",
-        twilio_account_sid: "TWILIO_ACCOUNT_SID",
-        twilio_auth_token: "TWILIO_AUTH_TOKEN",
-        twilio_phone_number: "TWILIO_PHONE_NUMBER",
-        anthropic_api_key: "ANTHROPIC_API_KEY",
-      };
-      for (const row of settingsRes.rows as any[]) {
-        const envKey = ENV_MAP[row.key_name];
-        if (envKey && !process.env[envKey] && row.value?.trim()) {
-          process.env[envKey] = row.value.trim();
-          log(`[config] Loaded ${envKey} from DB settings`);
-        }
-      }
-      log("[config] DB settings loaded into runtime config");
+      await loadRuntimeConfigFromDb();
     } catch (e: any) {
       log(`[config] Could not load DB settings (non-fatal): ${e.message}`);
     }
   })();
 
-  // Setup Socket.IO with Redis adapter (non-blocking)
-  try {
-    setupSocket(httpServer);
-  } catch (e: any) {
-    console.error("[socket] setupSocket failed (non-fatal):", e.message);
-  }
   (async () => {
     try {
-      const { createAdapter } = await import("@socket.io/redis-adapter");
-      const { default: IORedis } = await import("ioredis");
-      const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
-      const pubClient = new IORedis(REDIS_URL, { lazyConnect: true, enableOfflineQueue: false, maxRetriesPerRequest: 0, retryStrategy: () => null });
-      const subClient = pubClient.duplicate();
-      // Prevent unhandled error events from crashing / spamming logs
-      pubClient.on("error", () => { });
-      subClient.on("error", () => { });
-      const { io: socketIo } = await import("./socket");
-      Promise.all([
-        new Promise<void>((res, rej) => { pubClient.once("ready", res); pubClient.once("error", rej); }),
-        new Promise<void>((res, rej) => { subClient.once("ready", res); subClient.once("error", rej); }),
-      ]).then(() => {
-        socketIo.adapter(createAdapter(pubClient, subClient));
-        log("[Socket.IO] Redis adapter connected");
-      }).catch((err: any) => {
-        log(`[Socket.IO] Redis unavailable, using in-memory adapter: ${err.message}`);
-      });
+      await setupSocketRedisAdapter();
     } catch (err: any) {
-      log(`[Socket.IO] Redis adapter package not available, using in-memory adapter: ${err.message}`);
+      log(`[Socket.IO] Redis adapter initialization failed: ${err.message}`);
     }
   })();
 
   // ─── DB MIGRATION: production_hardening indexes + constraints ───
   (async () => {
     try {
-      const { pool: dbPool } = await import("./db");
-      const fs = await import("fs");
-      const path2 = await import("path");
-      const __dirname2 = path2.dirname(new URL(import.meta.url).pathname);
-      const migrationPath = path2.join(__dirname2, "migrations", "001_production_hardening.sql");
-      const sql = fs.readFileSync(migrationPath, "utf-8");
-      await dbPool.query(sql);
-      log("[migration] 001_production_hardening applied");
+      await applyProductionHardeningMigration();
     } catch (e: any) {
       log(`[migration] 001_production_hardening failed (non-fatal): ${e.message}`);
     }

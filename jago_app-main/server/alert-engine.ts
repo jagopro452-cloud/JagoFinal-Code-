@@ -28,6 +28,7 @@ import { db as rawDb } from "./db";
 import { sql as rawSql } from "drizzle-orm";
 import { getApiErrorStats } from "./metrics";
 import { sendOpsAlert } from "./observability";
+import { checkRedis } from "./presence";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -980,20 +981,8 @@ export async function getDashboardMetrics(forceRefresh = false): Promise<Dashboa
     socketConnections = io?.sockets?.sockets?.size ?? 0;
   } catch { /* not yet initialised */ }
 
-  const redisHealthy = await (async () => {
-    try {
-      const { default: IORedis } = await import("ioredis");
-      const r = new IORedis(process.env.REDIS_URL || "redis://localhost:6379", {
-        lazyConnect: true, enableOfflineQueue: false, maxRetriesPerRequest: 0,
-        retryStrategy: () => null, connectTimeout: 2000,
-      });
-      r.on("error", () => { });
-      await r.connect();
-      await r.ping();
-      r.disconnect();
-      return true;
-    } catch { return false; }
-  })();
+  const redisHealth = await checkRedis();
+  const redisHealthy = redisHealth.status === "ok";
 
   const metrics: DashboardMetrics = {
     otpFailLast1h:       otpFail,

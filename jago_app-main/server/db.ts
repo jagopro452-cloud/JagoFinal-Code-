@@ -40,14 +40,14 @@ const normalizedDatabaseUrl = normalizeDatabaseUrl(process.env.DATABASE_URL || "
 
 // Neon serverless needs enough connections to handle concurrent request bursts.
 // 10 was too low — production peaks can exhaust the pool causing queue buildup.
-const maxConnections = isProduction ? 25 : 20;
+const maxConnections = Number(process.env.DB_POOL_MAX || (isProduction ? "10" : "10"));
 
 export const pool = new Pool({
   connectionString: normalizedDatabaseUrl,
   ssl: isLocalDb ? false : { rejectUnauthorized: false },
   max: maxConnections,
-  idleTimeoutMillis: 10000,
-  connectionTimeoutMillis: 5000,  // Fail fast instead of hanging (was 10000ms)
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
   allowExitOnIdle: false,
   application_name: 'jago-api',   // For debugging in pg_stat_statements
 });
