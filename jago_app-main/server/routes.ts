@@ -538,6 +538,54 @@ async function logAdminAction(action: string, entityType: string, entityId?: str
   `).catch(dbCatch("db"));
 }
 
+let systemLogsPayloadColumnPromise: Promise<"details" | "data"> | null = null;
+
+async function getSystemLogsPayloadColumn(): Promise<"details" | "data"> {
+  if (!systemLogsPayloadColumnPromise) {
+    systemLogsPayloadColumnPromise = rawDb.execute(rawSql`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'system_logs'
+        AND column_name IN ('details', 'data')
+      ORDER BY CASE WHEN column_name = 'details' THEN 0 ELSE 1 END
+      LIMIT 1
+    `)
+      .then((result) => {
+        const column = String((result.rows[0] as any)?.column_name || "").toLowerCase();
+        return column === "details" ? "details" : "data";
+      })
+      .catch(() => "data");
+  }
+  return systemLogsPayloadColumnPromise;
+}
+
+async function getRecentAlertEngineActions() {
+  const payloadColumn = await getSystemLogsPayloadColumn();
+  const payloadExpr = payloadColumn === "details" ? "details" : "data AS details";
+  const rows = await rawDb.execute(rawSql.raw(`
+    SELECT tag, message, ${payloadExpr}, created_at
+    FROM system_logs
+    WHERE tag IN ('AUTO_ACTION','MANUAL_ACTION','SHADOW_ACTION','CONFIG_RELOAD','ACTION_SUPPRESSED_REDIS_DOWN')
+    ORDER BY created_at DESC
+    LIMIT 10
+  `));
+  return rows.rows;
+}
+
+async function getAlertEngineRuleHistory(ruleId: string) {
+  const payloadColumn = await getSystemLogsPayloadColumn();
+  const rows = await rawDb.execute(rawSql`
+    SELECT tag, message, ${rawSql.raw(payloadColumn === "details" ? "details" : "data AS details")}, created_at
+    FROM system_logs
+    WHERE tag IN ('ALERT_WARNING','ALERT_CRITICAL','ALERT_RESOLVED','AUTO_ACTION','ACTION_SUPPRESSED')
+      AND ${rawSql.raw(payloadColumn)}->>'rule' = ${ruleId}
+    ORDER BY created_at DESC
+    LIMIT 10
+  `);
+  return rows.rows;
+}
+
 async function emitWalletUpdated(userId: string, reason: string, extra: Record<string, any> = {}) {
   if (!userId) return;
   const walletR = await rawDb.execute(rawSql`
@@ -4156,7 +4204,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const body        = req.body ?? {};
       const reason      = typeof body.reason === "string" ? body.reason.slice(0, 200) : undefined;
       const force       = body.force === true;
-      const admin       = (req as any).admin ?? {};
+      const admin       = (req as any).adminUser ?? {};
       const requestedBy = admin.email ?? admin.name ?? "admin";
       // RBAC: force requires admin role (not operator/viewer)
       if (force && admin.role === "operator")
@@ -4187,7 +4235,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Body: { version: string, reason?: string } — admin role only
   app.post("/api/admin/alert-engine/config/rollback", requireAdminAuth, (req, res) => {
     try {
-      const admin = (req as any).admin ?? {};
+      const admin = (req as any).adminUser ?? {};
       if (admin.role === "operator")
         return res.status(403).json({ message: "Rollback requires admin role" });
       const { version, reason } = req.body ?? {};
@@ -4208,13 +4256,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // GET /api/admin/alert-engine/recent-actions — last 10 AUTO_ACTION / MANUAL_ACTION / CONFIG_RELOAD entries
   app.get("/api/admin/alert-engine/recent-actions", requireAdminAuth, async (_req, res) => {
     try {
-      const rows = await db.execute(sql`
-        SELECT tag, message, details, created_at
-        FROM system_logs
-        WHERE tag IN ('AUTO_ACTION','MANUAL_ACTION','SHADOW_ACTION','CONFIG_RELOAD','ACTION_SUPPRESSED_REDIS_DOWN')
-        ORDER BY created_at DESC LIMIT 10
-      `);
-      res.json(rows.rows);
+      res.json(await getRecentAlertEngineActions());
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -4222,14 +4264,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/admin/alert-engine/rule-history/:ruleId", requireAdminAuth, async (req, res) => {
     try {
       const ruleId = req.params.ruleId;
-      const rows = await db.execute(sql`
-        SELECT tag, message, details, created_at
-        FROM system_logs
-        WHERE tag IN ('ALERT_WARNING','ALERT_CRITICAL','ALERT_RESOLVED','AUTO_ACTION','ACTION_SUPPRESSED')
-          AND details->>'rule' = ${ruleId}
-        ORDER BY created_at DESC LIMIT 10
-      `);
-      res.json(rows.rows);
+      res.json(await getAlertEngineRuleHistory(ruleId));
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -4242,7 +4277,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!["booking_pause", "booking_restore", "surge_restore"].includes(action))
         return res.status(400).json({ message: "action must be booking_pause | booking_restore | surge_restore" });
       const reason      = typeof body.reason === "string" ? body.reason.slice(0, 200) : undefined;
-      const admin       = (req as any).admin ?? {};
+      const admin       = (req as any).adminUser ?? {};
       const requestedBy = admin.email ?? admin.name ?? "admin";
       const result = await executeManualAction(
         action as "booking_pause" | "booking_restore" | "surge_restore",
