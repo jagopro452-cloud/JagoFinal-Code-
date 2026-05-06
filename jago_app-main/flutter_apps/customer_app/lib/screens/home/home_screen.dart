@@ -1005,7 +1005,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         n.contains('all') ||
         n.contains('service'))
       return {
-        'icon': Icons.grid_view_rounded,
+        'icon': Icons.groups_rounded,
         'color': JT.primary,
         'gradient': [JT.primary, JT.primary],
       };
@@ -3702,11 +3702,14 @@ class _AllServicesSheet extends StatelessWidget {
       itemCount: items.length,
       itemBuilder: (_, i) {
         final s = items[i];
+        final imageUrl = _serviceImageUrl(s);
+        final accent = _serviceAccent(s);
+        final badge = _serviceBadge(s);
         return GestureDetector(
           onTap: () => onServiceTap(s),
           child: Container(
             decoration: BoxDecoration(
-              color: const Color(0xFFF5F8FF),
+              color: Colors.white,
               borderRadius: BorderRadius.circular(16),
               border: Border.all(color: const Color(0xFFDCE9FF)),
               boxShadow: [
@@ -3717,24 +3720,153 @@ class _AllServicesSheet extends StatelessWidget {
                 ),
               ],
             ),
-            child:
-                Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-              Text(s['emoji'] as String, style: const TextStyle(fontSize: 36)),
-              const SizedBox(height: 8),
-              Text(
-                s['name'] as String,
-                style: GoogleFonts.poppins(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w400,
-                    color: JT.textPrimary),
-                textAlign: TextAlign.center,
-                maxLines: 2,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [
+                            Colors.white,
+                            accent.withValues(alpha: 0.07),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  if (imageUrl != null)
+                    Positioned(
+                      right: -4,
+                      top: 6,
+                      child: Opacity(
+                        opacity: 0.96,
+                        child: Image.network(
+                          imageUrl,
+                          width: 72,
+                          height: 72,
+                          fit: BoxFit.contain,
+                          errorBuilder: (_, __, ___) => Icon(
+                            _iconForCategory(s['name']?.toString() ?? ''),
+                            size: 44,
+                            color: accent.withValues(alpha: 0.45),
+                          ),
+                        ),
+                      ),
+                    ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: accent.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            badge,
+                            style: GoogleFonts.poppins(
+                              fontSize: 9,
+                              fontWeight: FontWeight.w600,
+                              color: accent,
+                              letterSpacing: 0.4,
+                            ),
+                          ),
+                        ),
+                        const Spacer(),
+                        Text(
+                          s['name'] as String,
+                          style: GoogleFonts.poppins(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                            color: JT.textPrimary,
+                            height: 1.15,
+                          ),
+                          maxLines: 2,
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          _serviceSubtitle(s),
+                          style: GoogleFonts.poppins(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w400,
+                            color: JT.textSecondary,
+                            height: 1.2,
+                          ),
+                          maxLines: 2,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
-            ]),
+            ),
           ),
         );
       },
     );
+  }
+
+  static String _serviceSubtitle(Map<String, dynamic> service) {
+    final name = service['name']?.toString().toLowerCase() ?? '';
+    final type = service['type']?.toString().toLowerCase() ?? '';
+    if (name.contains('outstation') && name.contains('pool')) return 'Intercity shared seats';
+    if (name.contains('pool') || name.contains('share') || type == 'pool') return 'Lower fare shared rides';
+    if (type == 'parcel' || type == 'cargo') return 'Delivery and logistics';
+    return 'On-demand daily travel';
+  }
+
+  static String _serviceBadge(Map<String, dynamic> service) {
+    final name = service['name']?.toString().toLowerCase() ?? '';
+    final type = service['type']?.toString().toLowerCase() ?? '';
+    if (name.contains('pool') || name.contains('share') || type == 'pool') return 'SHARED';
+    if (type == 'parcel' || type == 'cargo') return 'DELIVERY';
+    return 'RIDE';
+  }
+
+  static Color _serviceAccent(Map<String, dynamic> service) {
+    final name = service['name']?.toString().toLowerCase() ?? '';
+    final type = service['type']?.toString().toLowerCase() ?? '';
+    if (name.contains('pool') || name.contains('share') || type == 'pool') {
+      return const Color(0xFF2563EB);
+    }
+    if (type == 'parcel' || type == 'cargo') {
+      return const Color(0xFF059669);
+    }
+    return JT.primary;
+  }
+
+  static String? _serviceImageUrl(Map<String, dynamic> service) {
+    final name = service['name']?.toString().toLowerCase() ?? '';
+    final type = service['type']?.toString().toLowerCase() ?? '';
+    if (name.contains('outstation') && name.contains('pool')) {
+      return 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_31_05_AM_kavp5e';
+    }
+    if (name.contains('pool') || name.contains('share') || type == 'pool') {
+      return 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_27_28_AM_w0rcnh';
+    }
+    if (type == 'parcel' || type == 'cargo') {
+      return 'https://sea-lion-app-h5luj.ondigitalocean.app/static/vehicles/parcel_bike.png';
+    }
+    if (name.contains('auto')) {
+      return 'https://sea-lion-app-h5luj.ondigitalocean.app/static/vehicles/auto.png';
+    }
+    return 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_27_28_AM_w0rcnh';
+  }
+
+  static IconData _iconForCategory(String name) {
+    final lower = name.toLowerCase();
+    if (lower.contains('outstation') && lower.contains('pool')) return Icons.route_rounded;
+    if (lower.contains('pool') || lower.contains('share')) return Icons.groups_rounded;
+    if (lower.contains('parcel') || lower.contains('cargo')) return Icons.local_shipping_rounded;
+    if (lower.contains('bike')) return Icons.electric_bike_rounded;
+    if (lower.contains('auto')) return Icons.electric_rickshaw_rounded;
+    return Icons.directions_car_filled_rounded;
   }
 
   static String _emojiForCategory(String name) {
