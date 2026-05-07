@@ -44,6 +44,8 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
   bool _mapCreated = false;
   bool _loading = false;
   bool _estimating = true;
+  bool _fareEstimateFromServer = false;
+  String? _fareEstimateWarning;
   List<Map<String, dynamic>> _allFares = [];
   int _selectedFareIndex = 0;
   List<Map<String, dynamic>> _bookableVehicleCategories = [];
@@ -543,6 +545,19 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
             Text('₹${displayMin.floor()} – ₹${displayMax.ceil()}',
               style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w400)),
             Text('estimated fare', style: TextStyle(color: Colors.white.withValues(alpha: 0.75), fontSize: 11)),
+            if (!_fareEstimateFromServer && _fareEstimateWarning != null) ...[
+              const SizedBox(height: 6),
+              Text(
+                _fareEstimateWarning!,
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.92),
+                  fontSize: 10,
+                  fontWeight: FontWeight.w400,
+                ),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
           ])),
           // Real vehicle image — emoji fallback if network fails
           Builder(builder: (_) {
@@ -746,6 +761,8 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         final fares = rawFares is List ? rawFares.whereType<Map<String, dynamic>>().toList() : null;
         if (fares != null && fares.isNotEmpty) {
           setState(() {
+            _fareEstimateFromServer = true;
+            _fareEstimateWarning = null;
             // Rule 2: Strict service separation — filter by category, hide inactive
             var filtered = fares.toList();
             final cat = widget.category ?? 'ride';
@@ -785,8 +802,12 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
               }
             }
             
-            // Final safety check: if still empty (shouldn't happen with fallbacks), use all fallbacks
-            if (_allFares.isEmpty) _allFares = _hydrateFaresWithCatalog(_buildFallbackFares());
+            // Keep the UI usable, but clearly mark when we are no longer showing live server fares.
+            if (_allFares.isEmpty) {
+              _fareEstimateFromServer = false;
+              _fareEstimateWarning = 'Live fares unavailable. Please retry if totals look outdated.';
+              _allFares = _hydrateFaresWithCatalog(_buildFallbackFares());
+            }
             if (widget.vehicleCategoryId != null || widget.vehicleCategoryName != null) {
               final targetName = (widget.vehicleCategoryName ?? '').toLowerCase();
               final idx = _allFares.indexWhere((f) {
@@ -802,21 +823,33 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         } else {
           // Server returned 200 but body wasn't as expected — use fallbacks
           if (mounted) {
-            setState(() => _allFares = _hydrateFaresWithCatalog(_buildFallbackFares()));
+            setState(() {
+              _fareEstimateFromServer = false;
+              _fareEstimateWarning = 'Live fares unavailable. Please retry if totals look outdated.';
+              _allFares = _hydrateFaresWithCatalog(_buildFallbackFares());
+            });
             _refreshSelectedVehicleSelection();
           }
         }
       } else {
         // Server returned error status — use fallbacks
         if (mounted) {
-          setState(() => _allFares = _hydrateFaresWithCatalog(_buildFallbackFares()));
+          setState(() {
+            _fareEstimateFromServer = false;
+            _fareEstimateWarning = 'Live fares unavailable. Please retry in a moment.';
+            _allFares = _hydrateFaresWithCatalog(_buildFallbackFares());
+          });
           _refreshSelectedVehicleSelection();
         }
       }
     } catch (_) {
       // Network error — show client-side estimates only on connectivity failure
       if (mounted) {
-        setState(() => _allFares = _hydrateFaresWithCatalog(_buildFallbackFares()));
+        setState(() {
+          _fareEstimateFromServer = false;
+          _fareEstimateWarning = 'Network issue while fetching fares. Showing temporary estimates.';
+          _allFares = _hydrateFaresWithCatalog(_buildFallbackFares());
+        });
         _refreshSelectedVehicleSelection();
       }
     }
@@ -1003,9 +1036,9 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
           if (err['tripId'] != null || err['orderId'] != null) {
             await _ensureNoActiveBookingBeforeContinue();
           }
-          _showSnack(err['message'] ?? 'Booking failed', error: true);
+          _showSnack(_friendlyBookingError(err is Map<String, dynamic> ? err : <String, dynamic>{}), error: true);
         } catch (_) {
-          _showSnack('Booking failed. Please try again.', error: true);
+          _showSnack('Booking could not be created. Please retry.', error: true);
         }
       }
     } catch (_) {
@@ -1372,6 +1405,38 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
       margin: const EdgeInsets.all(16),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
     ));
+  }
+
+  String _friendlyBookingError(Map<String, dynamic> err) {
+    final code = err['code']?.toString().trim().toUpperCase() ?? '';
+    final rawMessage = err['message']?.toString().trim();
+    if (code == 'BOOKING_IN_FLIGHT') {
+      return 'You already have an active booking. Complete or cancel it before booking again.';
+    }
+    if (code == 'SERVICE_INACTIVE') {
+      return rawMessage ?? 'Selected service is temporarily unavailable.';
+    }
+    if (rawMessage == null || rawMessage.isEmpty) {
+      return 'Booking could not be created. Please retry.';
+    }
+
+    final lower = rawMessage.toLowerCase();
+    if (lower.contains('no driver available') || lower.contains('no pilot available')) {
+      return 'No drivers nearby right now. Please try again in a moment.';
+    }
+    if (lower.contains('no pilot accepted') || lower.contains('no driver accepted')) {
+      return 'Drivers did not respond in time. Please retry.';
+    }
+    if (lower.contains('route') && lower.contains('unavailable')) {
+      return 'Route unavailable for the selected trip. Please adjust pickup or destination.';
+    }
+    if (lower.contains('fare configuration unavailable')) {
+      return 'Live fare service is temporarily unavailable. Please retry shortly.';
+    }
+    if (lower.contains('invalid pickup') || lower.contains('invalid destination')) {
+      return 'Pickup or destination looks invalid. Please reselect the location.';
+    }
+    return rawMessage;
   }
 
   List<LatLng> _decodePolyline(String encoded) {

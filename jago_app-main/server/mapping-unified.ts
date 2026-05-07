@@ -78,14 +78,18 @@ let apiKeyFetchedAt = 0;
 async function getGoogleMapsKey(): Promise<string | null> {
   if (cachedApiKey && Date.now() - apiKeyFetchedAt < 5 * 60 * 1000) return cachedApiKey;
   try {
+    const envKey = process.env.GOOGLE_MAPS_API_KEY?.trim();
+    if (envKey) {
+      cachedApiKey = envKey;
+      apiKeyFetchedAt = Date.now();
+      return cachedApiKey;
+    }
+
     const r = await rawDb.execute(rawSql`
       SELECT value FROM business_settings WHERE key_name IN ('google_maps_key', 'GOOGLE_MAPS_API_KEY') LIMIT 1
     `);
     const val = (r.rows[0] as any)?.value?.trim();
     if (val) { cachedApiKey = val; apiKeyFetchedAt = Date.now(); return cachedApiKey; }
-
-    const envKey = process.env.GOOGLE_MAPS_API_KEY;
-    if (envKey) { cachedApiKey = envKey; apiKeyFetchedAt = Date.now(); return cachedApiKey; }
     
     return cachedApiKey;
   } catch { return cachedApiKey; }
@@ -132,7 +136,7 @@ const etaCache = new SimpleCache<ETAResult>(3000, 2 * 60 * 1000);               
 /**
  * Search places with Google Places Autocomplete.
  * Uses session tokens to group autocomplete+select into one billing session.
- * Falls back to DB popular locations if API unavailable.
+ * Falls back to open geocoders when Google is unavailable instead of stale local filler data.
  */
 export async function searchPlaces(
   query: string,
@@ -149,8 +153,7 @@ export async function searchPlaces(
 
   const apiKey = await getGoogleMapsKey();
   if (!apiKey) {
-    // Fallback: search from popular_locations DB
-    return searchPopularLocations(query);
+    return searchNominatimFallback(query);
   }
 
   const controller = new AbortController();
@@ -173,7 +176,7 @@ export async function searchPlaces(
     });
     if (!r.ok) {
         console.error(`[mapping] Google API returned status ${r.status}`);
-        return searchPopularLocations(query);
+        return searchNominatimFallback(query);
     }
     const data = await r.json() as any;
     console.log(`[mapping] Google response status: ${data.status}`);
@@ -182,7 +185,7 @@ export async function searchPlaces(
       console.warn(`[mapping-unified:searchPlaces] Google API Status: ${data?.status}, Msg: ${data?.error_message || 'none'}. Falling back to Nominatim/Local.`);
       const nomResults = await searchNominatimFallback(query);
       if (nomResults.length > 0) return nomResults;
-      return searchPopularLocations(query);
+      return [];
     }
 
     if (!data.predictions?.length) {
@@ -253,7 +256,7 @@ async function searchNominatimFallback(query: string): Promise<PlacePrediction[]
   } catch(e) {
     console.error("[mapping-unified] Nominatim fallback failed:", e);
   }
-  return searchPopularLocations(query);
+  return [];
 }
 
 /**
@@ -297,7 +300,8 @@ export async function getPlaceDetails(
   }
 }
 
-// Fallback: search popular_locations table
+// Legacy admin-maintained fallback: still available for internal tooling, but
+// customer-facing search should prefer live geocoders to avoid stale filler results.
 async function searchPopularLocations(query: string): Promise<PlacePrediction[]> {
   try {
     const r = await rawDb.execute(rawSql`

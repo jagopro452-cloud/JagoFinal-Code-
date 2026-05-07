@@ -12398,7 +12398,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const { tripId } = req.params;
       const r = await rawDb.execute(rawSql`
         SELECT t.*,
-          d.full_name as driver_name, d.phone as driver_phone, d.rating as driver_rating, d.profile_photo as driver_photo,
+          d.full_name as driver_name, d.phone as driver_phone, d.rating as driver_rating,
+          COALESCE(d.profile_image, d.profile_photo) as driver_photo,
           COALESCE(dd.vehicle_number, d.vehicle_number) as driver_vehicle_number,
           COALESCE(dd.vehicle_model, d.vehicle_model) as driver_vehicle_model,
           vc.name as vehicle_name,
@@ -12454,7 +12455,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const r = await rawDb.execute(rawSql`
         SELECT t.*,
           d.full_name as driver_name, d.phone as driver_phone, d.rating as driver_rating,
-          d.profile_photo as driver_photo,
+          COALESCE(d.profile_image, d.profile_photo) as driver_photo,
           COALESCE(dd.vehicle_number, d.vehicle_number) as driver_vehicle_number,
           COALESCE(dd.vehicle_model, d.vehicle_model) as driver_vehicle_model,
           COALESCE(dl.lat, d.current_lat) as driver_lat,
@@ -12527,7 +12528,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         rawDb.execute(rawSql`
           SELECT t.*,
             d.full_name as driver_name, d.phone as driver_phone, d.rating as driver_rating,
-            d.profile_photo as driver_photo,
+            COALESCE(d.profile_image, d.profile_photo) as driver_photo,
             COALESCE(dd.vehicle_number, d.vehicle_number) as driver_vehicle_number,
             COALESCE(dd.vehicle_model, d.vehicle_model) as driver_vehicle_model,
             COALESCE(dl.lat, d.current_lat) as driver_lat,
@@ -12911,7 +12912,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const customer = (req as any).currentUser;
       const { limit = 20, offset = 0 } = req.query;
       const r = await rawDb.execute(rawSql`
-        SELECT t.*, d.full_name as driver_name, d.phone as driver_phone, d.profile_photo as driver_photo,
+        SELECT t.*, d.full_name as driver_name, d.phone as driver_phone, COALESCE(d.profile_image, d.profile_photo) as driver_photo,
           vc.name as vehicle_name
         FROM trip_requests t
         LEFT JOIN users d ON d.id = t.driver_id
@@ -12933,7 +12934,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const r = await rawDb.execute(rawSql`
         SELECT t.*,
           d.full_name as driver_name, d.phone as driver_phone,
-          d.profile_photo as driver_photo, d.rating as driver_rating,
+          COALESCE(d.profile_image, d.profile_photo) as driver_photo, d.rating as driver_rating,
           vc.name as vehicle_name, vc.type as vehicle_type, vc.icon as vehicle_icon,
           d.vehicle_number, d.vehicle_model, d.vehicle_color
         FROM trip_requests t
