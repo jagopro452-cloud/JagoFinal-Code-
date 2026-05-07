@@ -645,24 +645,48 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     _razorpay.on(Razorpay.EVENT_PAYMENT_SUCCESS, _handleRazorpaySuccess);
     _razorpay.on(Razorpay.EVENT_PAYMENT_ERROR, _handleRazorpayError);
     _razorpay.on(Razorpay.EVENT_EXTERNAL_WALLET, _handleExternalWallet);
-    _loadBookableVehicleCategories();
-    _estimateFare();
+    _bootstrapBookingFlow();
     _fetchWallet();
     _fetchRoutePolyline();
+  }
+
+  Future<void> _bootstrapBookingFlow() async {
+    await _loadBookableVehicleCategories();
+    await _estimateFare();
   }
 
   Future<void> _loadBookableVehicleCategories() async {
     try {
       final headers = await AuthService.getHeaders();
-      final res = await http
-          .get(Uri.parse(ApiConfig.customerHomeData), headers: headers)
-          .timeout(const Duration(seconds: 10));
-      if (res.statusCode != 200 || !mounted) return;
-      final data = jsonDecode(res.body) as Map<String, dynamic>;
-      final categories =
-          (data['vehicleCategories'] as List<dynamic>? ?? const [])
-              .whereType<Map<String, dynamic>>()
-              .toList();
+      List<Map<String, dynamic>> categories = const [];
+
+      try {
+        final res = await http
+            .get(Uri.parse(ApiConfig.customerHomeData), headers: headers)
+            .timeout(const Duration(seconds: 10));
+        if (res.statusCode == 200) {
+          final data = jsonDecode(res.body) as Map<String, dynamic>;
+          categories =
+              (data['vehicleCategories'] as List<dynamic>? ?? const [])
+                  .whereType<Map<String, dynamic>>()
+                  .toList();
+        }
+      } catch (_) {}
+
+      if (categories.isEmpty) {
+        final fallbackRes = await http
+            .get(Uri.parse(ApiConfig.configs), headers: headers)
+            .timeout(const Duration(seconds: 10));
+        if (fallbackRes.statusCode == 200) {
+          final data = jsonDecode(fallbackRes.body) as Map<String, dynamic>;
+          categories =
+              (data['vehicleCategories'] as List<dynamic>? ?? const [])
+                  .whereType<Map<String, dynamic>>()
+                  .toList();
+        }
+      }
+
+      if (!mounted || categories.isEmpty) return;
       setState(() {
         _bookableVehicleCategories = categories;
         _allFares = _hydrateFaresWithCatalog(_allFares);
