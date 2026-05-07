@@ -140,7 +140,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
               const SizedBox(height: 8),
               Text(
                 isSelfie
-                    ? 'Take a fresh selfie or upload a clear photo.'
+                    ? 'Take a fresh live selfie using camera.'
                     : 'Use camera or gallery for a clear upload.',
                 style: JT.body,
                 textAlign: TextAlign.center,
@@ -482,12 +482,21 @@ class _RegisterScreenState extends State<RegisterScreen> {
           final expiryDate = (entry.key == 'dl_front' || entry.key == 'dl_back') && _licenseExpiry != null
               ? DateFormat('yyyy-MM-dd').format(_licenseExpiry!)
               : null;
+          final isSelfie = entry.key == 'selfie';
           try {
-            await _uploadDocumentMultipart(
-              entry.key,
-              entry.value!,
-              expiryDate: expiryDate,
-            );
+            if (isSelfie) {
+              await _uploadDocumentBase64Fallback(
+                entry.key,
+                entry.value!,
+                expiryDate: expiryDate,
+              );
+            } else {
+              await _uploadDocumentMultipart(
+                entry.key,
+                entry.value!,
+                expiryDate: expiryDate,
+              );
+            }
           } catch (e) {
             final lower = e.toString().toLowerCase();
             final canFallback = lower.contains('temporarily unavailable') ||
@@ -495,11 +504,19 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 lower.contains('network') ||
                 lower.contains('upload failed');
             if (!canFallback) rethrow;
-            await _uploadDocumentBase64Fallback(
-              entry.key,
-              entry.value!,
-              expiryDate: expiryDate,
-            );
+            if (isSelfie) {
+              await _uploadDocumentMultipart(
+                entry.key,
+                entry.value!,
+                expiryDate: expiryDate,
+              );
+            } else {
+              await _uploadDocumentBase64Fallback(
+                entry.key,
+                entry.value!,
+                expiryDate: expiryDate,
+              );
+            }
           }
         }
       }

@@ -15288,7 +15288,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         `).catch(dbCatch("db"));
       }
       res.json({ success: true, docType, status: 'pending', message: "Document uploaded. Under review." });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+    } catch (e: any) { res.status(500).json({ message: "Image upload failed" }); }
   });
 
   // -- DRIVER: Update registration profile fields -----------------------------
