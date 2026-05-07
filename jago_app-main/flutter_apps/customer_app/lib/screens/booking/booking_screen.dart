@@ -2268,12 +2268,6 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     // (server/fallback calculates: perSeatBase + perSeatKmRate × distanceKm)
     final farePerSeat = (_fare?['estimatedFare'] ?? 0).toDouble();
     final totalFare = farePerSeat * _seatsBooked;
-    // Commission + GST breakdown (10% commission + 18% GST on commission = ~11.8% total)
-    final commissionPct = 10.0;
-    final gstOnComm = 1.8; // 18% of 10% = 1.8%
-    final commission = totalFare * commissionPct / 100;
-    final gst = totalFare * gstOnComm / 100;
-    final driverEarns = totalFare - commission - gst;
 
     const purple = Color(0xFF7C3AED);
     const green = Color(0xFF16A34A);
@@ -2373,28 +2367,6 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
                       style: GoogleFonts.outfit(fontSize: 13, color: const Color(0xFF64748B))),
                     Text('₹${totalFare.toStringAsFixed(0)}',
                       style: GoogleFonts.outfit(fontSize: 13, fontWeight: FontWeight.w700, color: const Color(0xFF1E293B))),
-                  ],
-                ),
-                const Divider(height: 16, thickness: 0.5),
-                // Commission + GST line
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text('Jago commission (10%) + GST',
-                      style: GoogleFonts.outfit(fontSize: 11, color: const Color(0xFF94A3B8))),
-                    Text('−₹${(commission + gst).toStringAsFixed(0)}',
-                      style: GoogleFonts.outfit(fontSize: 11, color: const Color(0xFFEF4444))),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                // Driver earns
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text('Driver earns',
-                      style: GoogleFonts.outfit(fontSize: 11, color: const Color(0xFF64748B))),
-                    Text('₹${driverEarns.toStringAsFixed(0)}',
-                      style: GoogleFonts.outfit(fontSize: 11, fontWeight: FontWeight.w600, color: green)),
                   ],
                 ),
                 const Divider(height: 16, thickness: 0.5),

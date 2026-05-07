@@ -326,6 +326,70 @@ class _RegisterScreenState extends State<RegisterScreen> {
     throw lastError ?? Exception('Image upload failed');
   }
 
+  Future<void> _uploadDocumentBase64Fallback(
+    String docType,
+    File file, {
+    String? expiryDate,
+  }) async {
+    final token = await AuthService.getToken();
+    if (token == null || token.isEmpty) {
+      throw Exception('Session expired. Please login again.');
+    }
+
+    if (mounted) {
+      setState(() {
+        _uploadStatusText = 'Retrying ${_docLabel(docType)} upload...';
+      });
+    }
+
+    final bytes = await file.readAsBytes();
+    if (bytes.isEmpty) {
+      throw Exception('Image upload failed');
+    }
+
+    final mimeType = _mimeTypeForFile(file.path);
+    final encoded = base64Encode(bytes);
+    final payload = 'data:$mimeType;base64,$encoded';
+
+    final response = await http.post(
+      Uri.parse('${ApiConfig.baseUrl}/api/app/driver/upload-document-base64'),
+      headers: {
+        'Authorization': 'Bearer $token',
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: jsonEncode({
+        'docType': docType,
+        'imageData': payload,
+        if (expiryDate != null && expiryDate.isNotEmpty) 'expiryDate': expiryDate,
+      }),
+    ).timeout(const Duration(seconds: 60));
+
+    if (response.statusCode == 200) {
+      return;
+    }
+
+    String message = 'Image upload failed';
+    try {
+      if ((response.headers['content-type'] ?? '').contains('application/json')) {
+        final decoded = jsonDecode(response.body);
+        if (decoded is Map && decoded['message'] != null) {
+          message = decoded['message'].toString();
+        }
+      }
+    } catch (_) {}
+    throw Exception(message);
+  }
+
+  String _mimeTypeForFile(String path) {
+    final lower = path.toLowerCase();
+    if (lower.endsWith('.png')) return 'image/png';
+    if (lower.endsWith('.webp')) return 'image/webp';
+    if (lower.endsWith('.heic')) return 'image/heic';
+    if (lower.endsWith('.heif')) return 'image/heif';
+    return 'image/jpeg';
+  }
+
   String _docLabel(String docType) {
     switch (docType) {
       case 'dl_front':
@@ -415,13 +479,28 @@ class _RegisterScreenState extends State<RegisterScreen> {
               _uploadStatusText = 'Preparing ${_docLabel(entry.key)}...';
             });
           }
-          await _uploadDocumentMultipart(
-            entry.key,
-            entry.value!,
-            expiryDate: (entry.key == 'dl_front' || entry.key == 'dl_back') && _licenseExpiry != null
-                ? DateFormat('yyyy-MM-dd').format(_licenseExpiry!)
-                : null,
-          );
+          final expiryDate = (entry.key == 'dl_front' || entry.key == 'dl_back') && _licenseExpiry != null
+              ? DateFormat('yyyy-MM-dd').format(_licenseExpiry!)
+              : null;
+          try {
+            await _uploadDocumentMultipart(
+              entry.key,
+              entry.value!,
+              expiryDate: expiryDate,
+            );
+          } catch (e) {
+            final lower = e.toString().toLowerCase();
+            final canFallback = lower.contains('temporarily unavailable') ||
+                lower.contains('timeout') ||
+                lower.contains('network') ||
+                lower.contains('upload failed');
+            if (!canFallback) rethrow;
+            await _uploadDocumentBase64Fallback(
+              entry.key,
+              entry.value!,
+              expiryDate: expiryDate,
+            );
+          }
         }
       }
 

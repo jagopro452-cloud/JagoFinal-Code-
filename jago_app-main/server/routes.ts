@@ -15249,13 +15249,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // -- DRIVER: Upload document as base64 (for Flutter) -----------------------
-  app.post("/api/app/driver/upload-document-base64", authApp, async (req, res) => {
+  app.post("/api/app/driver/upload-document-base64", authApp, requireDriver, async (req, res) => {
     try {
       const user = (req as any).currentUser;
       const { docType, imageData, expiryDate } = req.body;
       if (!docType || !imageData) return res.status(400).json({ message: "docType and imageData required" });
       const validTypes = ['dl_front', 'dl_back', 'rc', 'aadhar_front', 'aadhar_back', 'insurance', 'selfie', 'vehicle_photo'];
       if (!validTypes.includes(docType)) return res.status(400).json({ message: "Invalid docType" });
+      if (String(imageData).length < 100) {
+        return res.status(400).json({ message: "Image upload failed" });
+      }
       await rawDb.execute(rawSql`
         CREATE TABLE IF NOT EXISTS driver_documents (
           id SERIAL PRIMARY KEY,
@@ -15279,6 +15282,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         VALUES (${user.id}::uuid, ${docType}, ${imageData}, 'pending', ${expiryDate || null}, now(), now())
         ON CONFLICT (driver_id, doc_type) DO UPDATE SET file_url=${imageData}, status='pending', expiry_date=${expiryDate || null}, updated_at=now()
       `);
+      if (String(docType) === 'selfie') {
+        await rawDb.execute(rawSql`
+          UPDATE users SET selfie_image=${imageData}, updated_at=now() WHERE id=${user.id}::uuid
+        `).catch(dbCatch("db"));
+      }
       res.json({ success: true, docType, status: 'pending', message: "Document uploaded. Under review." });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
