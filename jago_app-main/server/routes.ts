@@ -230,18 +230,109 @@ const diskStorage = multer.diskStorage({
     cb(null, `${Date.now()}-${crypto.randomBytes(6).toString("hex")}${ext}`);
   },
 });
-const ALLOWED_UPLOAD_MIMETYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'application/pdf']);
+const ALLOWED_UPLOAD_MIMETYPES = new Set([
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/webp',
+  'image/heic',
+  'image/heif',
+  'application/pdf',
+]);
+const ALLOWED_UPLOAD_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif', '.pdf']);
+const VALID_DRIVER_DOC_TYPES = ['dl_front', 'dl_back', 'rc', 'aadhar_front', 'aadhar_back', 'insurance', 'selfie', 'vehicle_photo'];
+
+function isAllowedUploadFile(file: Express.Multer.File | { mimetype?: string; originalname?: string }) {
+  const ext = path.extname(file.originalname || '').toLowerCase();
+  return ALLOWED_UPLOAD_MIMETYPES.has((file.mimetype || '').toLowerCase()) || ALLOWED_UPLOAD_EXTENSIONS.has(ext);
+}
+
 const upload = multer({
   storage: diskStorage,
   limits: { fileSize: 8 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    if (ALLOWED_UPLOAD_MIMETYPES.has(file.mimetype)) {
+    if (isAllowedUploadFile(file)) {
       cb(null, true);
     } else {
-      cb(new Error('Only JPEG, PNG, WebP images and PDF files are allowed'));
+      cb(new Error('Unsupported image format'));
     }
   },
 });
+
+async function logDriverUploadEvent(details: {
+  userId?: string | null;
+  docType?: string | null;
+  status: string;
+  reason?: string | null;
+  fileName?: string | null;
+  mimeType?: string | null;
+  fileSize?: number | null;
+  durationMs?: number | null;
+  deviceModel?: string | null;
+  osVersion?: string | null;
+  networkType?: string | null;
+  responseCode?: number | null;
+}) {
+  try {
+    await rawDb.execute(rawSql`
+      CREATE TABLE IF NOT EXISTS driver_upload_logs (
+        id BIGSERIAL PRIMARY KEY,
+        user_id UUID,
+        doc_type VARCHAR(50),
+        status VARCHAR(30) NOT NULL,
+        reason TEXT,
+        file_name TEXT,
+        mime_type TEXT,
+        file_size BIGINT,
+        duration_ms INTEGER,
+        device_model TEXT,
+        os_version TEXT,
+        network_type TEXT,
+        response_code INTEGER,
+        created_at TIMESTAMPTZ DEFAULT now()
+      )
+    `).catch(dbCatch("db"));
+    await rawDb.execute(rawSql`
+      INSERT INTO driver_upload_logs (
+        user_id, doc_type, status, reason, file_name, mime_type, file_size,
+        duration_ms, device_model, os_version, network_type, response_code
+      ) VALUES (
+        ${details.userId || null}::uuid, ${details.docType || null}, ${details.status},
+        ${details.reason || null}, ${details.fileName || null}, ${details.mimeType || null},
+        ${details.fileSize || null}, ${details.durationMs || null}, ${details.deviceModel || null},
+        ${details.osVersion || null}, ${details.networkType || null}, ${details.responseCode || null}
+      )
+    `).catch(dbCatch("db"));
+  } catch (_) {}
+}
+
+const driverDocumentUpload = (fieldName: string) => (req: Request, res: Response, next: NextFunction) => {
+  upload.single(fieldName)(req, res, async (err: any) => {
+    if (!err) return next();
+    const user = (req as any).currentUser;
+    let status = 400;
+    let message = "Image upload failed";
+    if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+      message = "Image upload failed: file is too large";
+    } else if (String(err?.message || '').toLowerCase().includes('unsupported')) {
+      message = "Unsupported image format";
+    } else {
+      status = 503;
+      message = "Server temporarily unavailable";
+    }
+    await logDriverUploadEvent({
+      userId: user?.id ? String(user.id) : null,
+      docType: String((req.body as any)?.docType || ''),
+      status: 'failed',
+      reason: String(err?.message || message),
+      responseCode: status,
+      deviceModel: String(req.get('x-device-model') || ''),
+      osVersion: String(req.get('x-os-version') || ''),
+      networkType: String(req.get('x-network-type') || ''),
+    });
+    return res.status(status).json({ message });
+  });
+};
 
 function generateRefId(): string {
   return "TRP" + Math.random().toString(36).substr(2, 7).toUpperCase();
@@ -14907,32 +14998,106 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // -- DRIVER: Upload documents (DL, RC, Aadhar) ----------------------------
-  app.post("/api/app/driver/upload-document", authApp, upload.single("document"), async (req, res) => {
+  app.post("/api/app/driver/upload-document", authApp, driverDocumentUpload("document"), async (req, res) => {
     try {
       const user = (req as any).currentUser;
-      const { docType } = req.body; // dl_front, dl_back, rc, aadhar_front, aadhar_back, insurance
+      const startedAt = Date.now();
+      const { docType, expiryDate } = req.body; // dl_front, dl_back, rc, aadhar_front, aadhar_back, insurance, selfie
       const fileUrl = req.file ? `/uploads/${req.file.filename}` : null;
-      if (!fileUrl || !docType) return res.status(400).json({ message: "Document type and file required" });
+      if (!docType) return res.status(400).json({ message: "Document type required" });
+      if (!VALID_DRIVER_DOC_TYPES.includes(String(docType))) {
+        await logDriverUploadEvent({
+          userId: String(user.id),
+          docType: String(docType),
+          status: 'failed',
+          reason: 'invalid_doc_type',
+          responseCode: 400,
+        });
+        return res.status(400).json({ message: "Unsupported document type" });
+      }
+      if (!req.file || !fileUrl) {
+        await logDriverUploadEvent({
+          userId: String(user.id),
+          docType: String(docType),
+          status: 'failed',
+          reason: 'missing_file',
+          responseCode: 400,
+        });
+        return res.status(400).json({ message: "Image upload failed" });
+      }
+      if (!isAllowedUploadFile(req.file)) {
+        await fs.promises.unlink(req.file.path).catch(() => {});
+        await logDriverUploadEvent({
+          userId: String(user.id),
+          docType: String(docType),
+          status: 'failed',
+          reason: 'unsupported_image_format',
+          fileName: req.file.originalname,
+          mimeType: req.file.mimetype,
+          fileSize: req.file.size,
+          responseCode: 400,
+        });
+        return res.status(400).json({ message: "Unsupported image format" });
+      }
       await rawDb.execute(rawSql`
-        INSERT INTO driver_documents (driver_id, doc_type, file_url, status, created_at, updated_at)
-        VALUES (${user.id}::uuid, ${docType}, ${fileUrl}, 'pending', now(), now())
-        ON CONFLICT (driver_id, doc_type) DO UPDATE SET file_url=${fileUrl}, status='pending', updated_at=now()
+        INSERT INTO driver_documents (driver_id, doc_type, file_url, status, expiry_date, created_at, updated_at)
+        VALUES (${user.id}::uuid, ${docType}, ${fileUrl}, 'pending', ${expiryDate || null}, now(), now())
+        ON CONFLICT (driver_id, doc_type) DO UPDATE SET
+          file_url=${fileUrl},
+          status='pending',
+          expiry_date=COALESCE(${expiryDate || null}, driver_documents.expiry_date),
+          updated_at=now()
       `).catch(async () => {
         await rawDb.execute(rawSql`
           CREATE TABLE IF NOT EXISTS driver_documents (
             id SERIAL PRIMARY KEY,
             driver_id UUID, doc_type VARCHAR(50), file_url TEXT,
-            status VARCHAR(20) DEFAULT 'pending', created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now(),
+            status VARCHAR(20) DEFAULT 'pending', expiry_date TEXT,
+            created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now(),
             UNIQUE(driver_id, doc_type)
           )
         `);
+        await rawDb.execute(rawSql`ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS expiry_date TEXT`).catch(dbCatch("db"));
         await rawDb.execute(rawSql`
-          INSERT INTO driver_documents (driver_id, doc_type, file_url, status) VALUES (${user.id}::uuid, ${docType}, ${fileUrl}, 'pending')
-          ON CONFLICT (driver_id, doc_type) DO UPDATE SET file_url=${fileUrl}, status='pending', updated_at=now()
+          INSERT INTO driver_documents (driver_id, doc_type, file_url, status, expiry_date)
+          VALUES (${user.id}::uuid, ${docType}, ${fileUrl}, 'pending', ${expiryDate || null})
+          ON CONFLICT (driver_id, doc_type) DO UPDATE SET
+            file_url=${fileUrl}, status='pending', expiry_date=COALESCE(${expiryDate || null}, driver_documents.expiry_date), updated_at=now()
         `);
       });
+      if (String(docType) === 'selfie') {
+        await rawDb.execute(rawSql`
+          UPDATE users SET selfie_image=${fileUrl}, updated_at=now() WHERE id=${user.id}::uuid
+        `).catch(dbCatch("db"));
+      }
+      await logDriverUploadEvent({
+        userId: String(user.id),
+        docType: String(docType),
+        status: 'success',
+        fileName: req.file.originalname,
+        mimeType: req.file.mimetype,
+        fileSize: req.file.size,
+        durationMs: Date.now() - startedAt,
+        responseCode: 200,
+        deviceModel: String(req.get('x-device-model') || ''),
+        osVersion: String(req.get('x-os-version') || ''),
+        networkType: String(req.get('x-network-type') || ''),
+      });
       res.json({ success: true, docType, fileUrl, status: 'pending', message: "Document uploaded. Under review." });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+    } catch (e: any) {
+      const user = (req as any).currentUser;
+      await logDriverUploadEvent({
+        userId: user?.id ? String(user.id) : null,
+        docType: String((req.body as any)?.docType || ''),
+        status: 'failed',
+        reason: safeErrMsg(e),
+        responseCode: 500,
+        deviceModel: String(req.get('x-device-model') || ''),
+        osVersion: String(req.get('x-os-version') || ''),
+        networkType: String(req.get('x-network-type') || ''),
+      });
+      res.status(500).json({ message: "Server temporarily unavailable" });
+    }
   });
 
   // -- DRIVER: Get documents status ------------------------------------------

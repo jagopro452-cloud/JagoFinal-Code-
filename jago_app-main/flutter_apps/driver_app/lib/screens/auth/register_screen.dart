@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
@@ -21,6 +22,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final PageController _pageController = PageController();
   int _currentStep = 0;
   bool _loading = false;
+  String _uploadStatusText = '';
 
   // Step 1: Basic Info
   final _nameCtrl = TextEditingController();
@@ -155,17 +157,18 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   ImageSource.camera,
                 ),
               ),
-              ListTile(
-                leading: const Icon(Icons.photo_library, color: JT.primary),
-                title: Text(
-                  'Choose from Gallery',
-                  style: JT.bodyPrimary,
+              if (!isSelfie)
+                ListTile(
+                  leading: const Icon(Icons.photo_library, color: JT.primary),
+                  title: Text(
+                    'Choose from Gallery',
+                    style: JT.bodyPrimary,
+                  ),
+                  onTap: () => Navigator.pop(
+                    context,
+                    ImageSource.gallery,
+                  ),
                 ),
-                onTap: () => Navigator.pop(
-                  context,
-                  ImageSource.gallery,
-                ),
-              ),
               const SizedBox(height: 12),
             ],
           ),
@@ -211,9 +214,103 @@ class _RegisterScreenState extends State<RegisterScreen> {
     }
   }
 
-  Future<String?> _fileToBase64(File? file) async {
-    if (file == null) return null;
-    return base64Encode(await file.readAsBytes());
+  String _friendlyUploadError(Object error) {
+    final message = error.toString().replaceFirst('Exception: ', '').trim().toLowerCase();
+    if (message.contains('unsupported')) return 'Unsupported image format. Please take a fresh photo.';
+    if (message.contains('network') || message.contains('socket') || message.contains('connection')) {
+      return 'Network issue, please retry.';
+    }
+    if (message.contains('timeout')) return 'Server temporarily unavailable. Please retry.';
+    if (message.contains('face')) return 'Face not detected properly. Please retake your selfie.';
+    if (message.contains('upload')) return 'Image upload failed. Please retry.';
+    return 'Server temporarily unavailable. Please retry.';
+  }
+
+  Future<void> _uploadDocumentMultipart(
+    String docType,
+    File file, {
+    String? expiryDate,
+  }) async {
+    final token = await AuthService.getToken();
+    if (token == null || token.isEmpty) {
+      throw Exception('Session expired. Please login again.');
+    }
+
+    final fileName = file.path.split(Platform.pathSeparator).last;
+    final length = await file.length();
+    if (length <= 0) {
+      throw Exception('Image upload failed');
+    }
+
+    Object? lastError;
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      try {
+        if (mounted) {
+          setState(() {
+            _uploadStatusText = 'Uploading ${_docLabel(docType)} ($attempt/3)...';
+          });
+        }
+
+        final request = http.MultipartRequest(
+          'POST',
+          Uri.parse(ApiConfig.uploadDocument),
+        );
+        request.headers.addAll({
+          'Authorization': 'Bearer $token',
+          'Accept': 'application/json',
+          'User-Agent': 'JAGOPro-Driver/1.0 (Android)',
+          'x-device-model': Platform.operatingSystem,
+          'x-os-version': Platform.operatingSystemVersion,
+          'x-network-type': 'mobile_app',
+        });
+        request.fields['docType'] = docType;
+        if (expiryDate != null && expiryDate.isNotEmpty) {
+          request.fields['expiryDate'] = expiryDate;
+        }
+        request.files.add(await http.MultipartFile.fromPath(
+          'document',
+          file.path,
+          filename: fileName,
+        ));
+
+        final streamed = await request.send().timeout(const Duration(seconds: 60));
+        final response = await http.Response.fromStream(streamed);
+        if (response.statusCode == 200) {
+          return;
+        }
+
+        String message = 'Image upload failed';
+        try {
+          if ((response.headers['content-type'] ?? '').contains('application/json')) {
+            final decoded = jsonDecode(response.body);
+            if (decoded is Map && decoded['message'] != null) {
+              message = decoded['message'].toString();
+            }
+          }
+        } catch (_) {}
+        throw Exception(message);
+      } on SocketException catch (e) {
+        lastError = e;
+      } on HttpException catch (e) {
+        lastError = e;
+      } on HandshakeException catch (e) {
+        lastError = e;
+      } on TimeoutException catch (e) {
+        lastError = e;
+      } catch (e) {
+        lastError = e;
+        final lower = e.toString().toLowerCase();
+        if (!(lower.contains('network') || lower.contains('timeout') || lower.contains('temporarily unavailable'))) {
+          rethrow;
+        }
+      }
+
+      if (attempt < 3) {
+        await Future.delayed(Duration(milliseconds: 500 * attempt));
+      }
+    }
+
+    throw lastError ?? Exception('Image upload failed');
   }
 
   String _docLabel(String docType) {
@@ -300,36 +397,27 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
       for (var entry in docs.entries) {
         if (entry.value != null) {
-          final b64 = await _fileToBase64(entry.value);
-          final uploadRes = await http.post(
-            Uri.parse('${ApiConfig.baseUrl}/api/app/driver/upload-document-base64'),
-            headers: headers,
-            body: jsonEncode({
-              'docType': entry.key,
-              'imageData': b64,
-              if (entry.key == 'dl_front' || entry.key == 'dl_back')
-                'expiryDate': _licenseExpiry != null ? DateFormat('yyyy-MM-dd').format(_licenseExpiry!) : null,
-            }),
+          await _uploadDocumentMultipart(
+            entry.key,
+            entry.value!,
+            expiryDate: (entry.key == 'dl_front' || entry.key == 'dl_back') && _licenseExpiry != null
+                ? DateFormat('yyyy-MM-dd').format(_licenseExpiry!)
+                : null,
           );
-          if (uploadRes.statusCode != 200) {
-            String msg = 'Failed to upload ${_docLabel(entry.key)}';
-            try {
-              if ((uploadRes.headers['content-type'] ?? '').contains('application/json')) {
-                final decoded = jsonDecode(uploadRes.body);
-                msg = decoded['message'] ?? msg;
-              }
-            } catch (_) {}
-            throw Exception('${_docLabel(entry.key)} upload failed: $msg');
-          }
         }
       }
 
       if (!mounted) return;
       Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => const PendingVerificationScreen()), (_) => false);
     } catch (e) {
-      _showSnack(e.toString(), error: true);
+      _showSnack(_friendlyUploadError(e), error: true);
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _uploadStatusText = '';
+        });
+      }
     }
   }
 
@@ -528,10 +616,31 @@ class _RegisterScreenState extends State<RegisterScreen> {
       ),
       const SizedBox(height: 24),
       Text(
-        'Make sure your face is clearly visible without glasses or hats.',
+        'Use live camera only. Make sure your face is clearly visible without glasses or hats.',
         textAlign: TextAlign.center,
         style: JT.body,
       ),
+      if (_loading && _uploadStatusText.isNotEmpty) ...[
+        const SizedBox(height: 16),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2, color: JT.primary),
+            ),
+            const SizedBox(width: 10),
+            Flexible(
+              child: Text(
+                _uploadStatusText,
+                textAlign: TextAlign.center,
+                style: JT.body.copyWith(color: JT.primary),
+              ),
+            ),
+          ],
+        ),
+      ],
     ]);
   }
 
