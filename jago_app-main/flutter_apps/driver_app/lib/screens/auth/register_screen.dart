@@ -216,6 +216,16 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   String _friendlyUploadError(Object error) {
     final message = error.toString().replaceFirst('Exception: ', '').trim().toLowerCase();
+    if (message.contains('session expired') || message.contains('login again')) {
+      return 'Session expired. Please login again.';
+    }
+    if (message.contains('failed to update registration details') || message.contains('failed to update profile')) {
+      return 'Could not save your registration details. Please check all fields and retry.';
+    }
+    if (message.contains('full name')) return 'Please enter your full name correctly.';
+    if (message.contains('license number')) return 'Please enter your license number correctly.';
+    if (message.contains('license expiry')) return 'Please select a valid license expiry date.';
+    if (message.contains('vehicle type')) return 'Please select your vehicle type.';
     if (message.contains('unsupported')) return 'Unsupported image format. Please take a fresh photo.';
     if (message.contains('network') || message.contains('socket') || message.contains('connection')) {
       return 'Network issue, please retry.';
@@ -288,6 +298,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
             }
           }
         } catch (_) {}
+        if (docType == 'selfie' && message.toLowerCase().contains('image upload failed')) {
+          throw Exception('Selfie upload failed. Please retake your selfie and retry.');
+        }
         throw Exception(message);
       } on SocketException catch (e) {
         lastError = e;
@@ -397,6 +410,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
       for (var entry in docs.entries) {
         if (entry.value != null) {
+          if (mounted) {
+            setState(() {
+              _uploadStatusText = 'Preparing ${_docLabel(entry.key)}...';
+            });
+          }
           await _uploadDocumentMultipart(
             entry.key,
             entry.value!,

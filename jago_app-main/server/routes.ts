@@ -578,6 +578,14 @@ function shortLocationName(value: any): string {
   return raw.split(",")[0].trim();
 }
 
+function normalizeIsoDateOnly(value: any): string | null {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString().slice(0, 10);
+}
+
 type GeocodeHit = { lat: number; lng: number; address: string };
 const geocodeCache = new Map<string, { value: GeocodeHit; expiresAt: number }>();
 const GEOCODE_TTL_MS = 5 * 60 * 1000;
@@ -15129,7 +15137,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // -- DRIVER: Upload documents (DL, RC, Aadhar) ----------------------------
-  app.post("/api/app/driver/upload-document", authApp, driverDocumentUpload("document"), async (req, res) => {
+  app.post("/api/app/driver/upload-document", authApp, requireDriver, driverDocumentUpload("document"), async (req, res) => {
     try {
       const user = (req as any).currentUser;
       const startedAt = Date.now();
@@ -15227,12 +15235,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         osVersion: String(req.get('x-os-version') || ''),
         networkType: String(req.get('x-network-type') || ''),
       });
-      res.status(500).json({ message: "Server temporarily unavailable" });
+      res.status(500).json({ message: "Image upload failed" });
     }
   });
 
   // -- DRIVER: Get documents status ------------------------------------------
-  app.get("/api/app/driver/documents", authApp, async (req, res) => {
+  app.get("/api/app/driver/documents", authApp, requireDriver, async (req, res) => {
     try {
       const user = (req as any).currentUser;
       const r = await rawDb.execute(rawSql`SELECT * FROM driver_documents WHERE driver_id=${user.id}::uuid`).catch(() => ({ rows: [] }));
@@ -15276,16 +15284,37 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // -- DRIVER: Update registration profile fields -----------------------------
-  app.patch("/api/app/driver/update-registration", authApp, async (req, res) => {
+  app.patch("/api/app/driver/update-registration", authApp, requireDriver, async (req, res) => {
     try {
       const user = (req as any).currentUser;
       // Accept both dateOfBirth (camelCase) and dob (Flutter sends 'dob')
-      const dateOfBirth = req.body.dateOfBirth || req.body.dob || null;
+      const dateOfBirth = normalizeIsoDateOnly(req.body.dateOfBirth || req.body.dob || null);
       const { city, vehicleBrand, vehicleColor, vehicleYear, licenseNumber, licenseExpiry,
         vehicleNumber, vehicleModel, vehicleType, selfieImage } = req.body;
       // Accept both 'name' (Flutter) and 'fullName' for driver full name update
       const fullName = req.body.fullName || req.body.name || null;
       const password = req.body.password || null;
+      const safeLicenseExpiry = normalizeIsoDateOnly(licenseExpiry || null);
+      const parsedVehicleYear = Number.parseInt(String(vehicleYear ?? "").trim(), 10);
+      const safeVehicleYear = Number.isFinite(parsedVehicleYear) ? parsedVehicleYear : null;
+      if (!fullName || String(fullName).trim().length < 2) {
+        return res.status(400).json({ success: false, message: "Please enter your full name" });
+      }
+      if (!licenseNumber || String(licenseNumber).trim().length === 0) {
+        return res.status(400).json({ success: false, message: "Please enter your license number" });
+      }
+      if (!safeLicenseExpiry) {
+        return res.status(400).json({ success: false, message: "Please select a valid license expiry date" });
+      }
+      if (!vehicleType || !String(vehicleType).trim()) {
+        return res.status(400).json({ success: false, message: "Please select your vehicle type" });
+      }
+      await rawDb.execute(rawSql`ALTER TABLE users ADD COLUMN IF NOT EXISTS license_expiry DATE`).catch(dbCatch("db"));
+      await rawDb.execute(rawSql`ALTER TABLE users ADD COLUMN IF NOT EXISTS vehicle_brand VARCHAR(120)`).catch(dbCatch("db"));
+      await rawDb.execute(rawSql`ALTER TABLE users ADD COLUMN IF NOT EXISTS vehicle_color VARCHAR(60)`).catch(dbCatch("db"));
+      await rawDb.execute(rawSql`ALTER TABLE users ADD COLUMN IF NOT EXISTS vehicle_year INTEGER`).catch(dbCatch("db"));
+      await rawDb.execute(rawSql`ALTER TABLE users ADD COLUMN IF NOT EXISTS date_of_birth DATE`).catch(dbCatch("db"));
+      await rawDb.execute(rawSql`ALTER TABLE users ADD COLUMN IF NOT EXISTS selfie_image TEXT`).catch(dbCatch("db"));
       await ensureDriverDetailsRow(String(user.id), req.body.vehicleType || null);
       let passwordHash: string | null = null;
       if (password && typeof password === 'string' && password.length >= 6) {
@@ -15298,9 +15327,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           city = COALESCE(${city || null}, city),
           vehicle_brand = COALESCE(${vehicleBrand || null}, vehicle_brand),
           vehicle_color = COALESCE(${vehicleColor || null}, vehicle_color),
-          vehicle_year = COALESCE(${vehicleYear || null}, vehicle_year),
+          vehicle_year = COALESCE(${safeVehicleYear ?? null}, vehicle_year),
           license_number = COALESCE(${licenseNumber || null}, license_number),
-          license_expiry = COALESCE(${licenseExpiry || null}, license_expiry),
+          license_expiry = COALESCE(${safeLicenseExpiry || null}, license_expiry),
           vehicle_number = COALESCE(${vehicleNumber || null}, vehicle_number),
           vehicle_model = COALESCE(${vehicleModel || null}, vehicle_model),
           selfie_image = COALESCE(${selfieImage || null}, selfie_image),
@@ -15312,11 +15341,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         await ensureDriverDetailsRow(String(user.id), vehicleType);
       }
       res.json({ success: true, message: "Profile updated" });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+    } catch (e: any) { res.status(500).json({ success: false, message: "Failed to update registration details" }); }
   });
 
   // -- DRIVER: Get verification status (full detail) --------------------------
-  app.get("/api/app/driver/verification-status", authApp, async (req, res) => {
+  app.get("/api/app/driver/verification-status", authApp, requireDriver, async (req, res) => {
     try {
       const user = (req as any).currentUser;
       await ensureDriverDetailsRow(String(user.id));
