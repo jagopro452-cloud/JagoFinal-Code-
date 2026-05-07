@@ -153,7 +153,7 @@ export async function searchPlaces(
 
   const apiKey = await getGoogleMapsKey();
   if (!apiKey) {
-    return searchNominatimFallback(query);
+    return searchNominatimFallback(query, lat, lng);
   }
 
   const controller = new AbortController();
@@ -161,9 +161,11 @@ export async function searchPlaces(
 
   try {
     let url = `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(query)}&key=${apiKey}`;
+    url += `&components=country:in&region=in`;
 
     if (lat && lng) {
       url += `&location=${lat},${lng}&radius=${radius || 50000}`;
+      url += `&strictbounds=true`;
     }
     if (sessionToken) {
       url += `&sessiontoken=${encodeURIComponent(sessionToken)}`;
@@ -176,24 +178,29 @@ export async function searchPlaces(
     });
     if (!r.ok) {
         console.error(`[mapping] Google API returned status ${r.status}`);
-        return searchNominatimFallback(query);
+        return searchNominatimFallback(query, lat, lng);
     }
     const data = await r.json() as any;
     console.log(`[mapping] Google response status: ${data.status}`);
 
     if (data?.status !== "OK") {
       console.warn(`[mapping-unified:searchPlaces] Google API Status: ${data?.status}, Msg: ${data?.error_message || 'none'}. Falling back to Nominatim/Local.`);
-      const nomResults = await searchNominatimFallback(query);
+      const nomResults = await searchNominatimFallback(query, lat, lng);
       if (nomResults.length > 0) return nomResults;
       return [];
     }
 
     if (!data.predictions?.length) {
       console.log(`[mapping-unified:searchPlaces] Google returned 0 results. Trying Nominatim fallback.`);
-      return searchNominatimFallback(query);
+      return searchNominatimFallback(query, lat, lng);
     }
 
-    const results: PlacePrediction[] = data.predictions.map((p: any) => ({
+    const results: PlacePrediction[] = data.predictions
+      .filter((p: any) => {
+        const hay = `${p.description || ""} ${p.structured_formatting?.secondary_text || ""}`.toLowerCase();
+        return hay.includes("india") || (!hay.includes("usa") && !hay.includes("united states"));
+      })
+      .map((p: any) => ({
       placeId: p.place_id,
       mainText: p.structured_formatting?.main_text || p.description?.split(",")[0] || "",
       secondaryText: p.structured_formatting?.secondary_text || "",
@@ -206,17 +213,25 @@ export async function searchPlaces(
     return results;
   } catch (e: any) {
     console.error(`[mapping-unified:searchPlaces] Failed:`, e.message || e);
-    return searchNominatimFallback(query);
+    return searchNominatimFallback(query, lat, lng);
   } finally {
     clearTimeout(timeout);
   }
 }
 
-async function searchNominatimFallback(query: string): Promise<PlacePrediction[]> {
+async function searchNominatimFallback(query: string, lat?: number, lng?: number): Promise<PlacePrediction[]> {
   try {
     const nomController = new AbortController();
     const nomTimeout = setTimeout(() => nomController.abort(), 4000);
-    const nomUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=15`;
+    const indiaQuery = query.toLowerCase().includes('india') ? query : `${query}, India`;
+    let nomUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(indiaQuery)}&countrycodes=in&addressdetails=1&limit=15`;
+    if (lat && lng) {
+      const left = (lng - 1.2).toFixed(4);
+      const right = (lng + 1.2).toFixed(4);
+      const top = (lat + 1.2).toFixed(4);
+      const bottom = (lat - 1.2).toFixed(4);
+      nomUrl += `&viewbox=${left},${top},${right},${bottom}&bounded=1`;
+    }
     
     const nr = await fetch(nomUrl, {
       signal: nomController.signal,
@@ -250,7 +265,12 @@ async function searchNominatimFallback(query: string): Promise<PlacePrediction[]
           const key = (res.mainText + res.secondaryText).toLowerCase();
           if (!unique.has(key)) unique.set(key, res);
         }
-        return Array.from(unique.values()).slice(0, 8);
+        return Array.from(unique.values())
+          .filter((res) => {
+            const hay = `${res.fullDescription} ${res.secondaryText}`.toLowerCase();
+            return hay.includes('india');
+          })
+          .slice(0, 8);
       }
     }
   } catch(e) {
