@@ -127,9 +127,9 @@ class ApiConfig {
   static String get b2bDashboardById => '$baseUrl/api/app/b2b/dashboard-by-id';
 
   // ── Carpool / Outstation Pool ─────────────────────────────────────────
-  static String get outstationPoolSearch => '$baseUrl/api/app/customer/outstation-pool/search';
-  static String get outstationPoolBook => '$baseUrl/api/app/customer/outstation-pool/book';
-  static String get outstationPoolBookings => '$baseUrl/api/app/customer/outstation-pool/bookings';
+  static String get outstationPoolSearch => '$baseUrl/api/app/customer/outstation-pool/v2/search';
+  static String get outstationPoolBook => '$baseUrl/api/app/customer/outstation-pool/v2/book';
+  static String get outstationPoolBookings => '$baseUrl/api/app/customer/outstation-pool/v2/bookings';
 
   // ── Voice Booking ────────────────────────────────────────────────────
   static String get voiceBookingParse => '$baseUrl/api/app/voice-booking/parse';

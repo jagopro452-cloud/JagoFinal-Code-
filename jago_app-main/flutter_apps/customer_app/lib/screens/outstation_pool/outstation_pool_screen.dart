@@ -446,6 +446,12 @@ class _BookBottomSheetState extends State<_BookBottomSheet> {
   final _dropCtrl = TextEditingController();
   bool _booking = false;
 
+  double? _num(dynamic value) {
+    if (value == null) return null;
+    if (value is num) return value.toDouble();
+    return double.tryParse(value.toString());
+  }
+
   @override
   void dispose() {
     _pickupCtrl.dispose();
@@ -469,6 +475,17 @@ class _BookBottomSheetState extends State<_BookBottomSheet> {
       ));
       return;
     }
+    final pickupLat = _num(widget.ride['fromLat'] ?? widget.ride['from_lat']);
+    final pickupLng = _num(widget.ride['fromLng'] ?? widget.ride['from_lng']);
+    final dropLat = _num(widget.ride['toLat'] ?? widget.ride['to_lat']);
+    final dropLng = _num(widget.ride['toLng'] ?? widget.ride['to_lng']);
+    if (pickupLat == null || pickupLng == null || dropLat == null || dropLng == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Route coordinates unavailable. Please refresh rides and try again.'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
     setState(() => _booking = true);
     try {
       final headers = await AuthService.getHeaders();
@@ -477,10 +494,18 @@ class _BookBottomSheetState extends State<_BookBottomSheet> {
         headers: {...headers, 'Content-Type': 'application/json'},
         body: jsonEncode({
           'rideId': rideId,
-          'seatsBooked': _seats,
+          'seats': _seats,
           'paymentMethod': _paymentMethod,
-          if (_pickupCtrl.text.trim().isNotEmpty) 'pickupAddress': _pickupCtrl.text.trim(),
-          if (_dropCtrl.text.trim().isNotEmpty) 'dropoffAddress': _dropCtrl.text.trim(),
+          'pickupLat': pickupLat,
+          'pickupLng': pickupLng,
+          'dropLat': dropLat,
+          'dropLng': dropLng,
+          'pickupAddress': _pickupCtrl.text.trim().isNotEmpty
+              ? _pickupCtrl.text.trim()
+              : (widget.ride['fromCity']?.toString() ?? widget.ride['from_city']?.toString() ?? 'Pickup point'),
+          'dropAddress': _dropCtrl.text.trim().isNotEmpty
+              ? _dropCtrl.text.trim()
+              : (widget.ride['toCity']?.toString() ?? widget.ride['to_city']?.toString() ?? 'Drop point'),
         }),
       ).timeout(const Duration(seconds: 15));
 
@@ -492,8 +517,14 @@ class _BookBottomSheetState extends State<_BookBottomSheet> {
       final body = jsonDecode(res.body) as Map<String, dynamic>;
       if (res.statusCode == 200 && body['success'] == true) {
         Navigator.of(context).pop();
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Booking confirmed!'),
+        final totalFare = body['totalFare'];
+        final bookingMessage = body['message']?.toString() ?? 'Booking confirmed!';
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(
+            totalFare != null
+                ? 'Booking confirmed · ₹${double.tryParse(totalFare.toString())?.toStringAsFixed(0) ?? totalFare} · $bookingMessage'
+                : bookingMessage,
+          ),
           backgroundColor: Colors.green,
           behavior: SnackBarBehavior.floating,
         ));
