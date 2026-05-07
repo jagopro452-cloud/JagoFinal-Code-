@@ -4274,7 +4274,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // GET /api/admin/alert-engine/rule-history/:ruleId — last 10 fire/resolve events for a rule
   app.get("/api/admin/alert-engine/rule-history/:ruleId", requireAdminAuth, async (req, res) => {
     try {
-      const ruleId = req.params.ruleId;
+      const ruleId = String(req.params.ruleId ?? "");
       res.json(await getAlertEngineRuleHistory(ruleId));
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
@@ -9413,9 +9413,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         `);
         await rawDb.execute(rawSql`UPDATE users SET referral_code=${'JAGOPRO' + phoneStr.slice(-6)} WHERE phone=${phoneStr} AND user_type=${userType}`).catch(dbCatch("db"));
         user = camelize(newUser.rows[0]);
+        if (userType === "driver") {
+          await ensureDriverDetailsRow(String(user.id));
+        }
       } else {
         user = camelize(userRes.rows[0]);
         if (!user.isActive) return res.status(403).json({ message: "Account deactivated. Contact support." });
+        if (userType === "driver") {
+          await ensureDriverDetailsRow(String(user.id));
+        }
       }
 
       const session = await issueUserSession(user.id, {
@@ -9453,6 +9459,99 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  const resolveVehicleCategoryId = async (vehicleType?: string | null): Promise<string | null> => {
+    if (!vehicleType || !vehicleType.trim()) return null;
+    const categoryMatch = await rawDb.execute(rawSql`
+      SELECT id
+      FROM vehicle_categories
+      WHERE LOWER(COALESCE(vehicle_type, '')) = LOWER(${vehicleType})
+         OR LOWER(COALESCE(type, '')) = LOWER(${vehicleType})
+         OR LOWER(COALESCE(name, '')) = LOWER(${vehicleType})
+      ORDER BY
+        CASE
+          WHEN LOWER(COALESCE(vehicle_type, '')) = LOWER(${vehicleType}) THEN 0
+          WHEN LOWER(COALESCE(type, '')) = LOWER(${vehicleType}) THEN 1
+          ELSE 2
+        END,
+        created_at ASC NULLS LAST
+      LIMIT 1
+    `).catch(() => ({ rows: [] as any[] }));
+    return ((categoryMatch.rows[0] as any)?.id as string | undefined) ?? null;
+  };
+
+  const ensureDriverDetailsRow = async (userId: string, vehicleType?: string | null) => {
+    const existing = await rawDb.execute(rawSql`
+      SELECT user_id FROM driver_details WHERE user_id=${userId}::uuid LIMIT 1
+    `).catch(() => ({ rows: [] as any[] }));
+    const vehicleCategoryId = await resolveVehicleCategoryId(vehicleType || null);
+
+    if (!existing.rows.length) {
+      await rawDb.execute(rawSql`
+        INSERT INTO driver_details (
+          user_id, vehicle_type, vehicle_category_id, availability_status, is_online, total_trips, avg_rating, updated_at
+        )
+        VALUES (
+          ${userId}::uuid, ${vehicleType || null}, ${vehicleCategoryId}::uuid, 'offline', false, 0, 5.0, now()
+        )
+      `).catch(dbCatch("db"));
+      return;
+    }
+
+    if (vehicleType || vehicleCategoryId) {
+      await rawDb.execute(rawSql`
+        UPDATE driver_details
+        SET vehicle_type=COALESCE(${vehicleType || null}, vehicle_type),
+            vehicle_category_id=COALESCE(${vehicleCategoryId}::uuid, vehicle_category_id),
+            updated_at=now()
+        WHERE user_id=${userId}::uuid
+      `).catch(dbCatch("db"));
+    }
+  };
+
+  const computeDriverOnboarding = (profile: any, documents: any[]) => {
+    const missingFields: string[] = [];
+    const hasValue = (value: any) => value !== null && value !== undefined && String(value).trim().length > 0;
+    const requiredDocs = ['dl_front', 'dl_back', 'rc', 'insurance', 'vehicle_photo', 'selfie'];
+    const docMap = new Map<string, any>(documents.map((doc: any) => [String(doc.docType || doc.doc_type), doc]));
+
+    if (!hasValue(profile.fullName)) missingFields.push('fullName');
+    if (!hasValue(profile.phone)) missingFields.push('phone');
+    if (!hasValue(profile.dateOfBirth)) missingFields.push('dateOfBirth');
+    if (!hasValue(profile.city)) missingFields.push('city');
+    if (!hasValue(profile.licenseNumber)) missingFields.push('licenseNumber');
+    if (!hasValue(profile.licenseExpiry)) missingFields.push('licenseExpiry');
+    if (!hasValue(profile.vehicleBrand)) missingFields.push('vehicleBrand');
+    if (!hasValue(profile.vehicleModel)) missingFields.push('vehicleModel');
+    if (!hasValue(profile.vehicleColor)) missingFields.push('vehicleColor');
+    if (!hasValue(profile.vehicleYear)) missingFields.push('vehicleYear');
+    if (!hasValue(profile.vehicleNumber)) missingFields.push('vehicleNumber');
+    if (!hasValue(profile.vehicleCategoryName) && !hasValue(profile.vehicleType)) {
+      missingFields.push('vehicleType');
+    }
+
+    for (const docType of requiredDocs) {
+      const doc = docMap.get(docType);
+      if (doc == null || !hasValue(doc.fileUrl ?? doc.file_url)) {
+        missingFields.push(docType);
+      }
+    }
+
+    const uploadedCount = requiredDocs.filter((docType) => {
+      const doc = docMap.get(docType);
+      return doc != null && hasValue(doc.fileUrl ?? doc.file_url);
+    }).length;
+    const approvedCount = documents.filter((doc: any) => String(doc.status ?? '').toLowerCase() === 'approved').length;
+
+    return {
+      missingFields,
+      requiredDocuments: requiredDocs.length,
+      uploadedRequiredDocuments: uploadedCount,
+      approvedDocuments: approvedCount,
+      onboardingComplete: missingFields.length === 0,
+      onboardingStage: missingFields.length === 0 ? 'review_ready' : 'incomplete',
+    };
+  };
+
   // -- PASSWORD-BASED REGISTER -----------------------------------------------
   app.post("/api/app/register", loginLimiter, async (req, res) => {
     try {
@@ -9486,6 +9585,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const refCode = 'JAGOPRO' + phoneStr.slice(-6);
       await rawDb.execute(rawSql`UPDATE users SET referral_code=${refCode} WHERE phone=${phoneStr} AND user_type=${userType}`).catch(dbCatch("db"));
       const user = camelize(insertRes.rows[0]) as any;
+      if (userType === "driver") {
+        await ensureDriverDetailsRow(String(user.id));
+      }
       const session = await issueUserSession(user.id, {
         deviceId: String(deviceId).trim(),
         ipAddress: req.ip,
@@ -14888,6 +14990,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // Accept both 'name' (Flutter) and 'fullName' for driver full name update
       const fullName = req.body.fullName || req.body.name || null;
       const password = req.body.password || null;
+      await ensureDriverDetailsRow(String(user.id), req.body.vehicleType || null);
       let passwordHash: string | null = null;
       if (password && typeof password === 'string' && password.length >= 6) {
         passwordHash = await hashPassword(password);
@@ -14910,43 +15013,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         WHERE id = ${user.id}::uuid
       `);
       if (vehicleType) {
-        const categoryMatch = await rawDb.execute(rawSql`
-          SELECT id
-          FROM vehicle_categories
-          WHERE LOWER(COALESCE(vehicle_type, '')) = LOWER(${vehicleType})
-             OR LOWER(COALESCE(type, '')) = LOWER(${vehicleType})
-             OR LOWER(COALESCE(name, '')) = LOWER(${vehicleType})
-          ORDER BY
-            CASE
-              WHEN LOWER(COALESCE(vehicle_type, '')) = LOWER(${vehicleType}) THEN 0
-              WHEN LOWER(COALESCE(type, '')) = LOWER(${vehicleType}) THEN 1
-              ELSE 2
-            END,
-            created_at ASC NULLS LAST
-          LIMIT 1
-        `).catch(() => ({ rows: [] as any[] }));
-        const vehicleCategoryId = (categoryMatch.rows[0] as any)?.id || null;
-        const existingDriverDetails = await rawDb.execute(rawSql`
-          SELECT user_id FROM driver_details WHERE user_id=${user.id}::uuid LIMIT 1
-        `).catch(() => ({ rows: [] as any[] }));
-        if (!existingDriverDetails.rows.length) {
-          await rawDb.execute(rawSql`
-            INSERT INTO driver_details (
-              user_id, vehicle_type, vehicle_category_id, availability_status, is_online, total_trips, avg_rating, updated_at
-            )
-            VALUES (
-              ${user.id}::uuid, ${vehicleType}, ${vehicleCategoryId}::uuid, 'offline', false, 0, 5.0, now()
-            )
-          `).catch(dbCatch("db"));
-        } else {
-          await rawDb.execute(rawSql`
-            UPDATE driver_details
-            SET vehicle_type=${vehicleType},
-                vehicle_category_id=COALESCE(${vehicleCategoryId}::uuid, vehicle_category_id),
-                updated_at=now()
-            WHERE user_id=${user.id}::uuid
-          `).catch(dbCatch("db"));
-        }
+        await ensureDriverDetailsRow(String(user.id), vehicleType);
       }
       res.json({ success: true, message: "Profile updated" });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
@@ -14956,13 +15023,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/app/driver/verification-status", authApp, async (req, res) => {
     try {
       const user = (req as any).currentUser;
+      await ensureDriverDetailsRow(String(user.id));
       const profileR = await rawDb.execute(rawSql`
         SELECT u.verification_status, u.vehicle_status, u.rejection_note, u.license_number,
                u.license_expiry, u.vehicle_number, u.vehicle_model, u.vehicle_brand,
                u.vehicle_color, u.vehicle_year, u.date_of_birth, u.city, u.selfie_image,
                u.full_name, u.phone, u.profile_image, u.revenue_model, u.model_selected_at,
                u.theme_preference, u.launch_free_active, u.free_period_end, u.onboard_date,
-               dd.vehicle_category_id, vc.name as vehicle_category_name
+               dd.vehicle_category_id, dd.vehicle_type, vc.name as vehicle_category_name
         FROM users u
         LEFT JOIN driver_details dd ON dd.user_id = u.id
         LEFT JOIN vehicle_categories vc ON vc.id = dd.vehicle_category_id
@@ -14974,7 +15042,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       `).catch(() => ({ rows: [] }));
       const profile = camelize(profileR.rows[0] || {});
       const documents = docsR.rows.map(camelize);
-      res.json({ success: true, ...profile, documents });
+      const onboarding = computeDriverOnboarding(profile, documents);
+      res.json({ success: true, ...profile, documents, ...onboarding });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -15137,7 +15206,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
                u.rejection_note, u.license_number, u.license_expiry, u.vehicle_number,
                u.vehicle_model, u.vehicle_brand, u.vehicle_color, u.vehicle_year,
                u.date_of_birth, u.city, u.selfie_image, u.profile_image, u.created_at,
-               vc.name as vehicle_category_name, vc.icon as vehicle_category_icon
+               dd.vehicle_type, vc.name as vehicle_category_name, vc.icon as vehicle_category_icon
         FROM users u
         LEFT JOIN driver_details dd ON dd.user_id = u.id
         LEFT JOIN vehicle_categories vc ON vc.id = dd.vehicle_category_id
@@ -15146,11 +15215,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         LIMIT 100
       `);
       const drivers = await Promise.all(r.rows.map(async (d: any) => {
+        await ensureDriverDetailsRow(String(d.id), d.vehicle_type || null);
         const docsR = await rawDb.execute(rawSql`
           SELECT doc_type, file_url, status, expiry_date, admin_note, reviewed_at
           FROM driver_documents WHERE driver_id = ${d.id}::uuid ORDER BY created_at
         `).catch(() => ({ rows: [] }));
-        return { ...camelize(d), documents: docsR.rows.map(camelize) };
+        const driver = { ...camelize(d), documents: docsR.rows.map(camelize) };
+        return { ...driver, ...computeDriverOnboarding(driver, driver.documents) };
       }));
       res.json({ success: true, drivers, count: drivers.length });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
