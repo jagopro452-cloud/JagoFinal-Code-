@@ -46,7 +46,7 @@ app.use(
     // Driver onboarding and KYC still send some images as base64 JSON payloads.
     // Keep this comfortably above typical compressed camera captures to avoid
     // generic submit failures on selfie/document upload.
-    limit: "12mb",
+    limit: "20mb",
     verify: (req, _res, buf) => {
       req.rawBody = buf;
     },

@@ -215,25 +215,29 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   String _friendlyUploadError(Object error) {
-    final message = error.toString().replaceFirst('Exception: ', '').trim().toLowerCase();
+    final rawMessage = error.toString().replaceFirst('Exception: ', '').trim();
+    final parts = rawMessage.split(':');
+    final hasDocPrefix = parts.length > 1;
+    final docPrefix = hasDocPrefix ? '${parts.first.trim()}: ' : '';
+    final message = rawMessage.toLowerCase();
     if (message.contains('session expired') || message.contains('login again')) {
-      return 'Session expired. Please login again.';
+      return '${docPrefix}Session expired. Please login again.';
     }
     if (message.contains('failed to update registration details') || message.contains('failed to update profile')) {
-      return 'Could not save your registration details. Please check all fields and retry.';
+      return '${docPrefix}Could not save your registration details. Please check all fields and retry.';
     }
-    if (message.contains('full name')) return 'Please enter your full name correctly.';
-    if (message.contains('license number')) return 'Please enter your license number correctly.';
-    if (message.contains('license expiry')) return 'Please select a valid license expiry date.';
-    if (message.contains('vehicle type')) return 'Please select your vehicle type.';
-    if (message.contains('unsupported')) return 'Unsupported image format. Please take a fresh photo.';
+    if (message.contains('full name')) return '${docPrefix}Please enter your full name correctly.';
+    if (message.contains('license number')) return '${docPrefix}Please enter your license number correctly.';
+    if (message.contains('license expiry')) return '${docPrefix}Please select a valid license expiry date.';
+    if (message.contains('vehicle type')) return '${docPrefix}Please select your vehicle type.';
+    if (message.contains('unsupported')) return '${docPrefix}Unsupported image format. Please take a fresh photo.';
     if (message.contains('network') || message.contains('socket') || message.contains('connection')) {
-      return 'Network issue, please retry.';
+      return '${docPrefix}Network issue, please retry.';
     }
-    if (message.contains('timeout')) return 'Server temporarily unavailable. Please retry.';
-    if (message.contains('face')) return 'Face not detected properly. Please retake your selfie.';
-    if (message.contains('upload')) return 'Image upload failed. Please retry.';
-    return 'Server temporarily unavailable. Please retry.';
+    if (message.contains('timeout')) return '${docPrefix}Server temporarily unavailable. Please retry.';
+    if (message.contains('face')) return '${docPrefix}Face not detected properly. Please retake your selfie.';
+    if (message.contains('upload')) return '${docPrefix}Image upload failed. Please retry.';
+    return '${docPrefix}Server temporarily unavailable. Please retry.';
   }
 
   Future<void> _uploadDocumentMultipart(
@@ -357,6 +361,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
         'Authorization': 'Bearer $token',
         'Content-Type': 'application/json',
         'Accept': 'application/json',
+        'User-Agent': 'JAGOPro-Driver/1.0 (Android)',
+        'x-device-model': Platform.operatingSystem,
+        'x-os-version': Platform.operatingSystemVersion,
+        'x-network-type': 'mobile_app',
       },
       body: jsonEncode({
         'docType': docType,
@@ -378,7 +386,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         }
       }
     } catch (_) {}
-    throw Exception(message);
+    throw Exception('${_docLabel(docType)}: $message');
   }
 
   String _mimeTypeForFile(String path) {
@@ -474,17 +482,19 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
       for (var entry in docs.entries) {
         if (entry.value != null) {
+          final docLabel = _docLabel(entry.key);
           if (mounted) {
             setState(() {
-              _uploadStatusText = 'Preparing ${_docLabel(entry.key)}...';
+              _uploadStatusText = 'Preparing $docLabel...';
             });
           }
           final expiryDate = (entry.key == 'dl_front' || entry.key == 'dl_back') && _licenseExpiry != null
               ? DateFormat('yyyy-MM-dd').format(_licenseExpiry!)
               : null;
-          final isSelfie = entry.key == 'selfie';
+          final lowerPath = entry.value!.path.toLowerCase();
+          final useBase64Primary = !lowerPath.endsWith('.pdf');
           try {
-            if (isSelfie) {
+            if (useBase64Primary) {
               await _uploadDocumentBase64Fallback(
                 entry.key,
                 entry.value!,
@@ -503,8 +513,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 lower.contains('timeout') ||
                 lower.contains('network') ||
                 lower.contains('upload failed');
-            if (!canFallback) rethrow;
-            if (isSelfie) {
+            if (!canFallback) {
+              throw Exception('$docLabel upload failed. ${_friendlyUploadError(e)}');
+            }
+            if (useBase64Primary) {
               await _uploadDocumentMultipart(
                 entry.key,
                 entry.value!,
