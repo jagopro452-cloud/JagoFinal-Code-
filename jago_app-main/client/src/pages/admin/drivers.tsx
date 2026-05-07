@@ -207,8 +207,18 @@ export default function Drivers() {
   const { toast } = useToast();
   const qc = useQueryClient();
 
+  const normalizedPhone = form.phone.replace(/\D/g, "");
+  const emailLooksValid = !form.email.trim() || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim());
+
   const addDriver = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/users", { ...form, userType: "driver" }),
+    mutationFn: () => apiRequest("POST", "/api/admin/drivers", {
+      fullName: form.fullName.trim(),
+      phone: form.phone.trim(),
+      email: form.email.trim(),
+      vehicleNumber: form.vehicleNumber.trim(),
+      vehicleModel: form.vehicleModel.trim(),
+      licenseNumber: form.licenseNumber.trim(),
+    }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/users"] });
       toast({ title: "Driver added successfully" });
@@ -217,6 +227,12 @@ export default function Drivers() {
     },
     onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
+
+  const canSubmitDriver =
+    form.fullName.trim().length > 0 &&
+    normalizedPhone.length >= 10 &&
+    emailLooksValid &&
+    !addDriver.isPending;
 
   const { data, isLoading } = useQuery<any>({
     queryKey: ["/api/users", { userType: "driver", search, page }],
@@ -279,12 +295,18 @@ export default function Drivers() {
                     <input className="form-control" placeholder="+91 9876543210" type="tel"
                       value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))}
                       data-testid="input-driver-phone" />
+                    {form.phone && normalizedPhone.length < 10 && (
+                      <div className="text-danger small mt-1">Enter a valid 10-digit phone number</div>
+                    )}
                   </div>
                   <div className="col-md-6">
                     <label className="form-label fw-semibold small">Email <span className="text-muted">(optional)</span></label>
                     <input className="form-control" placeholder="suresh@example.com" type="email"
                       value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
                       data-testid="input-driver-email" />
+                    {form.email && !emailLooksValid && (
+                      <div className="text-danger small mt-1">Enter a valid email address</div>
+                    )}
                   </div>
                   <div className="col-md-6">
                     <label className="form-label fw-semibold small">License Number</label>
@@ -312,7 +334,7 @@ export default function Drivers() {
                 <div className="d-flex gap-2 mt-4">
                   <button className="btn btn-light flex-1" onClick={() => setShowAdd(false)}>Cancel</button>
                   <button className="btn btn-primary flex-1"
-                    disabled={!form.fullName || !form.phone || addDriver.isPending}
+                    disabled={!canSubmitDriver}
                     onClick={() => addDriver.mutate()}
                     data-testid="btn-save-driver">
                     {addDriver.isPending ? "Saving…" : "Add Driver"}

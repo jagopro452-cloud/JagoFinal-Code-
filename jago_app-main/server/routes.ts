@@ -563,6 +563,15 @@ function safeErrMsg(e: any, fallback = "Server error"): string {
   return e?.message || fallback;
 }
 
+function normalizeIndianPhone(value: any): { digits: string; phone: string } {
+  const digits = String(value || "").replace(/\D/g, "");
+  const normalizedDigits = digits.length > 10 ? digits.slice(-10) : digits;
+  if (normalizedDigits.length !== 10) {
+    throw new Error("Please enter a valid 10-digit phone number");
+  }
+  return { digits: normalizedDigits, phone: `+91${normalizedDigits}` };
+}
+
 function shortLocationName(value: any): string {
   const raw = String(value || "").trim();
   if (!raw) return "";
@@ -5012,7 +5021,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // Users
-  app.get("/api/users", async (req, res) => {
+  app.get("/api/users", requireAdminAuth, async (req, res) => {
     try {
       const { userType, search, page, limit } = req.query as Record<string, string>;
       const result = await storage.getUsers(
@@ -5027,9 +5036,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.get("/api/users/:id", async (req, res) => {
+  app.get("/api/users/:id", requireAdminAuth, async (req, res) => {
     try {
-      const user = await storage.getUserById(req.params.id);
+      const user = await storage.getUserById(String(req.params.id));
       if (!user) return res.status(404).json({ message: "User not found" });
       res.json(user);
     } catch (e: any) {
@@ -5039,16 +5048,137 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.post("/api/users", requireAdminAuth, async (req, res) => {
     try {
-      const { fullName, phone, email, userType = "customer", vehicleNumber, vehicleModel, licenseNumber } = req.body;
-      if (!fullName || !phone) return res.status(400).json({ message: "Name and phone are required" });
-      const { db: xDb, sql: xSql } = await import("./db").then(async m => ({ db: m.db, sql: (await import("drizzle-orm")).sql }));
-      const result = await xDb.execute(xSql`
-        INSERT INTO users (full_name, phone, email, user_type, is_active, loyalty_points, vehicle_number, vehicle_model, license_number)
-        VALUES (${fullName}, ${phone}, ${email || null}, ${userType}, true, 0, ${vehicleNumber || null}, ${vehicleModel || null}, ${licenseNumber || null})
+      const fullName = String(req.body?.fullName || "").trim();
+      const email = String(req.body?.email || "").trim().toLowerCase() || null;
+      const userType = String(req.body?.userType || "customer").trim() || "customer";
+      const vehicleNumber = String(req.body?.vehicleNumber || "").trim() || null;
+      const vehicleModel = String(req.body?.vehicleModel || "").trim() || null;
+      const licenseNumber = String(req.body?.licenseNumber || "").trim() || null;
+      if (!fullName) return res.status(400).json({ message: "Name is required" });
+
+      const { digits: phoneDigits, phone } = normalizeIndianPhone(req.body?.phone);
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return res.status(400).json({ message: "Please enter a valid email address" });
+      }
+
+      const existingPhone = await rawDb.execute(rawSql`
+        SELECT id
+        FROM users
+        WHERE RIGHT(REGEXP_REPLACE(COALESCE(phone, ''), '\D', '', 'g'), 10) = ${phoneDigits}
+        LIMIT 1
+      `);
+      if (existingPhone.rows.length) {
+        return res.status(409).json({ message: "A user with this phone number already exists" });
+      }
+
+      if (email) {
+        const existingEmail = await rawDb.execute(rawSql`
+          SELECT id
+          FROM users
+          WHERE LOWER(COALESCE(email, '')) = LOWER(${email})
+          LIMIT 1
+        `);
+        if (existingEmail.rows.length) {
+          return res.status(409).json({ message: "This email is already registered" });
+        }
+      }
+
+      const result = await rawDb.execute(rawSql`
+        INSERT INTO users (
+          full_name, phone, email, user_type, is_active, loyalty_points,
+          vehicle_number, vehicle_model, license_number, created_at, updated_at
+        )
+        VALUES (
+          ${fullName}, ${phone}, ${email}, ${userType}, true, 0,
+          ${vehicleNumber}, ${vehicleModel}, ${licenseNumber}, now(), now()
+        )
         RETURNING *
       `);
-      res.status(201).json(result.rows[0]);
+      res.status(201).json(camelize(result.rows[0]));
     } catch (e: any) {
+      const dbMessage = String(e?.message || "").toLowerCase();
+      if (dbMessage.includes("duplicate key") && dbMessage.includes("email")) {
+        return res.status(409).json({ message: "This email is already registered" });
+      }
+      if (dbMessage.includes("duplicate key") && dbMessage.includes("phone")) {
+        return res.status(409).json({ message: "A user with this phone number already exists" });
+      }
+      if (String(e?.message || "").includes("10-digit phone number")) {
+        return res.status(400).json({ message: e.message });
+      }
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
+  });
+
+  app.post("/api/admin/drivers", requireAdminAuth, async (req, res) => {
+    try {
+      const fullName = String(req.body?.fullName || "").trim();
+      const email = String(req.body?.email || "").trim().toLowerCase() || null;
+      const vehicleNumber = String(req.body?.vehicleNumber || "").trim() || null;
+      const vehicleModel = String(req.body?.vehicleModel || "").trim() || null;
+      const licenseNumber = String(req.body?.licenseNumber || "").trim() || null;
+      if (!fullName) return res.status(400).json({ message: "Driver name is required" });
+
+      const { digits: phoneDigits, phone } = normalizeIndianPhone(req.body?.phone);
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return res.status(400).json({ message: "Please enter a valid email address" });
+      }
+
+      const existingPhone = await rawDb.execute(rawSql`
+        SELECT id
+        FROM users
+        WHERE RIGHT(REGEXP_REPLACE(COALESCE(phone, ''), '\D', '', 'g'), 10) = ${phoneDigits}
+        LIMIT 1
+      `);
+      if (existingPhone.rows.length) {
+        return res.status(409).json({ message: "A driver or user with this phone number already exists" });
+      }
+
+      if (email) {
+        const existingEmail = await rawDb.execute(rawSql`
+          SELECT id
+          FROM users
+          WHERE LOWER(COALESCE(email, '')) = LOWER(${email})
+          LIMIT 1
+        `);
+        if (existingEmail.rows.length) {
+          return res.status(409).json({ message: "This email is already registered" });
+        }
+      }
+
+      const created = await rawDb.transaction(async (trx) => {
+        const createdUser = await trx.execute(rawSql`
+          INSERT INTO users (
+            full_name, phone, email, user_type, is_active, loyalty_points,
+            vehicle_number, vehicle_model, license_number, verification_status, created_at, updated_at
+          )
+          VALUES (
+            ${fullName}, ${phone}, ${email}, 'driver', true, 0,
+            ${vehicleNumber}, ${vehicleModel}, ${licenseNumber}, 'pending', now(), now()
+          )
+          RETURNING *
+        `);
+        const user = createdUser.rows[0] as any;
+        await trx.execute(rawSql`
+          INSERT INTO driver_details (user_id, availability_status, is_online, total_trips, avg_rating, created_at)
+          VALUES (${user.id}::uuid, 'offline', false, 0, 5.0, now())
+          ON CONFLICT (user_id) DO NOTHING
+        `);
+        return user;
+      });
+
+      res.status(201).json(camelize(created));
+    } catch (e: any) {
+      const dbMessage = String(e?.message || "").toLowerCase();
+      if (dbMessage.includes("duplicate key") && dbMessage.includes("email")) {
+        return res.status(409).json({ message: "This email is already registered" });
+      }
+      if (dbMessage.includes("duplicate key") && dbMessage.includes("phone")) {
+        return res.status(409).json({ message: "A driver or user with this phone number already exists" });
+      }
+      if (String(e?.message || "").includes("10-digit phone number")) {
+        return res.status(400).json({ message: e.message });
+      }
       res.status(500).json({ message: safeErrMsg(e) });
     }
   });
