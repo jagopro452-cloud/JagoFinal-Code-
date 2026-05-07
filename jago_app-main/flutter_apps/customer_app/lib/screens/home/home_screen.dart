@@ -3162,7 +3162,6 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
   final TextEditingController _ctrl = TextEditingController();
   List<Map<String, dynamic>> _results = [];
   List<Map<String, dynamic>> _nearby = [];
-  List<Map<String, dynamic>> _popular = [];
   bool _loading = false;
   Timer? _debounce;
 
@@ -3171,7 +3170,6 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
   @override
   void initState() {
     super.initState();
-    _fetchPopularLocations();
     _fetchNearby();
   }
 
@@ -3188,49 +3186,6 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
     );
     if (result != null) {
       widget.onPlaceSelected(result.address, result.lat, result.lng);
-    }
-  }
-
-  Future<void> _fetchPopularLocations() async {
-    try {
-      final r = await http.get(Uri.parse(
-          '${ApiConfig.baseUrl}/api/app/popular-locations?city=Vijayawada'));
-      if (r.statusCode == 200) {
-        final data = jsonDecode(r.body) as Map<String, dynamic>;
-        final list = (data['locations'] as List<dynamic>? ?? [])
-            .map((x) => Map<String, dynamic>.from(x as Map))
-            .map((x) => {
-                  'name': (x['name'] ?? '').toString(),
-                  'lat': double.tryParse(
-                          (x['lat'] ?? x['latitude'] ?? 0).toString()) ??
-                      0.0,
-                  'lng': double.tryParse(
-                          (x['lng'] ?? x['longitude'] ?? 0).toString()) ??
-                      0.0,
-                })
-            .where((x) => (x['name'] as String).isNotEmpty)
-            .toList();
-        if (mounted && list.isNotEmpty) {
-          setState(() => _popular = list);
-          return;
-        }
-      }
-    } catch (_) {}
-    if (mounted && _popular.isEmpty) {
-      setState(() => _popular = [
-            {'name': 'Benz Circle', 'lat': 16.5062, 'lng': 80.6480},
-            {
-              'name': 'Vijayawada Railway Station',
-              'lat': 16.5175,
-              'lng': 80.6400
-            },
-            {'name': 'Vijayawada Bus Stand', 'lat': 16.5179, 'lng': 80.6238},
-            {'name': 'Balaji Bus Stand', 'lat': 16.5106, 'lng': 80.6248},
-            {'name': 'Kanaka Durga Temple', 'lat': 16.5176, 'lng': 80.6121},
-            {'name': 'Gannavaram Airport', 'lat': 16.5304, 'lng': 80.7968},
-            {'name': 'Governorpet', 'lat': 16.5135, 'lng': 80.6346},
-            {'name': 'Patamata', 'lat': 16.4883, 'lng': 80.6681},
-          ]);
     }
   }
 
@@ -3264,6 +3219,41 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
     } catch (_) {}
   }
 
+  Future<List<Map<String, dynamic>>> _searchPlacesFallback(String query) async {
+    try {
+      final uri = Uri.https('nominatim.openstreetmap.org', '/search', {
+        'format': 'json',
+        'q': query,
+        'limit': '8',
+        'countrycodes': 'in',
+        'addressdetails': '1',
+      });
+      final res = await http.get(
+        uri,
+        headers: const {'User-Agent': 'JagoPro/1.0 (Android)'},
+      ).timeout(const Duration(seconds: 6));
+      if (res.statusCode != 200) return [];
+      final decoded = jsonDecode(res.body);
+      if (decoded is! List) return [];
+      return decoded
+          .map((item) {
+            final p = Map<String, dynamic>.from(item as Map);
+            final full = p['display_name']?.toString() ?? '';
+            return <String, dynamic>{
+              'name': full,
+              'placeId': 'nom:${p['place_id'] ?? ''}',
+              'lat': double.tryParse('${p['lat'] ?? 0}') ?? 0.0,
+              'lng': double.tryParse('${p['lon'] ?? 0}') ?? 0.0,
+            };
+          })
+          .where((r) => (r['name'] as String).isNotEmpty)
+          .cast<Map<String, dynamic>>()
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
   Future<void> _search(String query) async {
     if (query.length < 3) {
       setState(() {
@@ -3286,20 +3276,33 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
       if (r.statusCode == 200) {
         final data = jsonDecode(r.body) as Map<String, dynamic>;
         final preds = (data['predictions'] as List<dynamic>?) ?? [];
+        var mapped = preds
+            .map((p) => <String, dynamic>{
+                  'name': p['fullDescription']?.toString() ?? p['mainText']?.toString() ?? '',
+                  'placeId': p['placeId']?.toString() ?? '',
+                  'lat': (p['lat'] as num?)?.toDouble() ?? 0.0,
+                  'lng': (p['lng'] as num?)?.toDouble() ?? 0.0,
+                })
+            .where((r) => (r['name'] as String).isNotEmpty)
+            .toList();
+        if (mapped.isEmpty) {
+          mapped = await _searchPlacesFallback(query);
+        }
         setState(() {
-          _results = preds
-              .map((p) => <String, dynamic>{
-                    'name': p['fullDescription']?.toString() ??
-                        p['mainText']?.toString() ?? '',
-                    'placeId': p['placeId']?.toString() ?? '',
-                    'lat': (p['lat'] as num?)?.toDouble() ?? 0.0,
-                    'lng': (p['lng'] as num?)?.toDouble() ?? 0.0,
-                  })
-              .where((r) => (r['name'] as String).isNotEmpty)
-              .toList();
+          _results = mapped;
         });
+      } else {
+        final fallback = await _searchPlacesFallback(query);
+        if (mounted) {
+          setState(() => _results = fallback);
+        }
       }
-    } catch (_) {}
+    } catch (_) {
+      final fallback = await _searchPlacesFallback(query);
+      if (mounted) {
+        setState(() => _results = fallback);
+      }
+    }
     if (mounted) setState(() => _loading = false);
   }
 
@@ -3310,7 +3313,8 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
     final placeId = p['placeId']?.toString() ?? '';
     if ((lat == 0.0 || lng == 0.0) &&
         placeId.isNotEmpty &&
-        !placeId.startsWith('local:')) {
+        !placeId.startsWith('local:') &&
+        !placeId.startsWith('nom:')) {
       try {
         final headers = await AuthService.getHeaders();
         final r = await http
@@ -3426,65 +3430,6 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
               ),
             ),
           ),
-          const SizedBox(height: 8),
-          if (_popular.isNotEmpty && query.length < 3)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 2, 16, 10),
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Popular Locations',
-                      style: GoogleFonts.poppins(
-                          fontSize: 12,
-                          color: subColor,
-                          fontWeight: FontWeight.w400),
-                    ),
-                    const SizedBox(height: 8),
-                    SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: Row(
-                        children: _popular.map((p) {
-                          return GestureDetector(
-                            onTap: () {
-                              Navigator.pop(context);
-                              widget.onPlaceSelected(
-                                p['name'] as String,
-                                (p['lat'] as num?)?.toDouble() ?? 0.0,
-                                (p['lng'] as num?)?.toDouble() ?? 0.0,
-                              );
-                            },
-                            child: Container(
-                              margin: const EdgeInsets.only(right: 8),
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 12, vertical: 8),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFFF0F7FF),
-                                borderRadius: BorderRadius.circular(20),
-                                border:
-                                    Border.all(color: const Color(0xFFDCE9FF)),
-                              ),
-                              child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    const Icon(Icons.place_rounded,
-                                        color: _primary, size: 14),
-                                    const SizedBox(width: 6),
-                                    Text(
-                                      p['name'] as String,
-                                      style: GoogleFonts.poppins(
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w400,
-                                          color: textColor),
-                                    ),
-                                  ]),
-                            ),
-                          );
-                        }).toList(),
-                      ),
-                    ),
-                  ]),
-            ),
           if (_loading)
             const Padding(
                 padding: EdgeInsets.all(16),

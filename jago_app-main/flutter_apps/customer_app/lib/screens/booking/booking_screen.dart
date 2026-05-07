@@ -80,22 +80,8 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
   final _receiverNameCtrl = TextEditingController();
   final _receiverPhoneCtrl = TextEditingController();
   final _noteCtrl = TextEditingController();
-  bool _popularForPickup = false;
-  
   Set<Polyline> _polylines = {};
   double _routedDistanceKm = 0.0;
-
-  // Populated dynamically from /api/app/popular-locations; static data used as fallback
-  List<Map<String, dynamic>> _popularLocations = const [
-    {'name': 'Benz Circle', 'lat': 16.5062, 'lng': 80.6480},
-    {'name': 'Vijayawada Railway Station', 'lat': 16.5175, 'lng': 80.6400},
-    {'name': 'Vijayawada Bus Stand', 'lat': 16.5179, 'lng': 80.6238},
-    {'name': 'Balaji Bus Stand', 'lat': 16.5106, 'lng': 80.6248},
-    {'name': 'Kanaka Durga Temple', 'lat': 16.5176, 'lng': 80.6121},
-    {'name': 'Gannavaram Airport', 'lat': 16.5304, 'lng': 80.7968},
-    {'name': 'Governorpet', 'lat': 16.5135, 'lng': 80.6346},
-    {'name': 'Patamata', 'lat': 16.4883, 'lng': 80.6681},
-  ];
 
   static const Color _jagoPrimary = JT.primary;
   static const Color _jagoSecondary = JT.secondary;
@@ -632,26 +618,6 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     return v.split(',').first.trim();
   }
 
-  void _quickSelectPopular(Map<String, dynamic> location) {
-    final name = (location['name'] ?? '').toString();
-    final lat = (location['lat'] as num?)?.toDouble() ?? 0.0;
-    final lng = (location['lng'] as num?)?.toDouble() ?? 0.0;
-    if (name.isEmpty || lat == 0 || lng == 0) return;
-
-    final next = BookingScreen(
-      pickup: _popularForPickup ? name : widget.pickup,
-      destination: _popularForPickup ? widget.destination : name,
-      pickupLat: _popularForPickup ? lat : widget.pickupLat,
-      pickupLng: _popularForPickup ? lng : widget.pickupLng,
-      destLat: _popularForPickup ? widget.destLat : lat,
-      destLng: _popularForPickup ? widget.destLng : lng,
-      vehicleCategoryId: widget.vehicleCategoryId,
-      vehicleCategoryName: widget.vehicleCategoryName,
-      category: widget.category,
-    );
-    Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => next));
-  }
-
   double get _finalFare {
     final f = (_fare?['estimatedFare'] ?? 0).toDouble();
     return (f - _promoDiscount).clamp(0, double.infinity);
@@ -667,7 +633,6 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     _loadBookableVehicleCategories();
     _estimateFare();
     _fetchWallet();
-    _fetchPopularLocations();
     _fetchRoutePolyline();
   }
 
@@ -689,28 +654,6 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
       });
       _refreshSelectedVehicleSelection();
     } catch (_) {}
-  }
-
-  Future<void> _fetchPopularLocations() async {
-    try {
-      final uri = Uri.parse(ApiConfig.popularLocations).replace(
-        queryParameters: {'lat': widget.pickupLat.toString(), 'lng': widget.pickupLng.toString()},
-      );
-      final r = await http.get(uri).timeout(const Duration(seconds: 5));
-      if (r.statusCode == 200) {
-        final data = jsonDecode(r.body);
-        if (data is! Map) return;
-        final rawList = data['locations'];
-        final list = rawList is List ? rawList.whereType<Map<String, dynamic>>().toList() : <Map<String, dynamic>>[];
-        if (mounted && list.isNotEmpty) {
-          setState(() => _popularLocations = list.map((l) => {
-            'name': l['name']?.toString() ?? '',
-            'lat': (l['lat'] as num?)?.toDouble() ?? 0.0,
-            'lng': (l['lng'] as num?)?.toDouble() ?? 0.0,
-          }).toList());
-        }
-      }
-    } catch (_) { /* keep static fallback */ }
   }
 
   @override

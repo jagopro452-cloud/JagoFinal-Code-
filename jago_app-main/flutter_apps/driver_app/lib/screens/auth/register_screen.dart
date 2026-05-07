@@ -89,23 +89,125 @@ class _RegisterScreenState extends State<RegisterScreen> {
     ));
   }
 
-  Future<void> _pickImage(String type) async {
-    final picked = await _picker.pickImage(
-      source: type == 'selfie' ? ImageSource.camera : ImageSource.gallery,
-      preferredCameraDevice: type == 'selfie' ? CameraDevice.front : CameraDevice.rear,
-      imageQuality: 70,
-      maxWidth: 1280,
-      maxHeight: 1280,
+  Widget _requiredLabel(String label, {bool required = true}) {
+    return RichText(
+      text: TextSpan(
+        style: JT.body,
+        children: [
+          TextSpan(text: label),
+          if (required)
+            const TextSpan(
+              text: ' *',
+              style: TextStyle(
+                color: JT.error,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+        ],
+      ),
     );
-    if (picked != null) {
-      setState(() {
-        if (type == 'dl_front') _dlFront = File(picked.path);
-        if (type == 'dl_back') _dlBack = File(picked.path);
-        if (type == 'rc') _rcPhoto = File(picked.path);
-        if (type == 'insurance') _insurancePhoto = File(picked.path);
-        if (type == 'vehicle') _vehicleFrontPhoto = File(picked.path);
-        if (type == 'selfie') _selfiePhoto = File(picked.path);
-      });
+  }
+
+  Future<ImageSource?> _chooseImageSource(String type) async {
+    final isSelfie = type == 'selfie';
+    return showModalBottomSheet<ImageSource>(
+      context: context,
+      backgroundColor: JT.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 12),
+              Container(
+                width: 42,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: JT.border,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                isSelfie ? 'Choose Selfie Photo' : 'Choose Document Photo',
+                style: JT.h3,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                isSelfie
+                    ? 'Take a fresh selfie or upload a clear photo.'
+                    : 'Use camera or gallery for a clear upload.',
+                style: JT.body,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16),
+              ListTile(
+                leading: const Icon(Icons.camera_alt, color: JT.primary),
+                title: Text(
+                  isSelfie ? 'Take Photo' : 'Open Camera',
+                  style: JT.bodyPrimary,
+                ),
+                onTap: () => Navigator.pop(
+                  context,
+                  ImageSource.camera,
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.photo_library, color: JT.primary),
+                title: Text(
+                  'Choose from Gallery',
+                  style: JT.bodyPrimary,
+                ),
+                onTap: () => Navigator.pop(
+                  context,
+                  ImageSource.gallery,
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _assignPickedFile(String type, File file) {
+    setState(() {
+      if (type == 'dl_front') _dlFront = file;
+      if (type == 'dl_back') _dlBack = file;
+      if (type == 'rc') _rcPhoto = file;
+      if (type == 'insurance') _insurancePhoto = file;
+      if (type == 'vehicle') _vehicleFrontPhoto = file;
+      if (type == 'selfie') _selfiePhoto = file;
+    });
+  }
+
+  Future<void> _pickImage(String type) async {
+    try {
+      final source = await _chooseImageSource(type);
+      if (source == null) return;
+
+      final picked = await _picker.pickImage(
+        source: source,
+        preferredCameraDevice: type == 'selfie' ? CameraDevice.front : CameraDevice.rear,
+        imageQuality: 65,
+        maxWidth: 1080,
+        maxHeight: 1080,
+      );
+      if (picked == null) return;
+
+      final file = File(picked.path);
+      final sizeBytes = await file.length();
+      if (sizeBytes > 5 * 1024 * 1024) {
+        _showSnack('Photo is too large. Please choose a smaller image.', error: true);
+        return;
+      }
+      _assignPickedFile(type, file);
+    } catch (e) {
+      _showSnack('Could not pick image. Please try again.', error: true);
     }
   }
 
@@ -461,8 +563,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
           inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(10)],
           style: JT.bodyPrimary,
           decoration: InputDecoration(
-            labelText: 'Phone Number',
-            labelStyle: JT.body,
+            label: _requiredLabel('Phone Number'),
             prefixIcon: const Icon(Icons.phone, color: JT.primary),
             filled: true,
             fillColor: JT.surfaceAlt,
@@ -480,13 +581,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
     );
   }
 
-  Widget _input(String label, TextEditingController ctrl, IconData icon, {bool readOnly = false, bool obscure = false, Widget? suffix, TextInputType keyboard = TextInputType.text}) {
+  Widget _input(String label, TextEditingController ctrl, IconData icon, {bool readOnly = false, bool obscure = false, Widget? suffix, TextInputType keyboard = TextInputType.text, bool required = true}) {
     return TextField(
       controller: ctrl, readOnly: readOnly, obscureText: obscure, keyboardType: keyboard,
       style: JT.bodyPrimary,
       decoration: InputDecoration(
-        labelText: label,
-        labelStyle: JT.body,
+        label: _requiredLabel(label, required: required),
         prefixIcon: Icon(icon, color: JT.primary),
         suffixIcon: suffix,
         filled: true,
@@ -498,7 +598,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     );
   }
 
-  Widget _datePicker(String label, DateTime? value, Function(DateTime) onPick) {
+  Widget _datePicker(String label, DateTime? value, Function(DateTime) onPick, {bool required = true}) {
     // Determine date range based on label
     bool isExpiry = label.toLowerCase().contains('expiry');
     bool isDOB = label.toLowerCase().contains('birth');
@@ -531,7 +631,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         side: BorderSide(color: JT.border),
       ),
       leading: const Icon(Icons.calendar_month, color: JT.primary),
-      title: Text(label, style: JT.caption),
+      title: _requiredLabel(label, required: required),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -600,7 +700,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     return TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: const Color(0xFF059669));
   }
 
-  Widget _imageTile(String label, File? file, VoidCallback onTap) {
+  Widget _imageTile(String label, File? file, VoidCallback onTap, {bool required = true}) {
     return ListTile(
       tileColor: JT.surfaceAlt,
       shape: RoundedRectangleBorder(
@@ -608,7 +708,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         side: BorderSide(color: JT.border),
       ),
       leading: const Icon(Icons.image, color: JT.primary),
-      title: Text(label, style: JT.bodyPrimary),
+      title: _requiredLabel(label, required: required),
       trailing: file != null
           ? Icon(Icons.check_circle, color: JT.success)
           : Text('Upload', style: JT.body.copyWith(color: JT.primary)),
@@ -616,26 +716,35 @@ class _RegisterScreenState extends State<RegisterScreen> {
     );
   }
 
-  Widget _dropdown(String label, String value, List<String> options, Function(String?) onChange) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(
-        color: JT.surfaceAlt,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: JT.border),
-      ),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<String>(
-          value: value,
-          isExpanded: true,
-          dropdownColor: JT.surface,
-          items: options.map((s) => DropdownMenuItem(
-            value: s,
-            child: Text(s.toUpperCase(), style: JT.bodyPrimary),
-          )).toList(),
-          onChanged: onChange,
+  Widget _dropdown(String label, String value, List<String> options, Function(String?) onChange, {bool required = true}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(left: 4, bottom: 8),
+          child: _requiredLabel(label, required: required),
         ),
-      ),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(
+            color: JT.surfaceAlt,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: JT.border),
+          ),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<String>(
+              value: value,
+              isExpanded: true,
+              dropdownColor: JT.surface,
+              items: options.map((s) => DropdownMenuItem(
+                value: s,
+                child: Text(s.toUpperCase(), style: JT.bodyPrimary),
+              )).toList(),
+              onChanged: onChange,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
