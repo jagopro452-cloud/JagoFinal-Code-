@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io' show Platform;
 import 'dart:ui';
 import 'package:flutter/material.dart';
@@ -12,6 +13,7 @@ import 'screens/splash_screen.dart';
 import 'services/fcm_service.dart';
 import 'services/localization_service.dart';
 import 'services/socket_service.dart';
+import 'services/runtime_config_service.dart';
 import 'config/api_config.dart';
 
 // Global navigator key — used by FCM service to navigate after notification tap
@@ -215,6 +217,7 @@ class _JagoPilotAppState extends State<JagoPilotApp> with WidgetsBindingObserver
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    unawaited(_ensureSocketAlive());
   }
 
   @override
@@ -237,8 +240,12 @@ class _JagoPilotAppState extends State<JagoPilotApp> with WidgetsBindingObserver
   Future<void> _ensureSocketAlive() async {
     try {
       final socket = SocketService();
-      if (socket.isConnected) return;
-      await socket.connect(ApiConfig.socketUrl);
+      final config = RuntimeConfigService();
+      if (!socket.isConnected) {
+        await socket.connect(ApiConfig.socketUrl);
+      }
+      await config.initialize();
+      await config.refresh();
     } catch (_) {}
   }
 

@@ -27,6 +27,10 @@ class SocketService {
   final _paymentPendingController = StreamController<Map<String, dynamic>>.broadcast();
   final _parcelStatusController = StreamController<Map<String, dynamic>>.broadcast();
   final _parcelLocationController = StreamController<Map<String, dynamic>>.broadcast();
+  final _poolMatchedController = StreamController<Map<String, dynamic>>.broadcast();
+  final _poolSeatUpdateController = StreamController<Map<String, dynamic>>.broadcast();
+  final _poolStatusController = StreamController<Map<String, dynamic>>.broadcast();
+  final _configUpdatedController = StreamController<Map<String, dynamic>>.broadcast();
   final _callIncomingController = StreamController<Map<String, dynamic>>.broadcast();
   final _callOfferController = StreamController<Map<String, dynamic>>.broadcast();
   final _callAnswerController = StreamController<Map<String, dynamic>>.broadcast();
@@ -46,6 +50,10 @@ class SocketService {
   Stream<Map<String, dynamic>> get onPaymentPending => _paymentPendingController.stream;
   Stream<Map<String, dynamic>> get onParcelStatus => _parcelStatusController.stream;
   Stream<Map<String, dynamic>> get onParcelLocation => _parcelLocationController.stream;
+  Stream<Map<String, dynamic>> get onPoolMatched => _poolMatchedController.stream;
+  Stream<Map<String, dynamic>> get onPoolSeatUpdate => _poolSeatUpdateController.stream;
+  Stream<Map<String, dynamic>> get onPoolStatus => _poolStatusController.stream;
+  Stream<Map<String, dynamic>> get onConfigUpdated => _configUpdatedController.stream;
   Stream<Map<String, dynamic>> get onCallIncoming => _callIncomingController.stream;
   Stream<Map<String, dynamic>> get onCallOffer => _callOfferController.stream;
   Stream<Map<String, dynamic>> get onCallAnswer => _callAnswerController.stream;
@@ -244,6 +252,11 @@ class SocketService {
       _tripCancelledController.add({...Map<String, dynamic>.from(data), 'reason': 'no_drivers'});
     });
 
+    _socket!.on('config:updated', (data) {
+      if (data == null) return;
+      _configUpdatedController.add(Map<String, dynamic>.from(data));
+    });
+
     // Trip re-searching after driver rejected
     _socket!.on('trip:searching', (data) {
       _tripSearchingController.add(Map<String, dynamic>.from(data));
@@ -286,6 +299,53 @@ class SocketService {
 
     _socket!.on('parcel:driver_location', (data) {
       _parcelLocationController.add(Map<String, dynamic>.from(data));
+    });
+
+    _socket!.on('pool:matched', (data) {
+      _poolMatchedController.add(Map<String, dynamic>.from(data));
+      _poolStatusController.add({
+        ...Map<String, dynamic>.from(data),
+        'status': 'matched',
+      });
+    });
+
+    _socket!.on('pool:seat_update', (data) {
+      _poolSeatUpdateController.add(Map<String, dynamic>.from(data));
+    });
+
+    _socket!.on('pool:driver_location', (data) {
+      _poolStatusController.add({
+        ...Map<String, dynamic>.from(data),
+        'status': 'driver_location',
+      });
+    });
+
+    _socket!.on('pool:picked_up', (data) {
+      _poolStatusController.add({
+        ...Map<String, dynamic>.from(data),
+        'status': 'picked_up',
+      });
+    });
+
+    _socket!.on('pool:dropped', (data) {
+      _poolStatusController.add({
+        ...Map<String, dynamic>.from(data),
+        'status': 'dropped',
+      });
+    });
+
+    _socket!.on('pool:cancelled', (data) {
+      _poolStatusController.add({
+        ...Map<String, dynamic>.from(data),
+        'status': 'cancelled',
+      });
+    });
+
+    _socket!.on('pool:search_timeout', (data) {
+      _poolStatusController.add({
+        ...Map<String, dynamic>.from(data),
+        'status': 'search_timeout',
+      });
     });
 
     // ── WebRTC Call Signaling ──────────────────────────────────
@@ -419,6 +479,10 @@ class SocketService {
     _paymentPendingController.close();
     _parcelStatusController.close();
     _parcelLocationController.close();
+    _poolMatchedController.close();
+    _poolSeatUpdateController.close();
+    _poolStatusController.close();
+    _configUpdatedController.close();
     _callIncomingController.close();
     _callOfferController.close();
     _callAnswerController.close();

@@ -40,6 +40,7 @@ class ApiConfig {
   static String get changePassword => '$baseUrl/api/app/change-password';
   static String get logout => '$baseUrl/api/app/logout';
   static String get configs => '$baseUrl/api/app/configs';
+  static String get runtimeConfig => '$baseUrl/api/app/runtime-config';
   static String get nearbyDrivers => '$baseUrl/api/app/nearby-drivers';
   static String get notifications => '$baseUrl/api/app/notifications';
   static String get notificationsReadAll => '$baseUrl/api/app/notifications/read-all';
@@ -130,6 +131,10 @@ class ApiConfig {
   static String get outstationPoolSearch => '$baseUrl/api/app/customer/outstation-pool/v2/search';
   static String get outstationPoolBook => '$baseUrl/api/app/customer/outstation-pool/v2/book';
   static String get outstationPoolBookings => '$baseUrl/api/app/customer/outstation-pool/v2/bookings';
+  static String get localPoolBook => '$baseUrl/api/app/customer/pool/book';
+  static String localPoolStatus(String requestId) => '$baseUrl/api/app/customer/pool/status/$requestId';
+  static String localPoolCancel(String requestId) => '$baseUrl/api/app/customer/pool/cancel/$requestId';
+  static String get localPoolHistory => '$baseUrl/api/app/customer/pool/history';
 
   // ── Voice Booking ────────────────────────────────────────────────────
   static String get voiceBookingParse => '$baseUrl/api/app/voice-booking/parse';

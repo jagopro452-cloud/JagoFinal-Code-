@@ -80,6 +80,13 @@ const _kVehicles = [
   ),
 ];
 
+const Map<String, String> _parcelVehicleImageUrls = {
+  'bike_parcel': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_49_26_AM_gjbrxs',
+  'tata_ace': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_51_59_AM_jzd119',
+  'mini_truck': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_51_59_AM_jzd119',
+  'pickup_truck': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_54_02_AM_hicx7s',
+};
+
 // ── Static item types ─────────────────────────────────────────────────────────
 const _kItemTypes = [
   {'icon': 'document', 'label': 'Documents'},
@@ -141,6 +148,7 @@ class _ParcelBookingScreenState extends State<ParcelBookingScreen>
   double _destLat = 0, _destLng = 0;
   List<Map<String, dynamic>> _suggestions = [];
   Timer? _debounce;
+  String _placesSessionToken = DateTime.now().microsecondsSinceEpoch.toString();
 
 
   // Fare estimate
@@ -166,7 +174,8 @@ class _ParcelBookingScreenState extends State<ParcelBookingScreen>
     _dropAddressCtrl.text = widget.dropAddress;
     _fetchDynamicVehicles();
     if (widget.initialVehicleKey != null) {
-      final idx = _kVehicles.indexWhere((v) => v.key == widget.initialVehicleKey);
+      final initialKey = _normalizedVehicleKey(widget.initialVehicleKey!, widget.initialVehicleKey!);
+      final idx = _kVehicles.indexWhere((v) => v.key == initialKey);
       if (idx >= 0) _vehicleIdx = idx;
     }
     _pageCtrl = PageController();
@@ -246,11 +255,14 @@ class _ParcelBookingScreenState extends State<ParcelBookingScreen>
           final m = v as Map<String, dynamic>;
           final colorStr = m['color']?.toString() ?? '#2F7BFF';
           final colorVal = int.tryParse(colorStr.replaceFirst('#', '0xFF')) ?? 0xFF2F7BFF;
+          final rawKey = m['vehicle_key']?.toString() ?? '';
+          final rawName = m['display_name']?.toString() ?? rawKey;
+          final normalizedKey = _normalizedVehicleKey(rawKey, rawName);
           return _ParcelVehicle(
-            key: m['vehicle_key']?.toString() ?? '',
-            name: m['display_name']?.toString() ?? m['vehicle_key']?.toString() ?? '',
+            key: normalizedKey,
+            name: rawName,
             subtitle: m['description']?.toString() ?? '',
-            icon: m['icon']?.toString() ?? '📦',
+            icon: m['icon']?.toString() ?? normalizedKey,
             capacity: 'Up to ${m['max_weight_kg'] ?? 10} kg',
             maxKg: (m['max_weight_kg'] as num?)?.toInt() ?? 10,
             suitable: m['suitable_items']?.toString() ?? '',
@@ -261,7 +273,8 @@ class _ParcelBookingScreenState extends State<ParcelBookingScreen>
           setState(() => _dynamicVehicles = parsed);
           // Re-align initial vehicle selection
           if (widget.initialVehicleKey != null) {
-            final idx = _dynamicVehicles.indexWhere((v) => v.key == widget.initialVehicleKey);
+            final initialKey = _normalizedVehicleKey(widget.initialVehicleKey!, widget.initialVehicleKey!);
+            final idx = _dynamicVehicles.indexWhere((v) => v.key == initialKey);
             if (idx >= 0) setState(() => _vehicleIdx = idx);
           }
         }
@@ -288,6 +301,41 @@ class _ParcelBookingScreenState extends State<ParcelBookingScreen>
 
   _ParcelVehicle get _vehicle => _vehicles[_vehicleIdx];
   double get _weightKg => (_kWeightOptions[_weightIdx]['value'] as num).toDouble();
+
+  String _normalizedVehicleKey(String rawKey, String fallbackName) {
+    final hay = '$rawKey $fallbackName'.toLowerCase();
+    if (hay.contains('pickup')) return 'pickup_truck';
+    if (hay.contains('tata') || hay.contains('mini')) return 'tata_ace';
+    if (hay.contains('bike')) return 'bike_parcel';
+    return rawKey.trim().isNotEmpty ? rawKey : 'bike_parcel';
+  }
+
+  Widget _buildVehicleImage(String key, {double width = 56, double height = 56}) {
+    final normalizedKey = _normalizedVehicleKey(key, key);
+    final url = _parcelVehicleImageUrls[normalizedKey];
+    if (url == null) {
+      return Icon(
+        _iconForKey(normalizedKey),
+        color: const Color(0xFF2F7BFF),
+        size: width * 0.72,
+      );
+    }
+    return Image.network(
+      url,
+      width: width,
+      height: height,
+      fit: BoxFit.contain,
+      errorBuilder: (_, __, ___) => Icon(
+        _iconForKey(normalizedKey),
+        color: const Color(0xFF2F7BFF),
+        size: width * 0.72,
+      ),
+    );
+  }
+
+  void _refreshPlacesSessionToken() {
+    _placesSessionToken = DateTime.now().microsecondsSinceEpoch.toString();
+  }
 
   bool get _step0Valid => true;
   bool get _step1Valid => _dropAddressCtrl.text.trim().isNotEmpty && _destLat != 0;
@@ -329,20 +377,32 @@ class _ParcelBookingScreenState extends State<ParcelBookingScreen>
   void _onPickupSearch(String q) {
     _debounce?.cancel();
     if (q.length < 3) { setState(() => _pickupSuggestions = []); return; }
+    _refreshPlacesSessionToken();
     _debounce = Timer(const Duration(milliseconds: 400), () => _searchAddress(q, isPickup: true));
   }
 
   void _onDropSearch(String q) {
     _debounce?.cancel();
     if (q.length < 3) { setState(() => _suggestions = []); return; }
+    _refreshPlacesSessionToken();
     _debounce = Timer(const Duration(milliseconds: 400), () => _searchAddress(q, isPickup: false));
   }
 
   Future<void> _searchAddress(String q, {required bool isPickup}) async {
     try {
       final headers = await AuthService.getHeaders();
+      final queryParameters = <String, String>{
+        'input': q,
+        'sessionToken': _placesSessionToken,
+      };
+      final refLat = isPickup ? _pickupLat : (_pickupLat != 0 ? _pickupLat : widget.pickupLat);
+      final refLng = isPickup ? _pickupLng : (_pickupLng != 0 ? _pickupLng : widget.pickupLng);
+      if (refLat != 0 && refLng != 0) {
+        queryParameters['lat'] = refLat.toString();
+        queryParameters['lng'] = refLng.toString();
+      }
       final r = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}/api/app/places/autocomplete?input=${Uri.encodeComponent(q)}'),
+        Uri.parse(ApiConfig.placesAutocomplete).replace(queryParameters: queryParameters),
         headers: headers,
       ).timeout(const Duration(seconds: 30));
       if (r.statusCode == 200) {
@@ -369,18 +429,20 @@ class _ParcelBookingScreenState extends State<ParcelBookingScreen>
 
   void _selectSuggestion(Map<String, dynamic> s, {required bool isPickup}) async {
     final desc = s['description'] as String;
+    final selectedLat = (s['lat'] as num?)?.toDouble() ?? 0;
+    final selectedLng = (s['lng'] as num?)?.toDouble() ?? 0;
     setState(() {
       if (isPickup) {
         _pickupAddressCtrl.text = desc;
         _pickupAddr = desc;
-        _pickupLat = (s['lat'] as num).toDouble();
-        _pickupLng = (s['lng'] as num).toDouble();
+        _pickupLat = selectedLat;
+        _pickupLng = selectedLng;
         _pickupSuggestions = [];
         _isEditingPickup = false;
       } else {
         _dropAddressCtrl.text = desc;
-        _destLat = (s['lat'] as num).toDouble();
-        _destLng = (s['lng'] as num).toDouble();
+        _destLat = selectedLat;
+        _destLng = selectedLng;
         _suggestions = [];
       }
     });
@@ -392,9 +454,10 @@ class _ParcelBookingScreenState extends State<ParcelBookingScreen>
         final headers = await AuthService.getHeaders();
         final placeId = s['place_id']?.toString() ?? '';
         final r = await http.get(
-          Uri.parse(
-            '${ApiConfig.placeDetails}?placeId=${Uri.encodeComponent(placeId)}',
-          ),
+          Uri.parse(ApiConfig.placeDetails).replace(queryParameters: {
+            'placeId': placeId,
+            'sessionToken': _placesSessionToken,
+          }),
           headers: headers,
         ).timeout(const Duration(seconds: 5));
         if (r.statusCode == 200) {
@@ -413,6 +476,22 @@ class _ParcelBookingScreenState extends State<ParcelBookingScreen>
         }
       } catch (_) {}
     }
+
+    try {
+      final headers = await AuthService.getHeaders();
+      await http.post(
+        Uri.parse('${ApiConfig.baseUrl}/api/app/places/select'),
+        headers: {...headers, 'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'placeId': s['place_id'],
+          'queryText': desc,
+          'placeLabel': s['main_text'] ?? desc.split(',').first,
+          'placeAddress': desc,
+          'lat': isPickup ? _pickupLat : _destLat,
+          'lng': isPickup ? _pickupLng : _destLng,
+        }),
+      ).timeout(const Duration(seconds: 5));
+    } catch (_) {}
   }
 
   // ── Fare estimate ─────────────────────────────────────────────────────────────
@@ -957,32 +1036,7 @@ class _ParcelBookingScreenState extends State<ParcelBookingScreen>
                         borderRadius: BorderRadius.circular(12),
                       ),
                       child: Center(
-                        child: v.key == 'bike_parcel'
-                          ? Image.network(
-                              'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_49_26_AM_gjbrxs',
-                              width: 56,
-                              height: 56,
-                              fit: BoxFit.contain,
-                            )
-                          : v.key == 'tata_ace'
-                            ? Image.network(
-                                'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_51_59_AM_jzd119',
-                                width: 56,
-                                height: 56,
-                                fit: BoxFit.contain,
-                              )
-                            : v.key == 'pickup_truck'
-                              ? Image.network(
-                                  'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_54_02_AM_hicx7s',
-                                  width: 56,
-                                  height: 56,
-                                  fit: BoxFit.contain,
-                                )
-                              : Icon(
-                                  _iconForKey(v.key),
-                                  color: v.accentColor,
-                                  size: 32,
-                                ),
+                        child: _buildVehicleImage(v.key),
                       ),
                     ),
                     const SizedBox(width: 16),
@@ -1415,10 +1469,7 @@ class _ParcelBookingScreenState extends State<ParcelBookingScreen>
                   color: Colors.white, shape: BoxShape.circle),
               child: Padding(
                 padding: const EdgeInsets.all(8.0),
-                child: Image.network(
-                  'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_49_26_AM_gjbrxs',
-                  width: 36, height: 36, fit: BoxFit.contain,
-                ),
+                child: _buildVehicleImage(_vehicle.key, width: 36, height: 36),
               )),
             const SizedBox(width: 16),
             Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [

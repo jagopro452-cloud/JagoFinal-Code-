@@ -39,6 +39,10 @@ class SocketService {
   final _driverStateChangedController = StreamController<Map<String, dynamic>>.broadcast();
   final _kycUpdatedController = StreamController<Map<String, dynamic>>.broadcast();
   final _serviceUpdatedController = StreamController<Map<String, dynamic>>.broadcast();
+  final _configUpdatedController = StreamController<Map<String, dynamic>>.broadcast();
+  final _poolNewPassengerController = StreamController<Map<String, dynamic>>.broadcast();
+  final _poolSeatUpdateController = StreamController<Map<String, dynamic>>.broadcast();
+  final _poolPassengerCancelledController = StreamController<Map<String, dynamic>>.broadcast();
   final _callIncomingController = StreamController<Map<String, dynamic>>.broadcast();
   final _callOfferController = StreamController<Map<String, dynamic>>.broadcast();
   final _callAnswerController = StreamController<Map<String, dynamic>>.broadcast();
@@ -61,6 +65,10 @@ class SocketService {
   Stream<Map<String, dynamic>> get onDriverStateChanged => _driverStateChangedController.stream;
   Stream<Map<String, dynamic>> get onKycUpdated => _kycUpdatedController.stream;
   Stream<Map<String, dynamic>> get onServiceUpdated => _serviceUpdatedController.stream;
+  Stream<Map<String, dynamic>> get onConfigUpdated => _configUpdatedController.stream;
+  Stream<Map<String, dynamic>> get onPoolNewPassenger => _poolNewPassengerController.stream;
+  Stream<Map<String, dynamic>> get onPoolSeatUpdate => _poolSeatUpdateController.stream;
+  Stream<Map<String, dynamic>> get onPoolPassengerCancelled => _poolPassengerCancelledController.stream;
   Stream<Map<String, dynamic>> get onCallIncoming => _callIncomingController.stream;
   Stream<Map<String, dynamic>> get onCallOffer => _callOfferController.stream;
   Stream<Map<String, dynamic>> get onCallAnswer => _callAnswerController.stream;
@@ -234,6 +242,19 @@ class SocketService {
     });
     _socket!.on('service:updated', (data) {
       _serviceUpdatedController.add(Map<String, dynamic>.from(data));
+    });
+    _socket!.on('config:updated', (data) {
+      if (data == null) return;
+      _configUpdatedController.add(Map<String, dynamic>.from(data));
+    });
+    _socket!.on('pool:new_passenger', (data) {
+      _poolNewPassengerController.add(Map<String, dynamic>.from(data));
+    });
+    _socket!.on('pool:seat_update', (data) {
+      _poolSeatUpdateController.add(Map<String, dynamic>.from(data));
+    });
+    _socket!.on('pool:passenger_cancelled', (data) {
+      _poolPassengerCancelledController.add(Map<String, dynamic>.from(data));
     });
 
     // ── WebRTC Call Signaling ──────────────────────────────────
@@ -560,6 +581,14 @@ class SocketService {
     _newParcelController.close();
     _noDriversController.close();
     _walletRechargedController.close();
+    _walletUpdatedController.close();
+    _driverStateChangedController.close();
+    _kycUpdatedController.close();
+    _serviceUpdatedController.close();
+    _configUpdatedController.close();
+    _poolNewPassengerController.close();
+    _poolSeatUpdateController.close();
+    _poolPassengerCancelledController.close();
     _callIncomingController.close();
     _callOfferController.close();
     _callAnswerController.close();

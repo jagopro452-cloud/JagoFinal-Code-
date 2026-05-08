@@ -241,6 +241,403 @@ export default function Dashboard() {
 
   return (
     <div className="container-fluid admin-dashboard-page">
+      <style>{`
+        .admin-dashboard-page .jd-banner {
+          position: relative;
+          overflow: hidden;
+          background:
+            radial-gradient(circle at top right, rgba(147,197,253,0.22), transparent 24%),
+            linear-gradient(135deg, #0f2f70 0%, #1e4fa8 48%, #2f7bff 100%);
+          border: 1px solid rgba(96,165,250,0.2);
+          border-radius: 26px;
+          box-shadow: 0 24px 60px rgba(30,79,168,0.18);
+        }
+        .admin-dashboard-page .jd-banner::after {
+          content: "";
+          position: absolute;
+          inset: auto -80px -80px auto;
+          width: 220px;
+          height: 220px;
+          border-radius: 50%;
+          background: radial-gradient(circle, rgba(255,255,255,0.16), transparent 68%);
+          pointer-events: none;
+        }
+        .admin-dashboard-page .jd-banner-inner {
+          padding: 24px 24px 14px;
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 18px;
+        }
+        .admin-dashboard-page .jd-banner-kpis {
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 0;
+          border-top: 1px solid rgba(255,255,255,0.12);
+          margin-top: 6px;
+        }
+        .admin-dashboard-page .jd-kpi {
+          padding: 16px 18px 18px;
+        }
+        .admin-dashboard-page .jd-kpi-sep {
+          width: 1px;
+          background: rgba(255,255,255,0.1);
+          align-self: stretch;
+        }
+        .admin-dashboard-page .jd-kpi-n {
+          display: block;
+          font-size: 1.25rem;
+          font-weight: 800;
+          color: #fff;
+          letter-spacing: -0.03em;
+        }
+        .admin-dashboard-page .jd-kpi-l {
+          display: block;
+          margin-top: 4px;
+          font-size: 11px;
+          color: rgba(255,255,255,0.68);
+          text-transform: uppercase;
+          letter-spacing: 1px;
+          font-weight: 700;
+        }
+        .admin-dashboard-page .jd-date-badge {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          background: rgba(255,255,255,0.12);
+          border: 1px solid rgba(255,255,255,0.14);
+          color: #e0ecff;
+          padding: 10px 14px;
+          border-radius: 14px;
+          font-size: 12px;
+          font-weight: 700;
+          backdrop-filter: blur(10px);
+        }
+        .admin-dashboard-page .jd-card,
+        .admin-dashboard-page .jd-clock-widget,
+        .admin-dashboard-page .jd-stat-card,
+        .admin-dashboard-page .jd-svc-card {
+          border-radius: 22px;
+        }
+        .admin-dashboard-page .jd-card {
+          background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.98));
+          border: 1px solid rgba(226,232,240,0.9);
+          box-shadow: 0 16px 40px rgba(15,23,42,0.06);
+          overflow: hidden;
+        }
+        .admin-dashboard-page .jd-card-header {
+          padding: 18px 18px 14px;
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 16px;
+        }
+        .admin-dashboard-page .jd-card-title {
+          margin: 0;
+          font-size: 15px;
+          font-weight: 800;
+          color: #0f172a;
+          letter-spacing: -0.02em;
+        }
+        .admin-dashboard-page .jd-card-subtitle {
+          margin-top: 4px;
+          color: #64748b;
+          font-size: 11.5px;
+          font-weight: 500;
+        }
+        .admin-dashboard-page .jd-stat-card {
+          position: relative;
+          overflow: hidden;
+          min-height: 132px;
+          background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.98));
+          border: 1px solid rgba(226,232,240,0.9);
+          box-shadow: 0 16px 34px rgba(15,23,42,0.06);
+          padding: 18px 18px 16px;
+          display: flex;
+          gap: 14px;
+          align-items: flex-start;
+          text-decoration: none;
+        }
+        .admin-dashboard-page .jd-stat-card::after {
+          content: "";
+          position: absolute;
+          inset: auto -32px -42px auto;
+          width: 110px;
+          height: 110px;
+          border-radius: 50%;
+          background: radial-gradient(circle, rgba(59,130,246,0.08), transparent 70%);
+        }
+        .admin-dashboard-page .jd-stat-icon-wrap {
+          width: 52px;
+          height: 52px;
+          border-radius: 16px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.45);
+        }
+        .admin-dashboard-page .jd-stat-label {
+          color: #64748b;
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 1px;
+          text-transform: uppercase;
+          margin-bottom: 8px;
+        }
+        .admin-dashboard-page .jd-stat-value {
+          font-size: 1.55rem;
+          font-weight: 800;
+          line-height: 1.1;
+          letter-spacing: -0.04em;
+          color: #0f172a;
+        }
+        .admin-dashboard-page .jd-stat-trend {
+          position: absolute;
+          right: 16px;
+          top: 16px;
+          display: inline-flex;
+          align-items: center;
+          gap: 2px;
+          padding: 5px 8px;
+          border-radius: 999px;
+          font-size: 10px;
+          font-weight: 700;
+        }
+        .admin-dashboard-page .jd-trend-up {
+          background: rgba(22,163,74,0.1);
+          color: #15803d;
+        }
+        .admin-dashboard-page .jd-trend-down {
+          background: rgba(239,68,68,0.1);
+          color: #dc2626;
+        }
+        .admin-dashboard-page .jd-stat-arrow {
+          margin-left: auto;
+          align-self: center;
+          color: rgba(100,116,139,0.45);
+          font-size: 13px;
+        }
+        .admin-dashboard-page .jd-svc-card {
+          min-height: 138px;
+          background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(249,250,251,0.98));
+          border: 1px solid rgba(226,232,240,0.88);
+          box-shadow: 0 14px 34px rgba(15,23,42,0.05);
+          padding: 16px;
+        }
+        .admin-dashboard-page .jd-svc-head {
+          display: flex;
+          align-items: flex-start;
+          gap: 12px;
+          margin-bottom: 18px;
+        }
+        .admin-dashboard-page .jd-svc-icon {
+          width: 42px;
+          height: 42px;
+          border-radius: 14px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+        }
+        .admin-dashboard-page .jd-svc-stats {
+          display: flex;
+          align-items: flex-end;
+          justify-content: space-between;
+          gap: 14px;
+        }
+        .admin-dashboard-page .jd-clock-widget {
+          background:
+            radial-gradient(circle at top right, rgba(147,197,253,0.18), transparent 24%),
+            linear-gradient(145deg, #091a3b 0%, #102b66 46%, #173d88 100%);
+          color: white;
+          padding: 22px 20px;
+          border: 1px solid rgba(96,165,250,0.18);
+          box-shadow: 0 24px 60px rgba(15,23,42,0.22);
+          margin-bottom: 16px;
+        }
+        .admin-dashboard-page .jd-kpi-mini-card,
+        .admin-dashboard-page .jd-quick-stat,
+        .admin-dashboard-page .jd-quick-action,
+        .admin-dashboard-page .jd-info-pill {
+          border-radius: 16px;
+        }
+        .admin-dashboard-page .jd-kpi-mini-card,
+        .admin-dashboard-page .jd-quick-stat {
+          border: 1px solid rgba(226,232,240,0.9);
+          padding: 13px 14px;
+          display: flex;
+          gap: 12px;
+          align-items: center;
+        }
+        .admin-dashboard-page .jd-quick-action {
+          background: #fff;
+          border: 1px solid rgba(226,232,240,0.9);
+          box-shadow: 0 12px 28px rgba(15,23,42,0.04);
+          padding: 12px 13px;
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          transition: transform .16s ease, box-shadow .16s ease;
+          min-height: 66px;
+        }
+        .admin-dashboard-page .jd-quick-action:hover {
+          transform: translateY(-1px);
+          box-shadow: 0 16px 30px rgba(15,23,42,0.08);
+        }
+        .admin-dashboard-page .jd-quick-action-icon {
+          width: 36px;
+          height: 36px;
+          border-radius: 12px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+        }
+        .admin-dashboard-page .jd-table-head th {
+          font-size: 10.5px;
+          font-weight: 800;
+          color: #94a3b8;
+          text-transform: uppercase;
+          letter-spacing: 1px;
+          padding-top: 14px;
+          padding-bottom: 14px;
+          border-bottom: 1px solid #eef2f7;
+          background: #f8fbff;
+        }
+        .admin-dashboard-page .jd-mini-avatar {
+          width: 30px;
+          height: 30px;
+          border-radius: 10px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          color: white;
+          font-size: 11px;
+          font-weight: 800;
+          flex-shrink: 0;
+        }
+        .admin-dashboard-page .jd-type-badge,
+        .admin-dashboard-page .jd-live-badge,
+        .admin-dashboard-page .jd-info-pill,
+        .admin-dashboard-page .jd-view-all-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+        }
+        .admin-dashboard-page .jd-type-badge {
+          border-radius: 999px;
+          padding: 4px 8px;
+          font-size: 10px;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: .8px;
+        }
+        .admin-dashboard-page .jd-live-badge,
+        .admin-dashboard-page .jd-info-pill,
+        .admin-dashboard-page .jd-view-all-btn {
+          font-size: 11px;
+          font-weight: 700;
+        }
+        .admin-dashboard-page .jd-live-badge {
+          color: #166534;
+          background: #f0fdf4;
+          border: 1px solid #bbf7d0;
+          border-radius: 999px;
+          padding: 6px 10px;
+        }
+        .admin-dashboard-page .jd-live-dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          background: #16a34a;
+          box-shadow: 0 0 0 4px rgba(22,163,74,0.12);
+        }
+        .admin-dashboard-page .jd-info-pill {
+          padding: 6px 10px;
+          border-radius: 999px;
+          border: 1px solid transparent;
+        }
+        .admin-dashboard-page .jd-view-all-btn {
+          color: #1e40af;
+          background: rgba(59,130,246,0.08);
+          border: 1px solid rgba(147,197,253,0.55);
+          border-radius: 999px;
+          padding: 7px 11px;
+          text-decoration: none;
+        }
+        .admin-dashboard-page .jd-empty-chart,
+        .admin-dashboard-page .jd-empty-table {
+          min-height: 210px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-direction: column;
+          text-align: center;
+        }
+        .admin-dashboard-page .jd-empty-icon {
+          width: 68px;
+          height: 68px;
+          border-radius: 22px;
+          background: linear-gradient(180deg, #eff6ff, #f8fbff);
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          margin-bottom: 14px;
+        }
+        .admin-dashboard-page .jd-notif-item {
+          padding: 14px 18px;
+          display: flex;
+          gap: 12px;
+          align-items: flex-start;
+        }
+        .admin-dashboard-page .jd-notif-icon {
+          width: 36px;
+          height: 36px;
+          border-radius: 12px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+        }
+        .admin-dashboard-page .jd-skeleton,
+        .admin-dashboard-page .jd-stat-skeleton {
+          display: inline-block;
+          background: linear-gradient(90deg, #eef2f7 0%, #f8fafc 50%, #eef2f7 100%);
+          background-size: 200% 100%;
+          animation: jdPulse 1.4s linear infinite;
+          border-radius: 999px;
+        }
+        .admin-dashboard-page .jd-stat-skeleton {
+          width: 110px;
+          height: 26px;
+        }
+        @keyframes jdPulse {
+          0% { background-position: 200% 0; }
+          100% { background-position: -200% 0; }
+        }
+        @media (max-width: 1199px) {
+          .admin-dashboard-page .jd-banner-kpis {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
+          .admin-dashboard-page .jd-kpi-sep:nth-child(2),
+          .admin-dashboard-page .jd-kpi-sep:nth-child(6) {
+            display: none;
+          }
+        }
+        @media (max-width: 767px) {
+          .admin-dashboard-page .jd-banner-inner {
+            flex-direction: column;
+            align-items: flex-start;
+          }
+          .admin-dashboard-page .jd-banner-kpis {
+            grid-template-columns: 1fr;
+          }
+          .admin-dashboard-page .jd-kpi-sep {
+            display: none;
+          }
+        }
+      `}</style>
 
       {/* ═══════════ BANNER ═══════════ */}
       <div className="jd-banner mb-3" data-testid="dashboard-banner">

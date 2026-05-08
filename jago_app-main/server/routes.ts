@@ -5,7 +5,7 @@ import { getFirebaseAdminAsync, notifyDriverNewRide, notifyDriverNewParcel, noti
 import { notifyUser } from "./notification-service";
 import { sendAlert as sendOpsAlert } from "./observability";
 import { sendCustomSms } from "./sms";
-import { io } from "./socket";
+import { io, emitRuntimeConfigUpdated } from "./socket";
 import type { Server } from "http";
 import { storage } from "./storage";
 import { z } from "zod";
@@ -145,7 +145,18 @@ import {
   extractShortName,
   searchNearbyPlaces,
   getMappingStats,
+  ensureLocationIntelligenceSchema,
+  recordLocationSelection,
 } from "./mapping-unified";
+import {
+  getRuntimeConfigSnapshot,
+  initRuntimeConfigTables,
+  invalidateRuntimeConfigCache,
+  listRuntimeConfigAuditLogs,
+  resolveRuntimeConfigContext,
+  rollbackRuntimeConfigAuditLog,
+  upsertRuntimeConfigEntries,
+} from "./runtime-config";
 import {
   calculateRevenueBreakdown,
   settleRevenue,
@@ -765,6 +776,27 @@ function emitServiceUpdated(serviceKey: string, serviceStatus: string, extra: Re
     updatedAt: new Date().toISOString(),
     ...extra,
   });
+}
+
+async function broadcastRuntimeConfigChange(params: {
+  reason: string;
+  actor?: string | null;
+  scopeType?: string;
+  scopeKey?: string;
+  changedKeys?: string[];
+}) {
+  await invalidateRuntimeConfigCache();
+  const snapshot = await getRuntimeConfigSnapshot(true);
+  emitRuntimeConfigUpdated({
+    reason: params.reason,
+    actor: params.actor || null,
+    scopeType: params.scopeType || "global",
+    scopeKey: params.scopeKey || "default",
+    changedKeys: params.changedKeys || [],
+    version: snapshot.version,
+    snapshot,
+  });
+  return snapshot;
 }
 
 
@@ -5708,6 +5740,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           ON CONFLICT (key_name) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
         `);
       }
+      await broadcastRuntimeConfigChange({
+        reason: "pricing_settings_updated",
+        actor: String((req as any).adminUser?.email || (req as any).admin?.email || (req as any).adminUser?.id || (req as any).admin?.id || "admin"),
+        scopeType: "global",
+        scopeKey: "pricing",
+        changedKeys: Object.keys(updates),
+      });
       res.json({ success: true, updated: Object.keys(updates).length });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
@@ -5900,10 +5939,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           const r = await storage.upsertBusinessSetting(k, String(v ?? ''), t);
           results.push(r);
         }
+        await broadcastRuntimeConfigChange({
+          reason: "settings_bulk_updated",
+          actor: String((req as any).adminUser?.email || (req as any).admin?.email || (req as any).adminUser?.id || (req as any).admin?.id || "admin"),
+          scopeType: "global",
+          scopeKey: "business_settings",
+          changedKeys: Object.keys(settingsObj),
+        });
         return res.json({ saved: results.length, settings: results });
       }
       const { keyName, value, settingsType } = req.body;
       const setting = await storage.upsertBusinessSetting(keyName, value, settingsType);
+      await broadcastRuntimeConfigChange({
+        reason: "setting_updated",
+        actor: String((req as any).adminUser?.email || (req as any).admin?.email || (req as any).adminUser?.id || (req as any).admin?.id || "admin"),
+        scopeType: "global",
+        scopeKey: settingsType || "business_settings",
+        changedKeys: [String(keyName || "")].filter(Boolean),
+      });
       res.json(setting);
     } catch (e: any) {
       res.status(500).json({ message: safeErrMsg(e) });
@@ -5921,6 +5974,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const { keyName, value, settingsType } = req.body;
       const setting = await storage.upsertBusinessSetting(keyName, value, settingsType);
+      await broadcastRuntimeConfigChange({
+        reason: "business_setting_updated",
+        actor: String((req as any).adminUser?.email || (req as any).admin?.email || (req as any).adminUser?.id || (req as any).admin?.id || "admin"),
+        scopeType: "global",
+        scopeKey: settingsType || "business_settings",
+        changedKeys: [String(keyName || "")].filter(Boolean),
+      });
       res.json(setting);
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
@@ -7013,6 +7073,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       for (const [key, value] of Object.entries(settings)) {
         await rawDb.execute(rawSql`INSERT INTO business_settings (key_name, value, settings_type) VALUES (${key}, ${String(value)}, 'business_settings') ON CONFLICT (key_name) DO UPDATE SET value=${String(value)}, updated_at=now()`);
       }
+      await broadcastRuntimeConfigChange({
+        reason: "business_settings_bulk_updated",
+        actor: String((req as any).adminUser?.email || (req as any).admin?.email || (req as any).adminUser?.id || (req as any).admin?.id || "admin"),
+        scopeType: "global",
+        scopeKey: "business_settings",
+        changedKeys: Object.keys(settings),
+      });
       const r = await rawDb.execute(rawSql`SELECT * FROM business_settings ORDER BY settings_type, key_name`);
       res.json(camelize(r.rows));
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
@@ -7269,6 +7336,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           ON CONFLICT (key_name) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
         `);
       }
+      await broadcastRuntimeConfigChange({
+        reason: "revenue_model_updated",
+        actor: String((req as any).adminUser?.email || (req as any).admin?.email || (req as any).adminUser?.id || (req as any).admin?.id || "admin"),
+        scopeType: "global",
+        scopeKey: "revenue_model",
+        changedKeys: entries.map(([key]) => key),
+      });
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
@@ -10120,6 +10194,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       `);
       // Also update users table
       await rawDb.execute(rawSql`UPDATE users SET is_online=${effectiveOnline}, current_lat=${coords.lat}, current_lng=${coords.lng} WHERE id=${driver.id}::uuid`);
+      await rawDb.execute(rawSql`
+        UPDATE driver_pool_sessions
+        SET current_lat=${coords.lat},
+            current_lng=${coords.lng},
+            current_bearing_deg=${validHeading},
+            last_location_at=NOW(),
+            updated_at=NOW()
+        WHERE driver_id=${driver.id}::uuid AND status='active'
+      `).catch(() => undefined);
       // Auto-detect and update driver zone from GPS position
       const autoZoneId = await detectZoneId(coords.lat, coords.lng);
       if (autoZoneId) {
@@ -13666,13 +13749,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // -- SHARED: App configs (vehicle categories, cancellation reasons etc) ----
   app.get("/api/app/configs", async (_req, res) => {
     try {
-      const [cats, reasons, settings, brands, parcelCats, parcelWeights] = await Promise.all([
+      const [cats, reasons, settings, brands, parcelCats, parcelWeights, runtimeConfig] = await Promise.all([
         rawDb.execute(rawSql`SELECT id, name, icon, type, is_active FROM vehicle_categories WHERE is_active=true ORDER BY CASE type WHEN 'ride' THEN 1 WHEN 'parcel' THEN 2 WHEN 'cargo' THEN 3 ELSE 4 END, name`),
         rawDb.execute(rawSql`SELECT * FROM cancellation_reasons WHERE is_active=true`),
         rawDb.execute(rawSql`SELECT key_name, value FROM business_settings WHERE key_name IN ('otp_on_pickup','max_ride_radius_km','driver_auto_accept','sos_number','support_phone','currency','currency_symbol')`),
         rawDb.execute(rawSql`SELECT * FROM vehicle_brands WHERE is_active=true ORDER BY category, name`),
         rawDb.execute(rawSql`SELECT * FROM parcel_categories WHERE is_active=true ORDER BY name`),
         rawDb.execute(rawSql`SELECT * FROM parcel_weights WHERE is_active=true ORDER BY min_weight`),
+        getRuntimeConfigSnapshot().catch(() => null),
       ]);
       const configs: any = {};
       (settings.rows as any[]).forEach(r => { configs[r.key_name] = r.value; });
@@ -13683,8 +13767,195 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         parcelCategories: camelize(parcelCats.rows),
         parcelWeights: camelize(parcelWeights.rows),
         configs,
+        runtimeConfig,
+        runtimeVersion: runtimeConfig?.version || null,
       });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  app.get("/api/app/runtime-config", authApp, async (_req, res) => {
+    try {
+      const snapshot = await getRuntimeConfigSnapshot();
+      const query = _req.query as Record<string, string | undefined>;
+      const resolved = resolveRuntimeConfigContext(snapshot, {
+        cityKey: query.cityKey,
+        serviceKey: query.serviceKey,
+        vehicleKey: query.vehicleKey,
+      });
+      res.json({
+        success: true,
+        code: "RUNTIME_CONFIG_OK",
+        message: "Runtime config loaded",
+        retryable: false,
+        data: {
+          ...snapshot,
+          resolved,
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (e: any) {
+      res.status(500).json({
+        success: false,
+        code: "RUNTIME_CONFIG_LOAD_FAILED",
+        message: safeErrMsg(e),
+        retryable: true,
+        data: null,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  });
+
+  app.get("/api/admin/runtime-config", requireAdminAuth, requireAdminRole(["admin", "superadmin"]), async (_req, res) => {
+    try {
+      const snapshot = await getRuntimeConfigSnapshot(true);
+      res.json({
+        success: true,
+        code: "ADMIN_RUNTIME_CONFIG_OK",
+        message: "Runtime config snapshot loaded",
+        retryable: false,
+        data: snapshot,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (e: any) {
+      res.status(500).json({
+        success: false,
+        code: "ADMIN_RUNTIME_CONFIG_FAILED",
+        message: safeErrMsg(e),
+        retryable: true,
+        data: null,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  });
+
+  app.get("/api/admin/runtime-config/audit", requireAdminAuth, requireAdminRole(["admin", "superadmin"]), async (req, res) => {
+    try {
+      const limit = Number((req.query.limit as string) || "50");
+      const logs = await listRuntimeConfigAuditLogs(limit);
+      res.json({
+        success: true,
+        code: "RUNTIME_CONFIG_AUDIT_OK",
+        message: "Runtime config audit loaded",
+        retryable: false,
+        data: logs,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (e: any) {
+      res.status(500).json({
+        success: false,
+        code: "RUNTIME_CONFIG_AUDIT_FAILED",
+        message: safeErrMsg(e),
+        retryable: true,
+        data: null,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  });
+
+  app.put("/api/admin/runtime-config", requireAdminAuth, requireAdminRole(["admin", "superadmin"]), async (req, res) => {
+    try {
+      const body = req.body || {};
+      const entries = Array.isArray(body.entries) ? body.entries : [];
+      if (!entries.length) {
+        return res.status(400).json({
+          success: false,
+          code: "RUNTIME_CONFIG_ENTRIES_REQUIRED",
+          message: "entries array is required",
+          retryable: false,
+          data: null,
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      const snapshot = await upsertRuntimeConfigEntries({
+        scopeType: body.scopeType,
+        scopeKey: body.scopeKey,
+        entries: entries.map((entry: any) => ({
+          key: String(entry.key || ""),
+          value: entry.value,
+          description: entry.description ? String(entry.description) : undefined,
+        })).filter((entry: any) => entry.key),
+        updatedBy: String((req as any).adminUser?.email || (req as any).admin?.email || (req as any).adminUser?.id || (req as any).admin?.id || "admin"),
+        reason: body.reason ? String(body.reason) : "admin_runtime_update",
+      });
+
+      emitRuntimeConfigUpdated({
+        reason: body.reason || "admin_runtime_update",
+        actor: (req as any).adminUser?.email || (req as any).admin?.email || (req as any).adminUser?.id || (req as any).admin?.id || "admin",
+        scopeType: body.scopeType || "global",
+        scopeKey: body.scopeKey || "default",
+        changedKeys: entries.map((entry: any) => String(entry.key || "")).filter(Boolean),
+        version: snapshot.version,
+        snapshot,
+      });
+
+      res.json({
+        success: true,
+        code: "RUNTIME_CONFIG_UPDATED",
+        message: "Runtime config updated",
+        retryable: false,
+        data: snapshot,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (e: any) {
+      res.status(500).json({
+        success: false,
+        code: "RUNTIME_CONFIG_UPDATE_FAILED",
+        message: safeErrMsg(e),
+        retryable: true,
+        data: null,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  });
+
+  app.post("/api/admin/runtime-config/rollback", requireAdminAuth, requireAdminRole(["admin", "superadmin"]), async (req, res) => {
+    try {
+      const auditLogId = String(req.body?.auditLogId || "").trim();
+      if (!auditLogId) {
+        return res.status(400).json({
+          success: false,
+          code: "RUNTIME_CONFIG_ROLLBACK_ID_REQUIRED",
+          message: "auditLogId is required",
+          retryable: false,
+          data: null,
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      const snapshot = await rollbackRuntimeConfigAuditLog({
+        auditLogId,
+        updatedBy: String((req as any).adminUser?.email || (req as any).admin?.email || (req as any).adminUser?.id || (req as any).admin?.id || "admin"),
+      });
+
+      emitRuntimeConfigUpdated({
+        reason: "runtime_config_rollback",
+        actor: (req as any).adminUser?.email || (req as any).admin?.email || (req as any).adminUser?.id || (req as any).admin?.id || "admin",
+        scopeType: "global",
+        scopeKey: "rollback",
+        changedKeys: [],
+        version: snapshot.version,
+        snapshot,
+      });
+
+      res.json({
+        success: true,
+        code: "RUNTIME_CONFIG_ROLLBACK_OK",
+        message: "Runtime config rolled back",
+        retryable: false,
+        data: snapshot,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (e: any) {
+      res.status(500).json({
+        success: false,
+        code: "RUNTIME_CONFIG_ROLLBACK_FAILED",
+        message: safeErrMsg(e),
+        retryable: true,
+        data: null,
+        timestamp: new Date().toISOString(),
+      });
+    }
   });
 
   // -- CUSTOMER/DRIVER: SOS alert --------------------------------------------
@@ -16948,6 +17219,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         revenueModel: (r.rows as any[])[0]?.revenue_model ?? revenue_model ?? null,
         commissionRate: (r.rows as any[])[0]?.commission_rate ?? commission_rate ?? null,
       });
+      await broadcastRuntimeConfigChange({
+        reason: "platform_service_updated",
+        actor: String((req as any).adminUser?.email || (req as any).admin?.email || (req as any).adminUser?.id || (req as any).admin?.id || "admin"),
+        scopeType: "service",
+        scopeKey: key,
+        changedKeys: ["service_status", "revenue_model", "commission_rate"],
+      });
       res.json((r.rows as any[])[0]);
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
@@ -18358,7 +18636,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   startLocalPoolReaper();
 
   // -- Start rolling pool matcher + register routes -------------------------
-  registerRollingPoolRoutes(app, authApp);
+  registerRollingPoolRoutes(app, authApp, requireAdminAuth);
   startRollingPoolMatcher();
 
   // -- Register outstation pool V2 routes -----------------------------------
@@ -18395,6 +18673,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   ensureOutstationPoolV2Schema().then(() => {
     console.log("[OUTSTATION-POOL-V2] Schema ready");
   }).catch((e: any) => console.error("[OUTSTATION-POOL-V2] Schema init error:", e.message));
+
+  ensureLocationIntelligenceSchema().then(() => {
+    console.log("[LOCATION-INTELLIGENCE] Schema ready");
+  }).catch((e: any) => console.error("[LOCATION-INTELLIGENCE] Schema init error:", e.message));
+
+  initRuntimeConfigTables().then(() => {
+    console.log("[RUNTIME-CONFIG] Centralized runtime config tables ready");
+  }).catch((e: any) => console.error("[RUNTIME-CONFIG] Schema init error:", e.message));
 
   initDynamicServicesTables().then(() => {
     console.log("[DYNAMIC-SERVICES] City-based services + parcel vehicle types ready");
@@ -18909,6 +19195,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
       await logAdminAction("toggle_service", "platform_services", undefined, { serviceKey, status }, (req as any).adminUser?.email);
       emitServiceUpdated(String(serviceKey), String(status));
+      await broadcastRuntimeConfigChange({
+        reason: "service_toggle_updated",
+        actor: String((req as any).adminUser?.email || (req as any).admin?.email || "admin"),
+        scopeType: "service",
+        scopeKey: String(serviceKey),
+        changedKeys: ["service_status"],
+      });
 
       res.json({ success: true, serviceKey, status });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e), status: "error" }); }
@@ -19944,9 +20237,37 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       const sessionToken = String(req.query.sessionToken || "");
       const lat = req.query.lat ? Number(req.query.lat) : undefined;
       const lng = req.query.lng ? Number(req.query.lng) : undefined;
+      const currentUser = (req as any).currentUser;
       if (!query) return res.status(400).json({ message: "query required" });
-      const predictions = await searchPlaces(query, sessionToken, lat, lng);
+      const predictions = await searchPlaces(query, sessionToken, lat, lng, undefined, currentUser?.id);
       res.json({ predictions });
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  app.post("/api/app/places/select", authApp, async (req, res) => {
+    try {
+      const currentUser = (req as any).currentUser;
+      if (!currentUser?.id) return res.status(401).json({ message: "Unauthorized" });
+      const {
+        placeId,
+        queryText,
+        placeLabel,
+        placeAddress,
+        lat,
+        lng,
+      } = req.body || {};
+      if (!String(placeLabel || "").trim()) {
+        return res.status(400).json({ message: "placeLabel required" });
+      }
+      await recordLocationSelection(currentUser.id, {
+        placeId: placeId?.toString(),
+        queryText: queryText?.toString(),
+        placeLabel: String(placeLabel),
+        placeAddress: placeAddress?.toString(),
+        lat: lat != null ? Number(lat) : undefined,
+        lng: lng != null ? Number(lng) : undefined,
+      });
+      res.json({ success: true });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 

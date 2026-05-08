@@ -227,6 +227,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const clock = useLiveClock();
   const { theme, setTheme } = useTheme();
   const isDark = theme === "dark";
+  const [navSearch, setNavSearch] = useState("");
 
   const currentPage = (() => {
     for (const section of navSections) {
@@ -300,7 +301,19 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const isSuperAdmin = adminRole === "superadmin" || adminRole === "super_admin";
   const isAdmin = isSuperAdmin || adminRole === "admin";
   const allowedSections: Set<string> | null = isAdmin ? null : (ROLE_SECTION_ACCESS[adminRole] ? new Set(ROLE_SECTION_ACCESS[adminRole]) : new Set()); // Empty set = no access
-  const visibleNav = allowedSections ? navSections.filter(s => allowedSections.has(s.category)) : navSections;
+  const baseVisibleNav = allowedSections ? navSections.filter(s => allowedSections.has(s.category)) : navSections;
+  const searchNeedle = navSearch.trim().toLowerCase();
+  const visibleNav = searchNeedle
+    ? baseVisibleNav
+        .map((section) => ({
+          ...section,
+          items: section.items.filter((item) => {
+            const hay = `${section.category} ${item.label}`.toLowerCase();
+            return hay.includes(searchNeedle);
+          }),
+        }))
+        .filter((section) => section.items.length > 0)
+    : baseVisibleNav;
 
   const handleLogout = async () => {
     try {
@@ -360,6 +373,371 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
   return (
     <div className="admin-wrapper admin-shell">
+      <style>{`
+        .admin-shell {
+          background:
+            radial-gradient(circle at top left, rgba(47,123,255,0.08), transparent 22%),
+            radial-gradient(circle at top right, rgba(8,145,178,0.08), transparent 20%),
+            linear-gradient(180deg, #f8fbff 0%, #f4f7fb 42%, #eef3f9 100%);
+        }
+        .admin-shell .aside {
+          box-shadow: 12px 0 32px rgba(15, 23, 42, 0.14);
+          border-right: 1px solid rgba(255,255,255,0.12);
+        }
+        .admin-shell .aside-header {
+          padding-bottom: 18px;
+          border-bottom: 1px solid rgba(255,255,255,0.08);
+        }
+        .admin-shell .user-profile {
+          background: linear-gradient(180deg, rgba(255,255,255,0.16), rgba(255,255,255,0.08));
+          border: 1px solid rgba(255,255,255,0.14);
+          border-radius: 20px;
+          padding: 16px 16px 14px;
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.14);
+          margin-bottom: 18px;
+        }
+        .admin-shell .aside-search .search-form__input_group {
+          background: rgba(255,255,255,0.12);
+          border: 1px solid rgba(255,255,255,0.14);
+          border-radius: 16px;
+          overflow: hidden;
+          transition: border-color .18s ease, background .18s ease, transform .18s ease;
+        }
+        .admin-shell .aside-search .search-form__input_group:focus-within {
+          background: rgba(255,255,255,0.2);
+          border-color: rgba(191,219,254,0.7);
+          transform: translateY(-1px);
+        }
+        .admin-shell .aside-search .search-form__input,
+        .admin-shell .aside-search .search-form__input::placeholder,
+        .admin-shell .aside-search .search-form__icon {
+          color: rgba(255,255,255,0.82);
+        }
+        .admin-shell .nav-category {
+          color: rgba(255,255,255,0.42);
+          font-size: 10px;
+          font-weight: 700;
+          letter-spacing: 1.45px;
+          margin: 18px 0 8px;
+          text-transform: uppercase;
+        }
+        .admin-shell .main-nav > li > ul > li > a {
+          border-radius: 14px;
+          margin: 3px 0;
+          transition: transform .16s ease, background .16s ease, box-shadow .16s ease;
+        }
+        .admin-shell .main-nav > li > ul > li > a:hover {
+          transform: translateX(2px);
+          background: rgba(255,255,255,0.12);
+        }
+        .admin-shell .main-nav > li.active > a,
+        .admin-shell .main-nav > li.open > a {
+          background: linear-gradient(90deg, rgba(255,255,255,0.2), rgba(255,255,255,0.1));
+          box-shadow: inset 0 0 0 1px rgba(255,255,255,0.1);
+        }
+        .admin-shell .header {
+          backdrop-filter: blur(16px);
+          background: rgba(255,255,255,0.82);
+          border-bottom: 1px solid rgba(226,232,240,0.9);
+          box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
+        }
+        .admin-shell .header-icon-btn,
+        .admin-shell .header-avatar-btn {
+          box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+        }
+        .admin-shell .admin-main-inner {
+          padding: 26px 26px 30px;
+        }
+        .admin-shell .admin-surface {
+          background: rgba(255,255,255,0.78);
+          border: 1px solid rgba(226,232,240,0.92);
+          border-radius: 26px;
+          box-shadow: 0 24px 50px rgba(15, 23, 42, 0.08);
+          padding: 22px 22px 26px;
+        }
+        .admin-shell .admin-page-header {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 18px;
+          padding-bottom: 18px;
+          margin-bottom: 22px;
+          border-bottom: 1px solid rgba(226,232,240,0.85);
+        }
+        .admin-shell .admin-page-title {
+          font-size: 1.45rem;
+          line-height: 1.15;
+          font-weight: 800;
+          color: #0f172a;
+          margin: 0 0 6px;
+          letter-spacing: -0.03em;
+        }
+        .admin-shell .admin-page-subtitle {
+          font-size: 13px;
+          color: #64748b;
+          margin: 0;
+          font-weight: 500;
+        }
+        .admin-shell .admin-page-chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          background: linear-gradient(135deg, rgba(47,123,255,0.1), rgba(59,130,246,0.06));
+          color: #1e40af;
+          border: 1px solid rgba(147,197,253,0.75);
+          border-radius: 999px;
+          padding: 10px 14px;
+          font-size: 12px;
+          font-weight: 700;
+          white-space: nowrap;
+        }
+        .admin-shell .admin-empty-note {
+          padding: 14px 14px 2px;
+          color: rgba(255,255,255,0.62);
+          font-size: 12px;
+          font-weight: 500;
+        }
+        .admin-shell .container-fluid {
+          padding-left: 0;
+          padding-right: 0;
+        }
+        .admin-shell .card {
+          border: 1px solid rgba(226,232,240,0.92);
+          border-radius: 22px;
+          box-shadow: 0 16px 38px rgba(15, 23, 42, 0.06);
+          overflow: hidden;
+          background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.98));
+        }
+        .admin-shell .card-header {
+          background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(248,250,252,0.96)) !important;
+          border-bottom: 1px solid rgba(226,232,240,0.82) !important;
+        }
+        .admin-shell .card-body {
+          padding: 1.15rem 1.25rem;
+        }
+        .admin-shell .table-responsive {
+          border: 1px solid rgba(226,232,240,0.85);
+          border-radius: 18px;
+          background: rgba(255,255,255,0.86);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.65);
+        }
+        .admin-shell .table {
+          margin-bottom: 0;
+          vertical-align: middle;
+        }
+        .admin-shell .table > :not(caption) > * > * {
+          padding: 14px 16px;
+          border-bottom-color: rgba(226,232,240,0.72);
+        }
+        .admin-shell .table > thead {
+          background: linear-gradient(180deg, #f8fbff 0%, #f1f5f9 100%);
+        }
+        .admin-shell .table > thead th {
+          font-size: 11px;
+          font-weight: 800;
+          color: #64748b;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          border-bottom-color: rgba(226,232,240,0.9);
+        }
+        .admin-shell .table > tbody tr {
+          transition: background-color .18s ease, transform .18s ease;
+        }
+        .admin-shell .table > tbody tr:hover {
+          background: rgba(248,250,252,0.92);
+        }
+        .admin-shell .form-label,
+        .admin-shell .form-label-jago {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          margin-bottom: 8px;
+          font-size: 12px;
+          font-weight: 700;
+          color: #334155;
+          letter-spacing: -0.01em;
+        }
+        .admin-shell .form-control,
+        .admin-shell .form-select,
+        .admin-shell .admin-form-control,
+        .admin-shell textarea.form-control,
+        .admin-shell input.admin-form-control,
+        .admin-shell textarea.admin-form-control,
+        .admin-shell select.admin-form-control {
+          min-height: 46px;
+          border-radius: 14px !important;
+          border: 1px solid rgba(203,213,225,0.92) !important;
+          background: rgba(255,255,255,0.96) !important;
+          color: #0f172a !important;
+          box-shadow: 0 1px 2px rgba(15,23,42,0.02);
+          transition: border-color .18s ease, box-shadow .18s ease, background-color .18s ease;
+          padding: 11px 14px;
+          font-size: 13px;
+          font-weight: 500;
+        }
+        .admin-shell textarea.form-control,
+        .admin-shell textarea.admin-form-control {
+          min-height: 110px;
+          resize: vertical;
+        }
+        .admin-shell .form-control::placeholder,
+        .admin-shell .admin-form-control::placeholder {
+          color: #94a3b8;
+          font-weight: 500;
+        }
+        .admin-shell .form-control:focus,
+        .admin-shell .form-select:focus,
+        .admin-shell .admin-form-control:focus {
+          border-color: rgba(96,165,250,0.95) !important;
+          box-shadow: 0 0 0 4px rgba(59,130,246,0.12), 0 8px 20px rgba(59,130,246,0.08) !important;
+          background: #fff !important;
+        }
+        .admin-shell .input-group {
+          border-radius: 14px;
+        }
+        .admin-shell .input-group > .form-control,
+        .admin-shell .input-group > .form-select,
+        .admin-shell .input-group > .admin-form-control {
+          position: relative;
+          z-index: 1;
+        }
+        .admin-shell .input-group-text {
+          border-radius: 14px !important;
+          border: 1px solid rgba(203,213,225,0.92) !important;
+          background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%) !important;
+          color: #475569 !important;
+          font-size: 12px;
+          font-weight: 700;
+          padding: 0 14px;
+        }
+        .admin-shell .btn {
+          border-radius: 14px;
+          font-weight: 700;
+          letter-spacing: -0.01em;
+          box-shadow: 0 8px 20px rgba(15,23,42,0.04);
+          transition: transform .16s ease, box-shadow .16s ease, background-color .16s ease, border-color .16s ease;
+        }
+        .admin-shell .btn:hover {
+          transform: translateY(-1px);
+          box-shadow: 0 14px 28px rgba(15,23,42,0.08);
+        }
+        .admin-shell .btn:active {
+          transform: translateY(0);
+        }
+        .admin-shell .btn-sm {
+          border-radius: 12px;
+          padding: 8px 13px;
+          font-size: 12px;
+        }
+        .admin-shell .btn-primary {
+          background: linear-gradient(135deg, #2f7bff 0%, #1d4ed8 100%);
+          border-color: rgba(37,99,235,0.92);
+        }
+        .admin-shell .btn-primary:hover,
+        .admin-shell .btn-primary:focus {
+          background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
+          border-color: rgba(30,64,175,0.95);
+        }
+        .admin-shell .btn-outline-secondary,
+        .admin-shell .btn-light {
+          border-color: rgba(203,213,225,0.92);
+          background: rgba(255,255,255,0.92);
+          color: #334155;
+        }
+        .admin-shell .btn-outline-secondary:hover,
+        .admin-shell .btn-light:hover {
+          background: #f8fafc;
+          color: #0f172a;
+          border-color: rgba(148,163,184,0.72);
+        }
+        .admin-shell .badge {
+          border-radius: 999px;
+          padding: 7px 10px;
+          font-size: 10.5px;
+          font-weight: 800;
+          letter-spacing: 0.03em;
+        }
+        .admin-shell .modal.show {
+          background: rgba(15,23,42,0.42);
+          backdrop-filter: blur(6px);
+        }
+        .admin-shell .modal-dialog {
+          margin-top: 2.5rem;
+          margin-bottom: 2.5rem;
+        }
+        .admin-shell .modal-content {
+          border: 1px solid rgba(226,232,240,0.9);
+          border-radius: 24px;
+          overflow: hidden;
+          background: linear-gradient(180deg, rgba(255,255,255,0.99), rgba(248,250,252,0.98));
+          box-shadow: 0 28px 80px rgba(15,23,42,0.18);
+        }
+        .admin-shell .modal-header,
+        .admin-shell .modal-footer {
+          border-color: rgba(226,232,240,0.86);
+          background: rgba(255,255,255,0.82);
+        }
+        .admin-shell .modal-header {
+          padding: 18px 22px;
+        }
+        .admin-shell .modal-body {
+          padding: 20px 22px 22px;
+        }
+        .admin-shell .modal-footer {
+          padding: 16px 22px 20px;
+          gap: 10px;
+        }
+        .admin-shell .modal-title {
+          font-size: 1.15rem;
+          font-weight: 800;
+          color: #0f172a;
+          letter-spacing: -0.02em;
+        }
+        .admin-shell .dropdown-menu {
+          border-radius: 18px;
+          border: 1px solid rgba(226,232,240,0.88);
+          box-shadow: 0 20px 46px rgba(15,23,42,0.14);
+          padding: 10px;
+        }
+        .admin-shell .dropdown-item {
+          border-radius: 12px;
+          font-weight: 600;
+          color: #334155;
+          padding: 10px 12px;
+        }
+        .admin-shell .dropdown-item:hover {
+          background: #f8fafc;
+        }
+        .admin-shell .dropdown-item-text {
+          padding: 10px 12px 8px;
+        }
+        .admin-shell .pagination,
+        .admin-shell .d-flex.gap-2,
+        .admin-shell .d-flex.flex-wrap.gap-2 {
+          row-gap: 10px !important;
+        }
+        .admin-shell .nav-pills .nav-link,
+        .admin-shell .nav-tabs .nav-link {
+          border-radius: 14px;
+          font-weight: 700;
+        }
+        .admin-shell .text-muted {
+          color: #64748b !important;
+        }
+        @media (max-width: 991px) {
+          .admin-shell .admin-main-inner {
+            padding: 18px 14px 22px;
+          }
+          .admin-shell .admin-surface {
+            border-radius: 20px;
+            padding: 18px 16px 20px;
+          }
+          .admin-shell .admin-page-header {
+            flex-direction: column;
+            align-items: flex-start;
+          }
+        }
+      `}</style>
       {/* Overlay */}
       <div
         className={`aside-overlay${mobileOpen ? " active" : ""}`}
@@ -411,6 +789,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                   type="search"
                   className="theme-input-style search-form__input"
                   placeholder="Search Here"
+                  value={navSearch}
+                  onChange={(e) => setNavSearch(e.target.value)}
                   data-testid="sidebar-search"
                 />
               </div>
@@ -438,6 +818,11 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                   </ul>
                 </li>
               ))}
+              {visibleNav.length === 0 && (
+                <li className="admin-empty-note">
+                  No menu matches for "{navSearch.trim()}"
+                </li>
+              )}
             </ul>
 
             {/* Sidebar Logout */}
@@ -574,7 +959,21 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       {/* Main Content */}
       <div className="main-area admin-main-area">
         <div className="main-area-inner admin-main-inner">
-          {children}
+          <div className="admin-surface">
+            <div className="admin-page-header">
+              <div>
+                <h1 className="admin-page-title">{currentPage.label}</h1>
+                <p className="admin-page-subtitle">
+                  {currentPage.section} workspace with live controls, aligned metrics, and operational visibility.
+                </p>
+              </div>
+              <div className="admin-page-chip">
+                <i className="bi bi-shield-check"></i>
+                {admin.role || "superadmin"} · Live Control Mode
+              </div>
+            </div>
+            {children}
+          </div>
         </div>
       </div>
     </div>

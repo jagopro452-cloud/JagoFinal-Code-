@@ -40,6 +40,7 @@ class ApiConfig {
   static String get logout => '$baseUrl/api/app/logout';
   static String get fcmToken => '$baseUrl/api/app/fcm-token';
   static String get configs => '$baseUrl/api/app/configs';
+  static String get runtimeConfig => '$baseUrl/api/app/runtime-config';
   static String get sos => '$baseUrl/api/app/sos';
   static String get notifications => '$baseUrl/api/app/notifications';
   static String get notificationsReadAll => '$baseUrl/api/app/notifications/read-all';
@@ -123,6 +124,13 @@ class ApiConfig {
 
   // ── Module Revenue Config ─────────────────────────────────────────────
   static String get revenueConfig => '$baseUrl/api/app/revenue-config';
+  static String get localPoolSessionStart => '$baseUrl/api/app/driver/pool/session/start';
+  static String get localPoolSessionActive => '$baseUrl/api/app/driver/pool/session/active';
+  static String get localPoolSessionEnd => '$baseUrl/api/app/driver/pool/session/end';
+  static String get localPoolLocation => '$baseUrl/api/app/driver/pool/location';
+  static String localPoolPickup(String requestId) => '$baseUrl/api/app/driver/pool/passengers/$requestId/pickup';
+  static String localPoolDrop(String requestId) => '$baseUrl/api/app/driver/pool/passengers/$requestId/drop';
+  static String localPoolNoShow(String requestId) => '$baseUrl/api/app/driver/pool/passengers/$requestId/no-show';
 
   // ── Mapping (proxied through server — avoids hardcoded key) ─────────────
   static String get reverseGeocode => '$baseUrl/api/app/reverse-geocode';

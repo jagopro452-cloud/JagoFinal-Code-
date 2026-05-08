@@ -36,6 +36,13 @@ import {
 
 export let io: SocketIOServer;
 
+export function emitRuntimeConfigUpdated(payload: Record<string, any>) {
+  io?.emit("config:updated", {
+    ...payload,
+    emittedAt: new Date().toISOString(),
+  });
+}
+
 // Track connected sockets: userId → socketId
 // NOTE: These maps are local to this process. With Redis adapter, socket routing works across processes but these maps still need Redis-backed storage for full HA. TODO: migrate to Redis hashes.
 const driverSockets = new Map<string, string>();

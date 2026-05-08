@@ -30,6 +30,27 @@ const DIRECTION_TOLERANCE_DEG = 50; // bearing must match within ±50°
 const SEARCH_TIMEOUT_MIN = 5;     // cancel search if no match in 5 min
 const MATCHER_INTERVAL_MS = 20_000; // re-run matcher every 20s
 
+function poolResponse(
+  success: boolean,
+  code: string,
+  message: string,
+  data: Record<string, any> = {},
+  retryable = false,
+) {
+  return {
+    success,
+    code,
+    message,
+    retryable,
+    data,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function generateBoardingOtp(): string {
+  return String(1000 + Math.floor(Math.random() * 9000));
+}
+
 // ── Schema ───────────────────────────────────────────────────────────────────
 
 export async function ensureRollingPoolSchema(): Promise<void> {
@@ -44,6 +65,7 @@ export async function ensureRollingPoolSchema(): Promise<void> {
       current_lat            NUMERIC(10,7),
       current_lng            NUMERIC(10,7),
       current_bearing_deg    NUMERIC(6,2),
+      last_location_at       TIMESTAMP,
       total_passengers_served INTEGER NOT NULL DEFAULT 0,
       total_earnings         NUMERIC(12,2) NOT NULL DEFAULT 0,
       started_at             TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -51,6 +73,11 @@ export async function ensureRollingPoolSchema(): Promise<void> {
       created_at             TIMESTAMP NOT NULL DEFAULT NOW(),
       updated_at             TIMESTAMP NOT NULL DEFAULT NOW()
     )
+  `);
+
+  await rawDb.execute(rawSql`
+    ALTER TABLE driver_pool_sessions
+    ADD COLUMN IF NOT EXISTS last_location_at TIMESTAMP
   `);
 
   await rawDb.execute(rawSql`
@@ -64,6 +91,7 @@ export async function ensureRollingPoolSchema(): Promise<void> {
       id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       session_id       UUID REFERENCES driver_pool_sessions(id),
       customer_id      UUID NOT NULL REFERENCES users(id),
+      vehicle_category_id UUID,
       pickup_lat       NUMERIC(10,7) NOT NULL,
       pickup_lng       NUMERIC(10,7) NOT NULL,
       drop_lat         NUMERIC(10,7) NOT NULL,
@@ -74,9 +102,17 @@ export async function ensureRollingPoolSchema(): Promise<void> {
       fare_per_seat    NUMERIC(10,2) NOT NULL DEFAULT 0,
       total_fare       NUMERIC(10,2) NOT NULL DEFAULT 0,
       distance_km      NUMERIC(10,2) NOT NULL DEFAULT 0,
+      commission_amount NUMERIC(10,2) NOT NULL DEFAULT 0,
+      driver_earnings  NUMERIC(10,2) NOT NULL DEFAULT 0,
       payment_method   VARCHAR(20) NOT NULL DEFAULT 'cash',
       status           VARCHAR(20) NOT NULL DEFAULT 'searching',
       pickup_order     INTEGER,
+      drop_order       INTEGER,
+      boarding_otp     VARCHAR(6),
+      seat_lock_expires_at TIMESTAMP,
+      cluster_key      TEXT,
+      cancel_reason    TEXT,
+      refund_amount    NUMERIC(10,2) NOT NULL DEFAULT 0,
       searched_at      TIMESTAMP NOT NULL DEFAULT NOW(),
       matched_at       TIMESTAMP,
       picked_up_at     TIMESTAMP,
@@ -88,6 +124,19 @@ export async function ensureRollingPoolSchema(): Promise<void> {
   `);
 
   await rawDb.execute(rawSql`
+    ALTER TABLE pool_ride_requests
+    ADD COLUMN IF NOT EXISTS vehicle_category_id UUID,
+    ADD COLUMN IF NOT EXISTS commission_amount NUMERIC(10,2) NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS driver_earnings NUMERIC(10,2) NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS drop_order INTEGER,
+    ADD COLUMN IF NOT EXISTS boarding_otp VARCHAR(6),
+    ADD COLUMN IF NOT EXISTS seat_lock_expires_at TIMESTAMP,
+    ADD COLUMN IF NOT EXISTS cluster_key TEXT,
+    ADD COLUMN IF NOT EXISTS cancel_reason TEXT,
+    ADD COLUMN IF NOT EXISTS refund_amount NUMERIC(10,2) NOT NULL DEFAULT 0
+  `);
+
+  await rawDb.execute(rawSql`
     CREATE INDEX IF NOT EXISTS idx_pool_requests_searching
     ON pool_ride_requests(status, created_at)
     WHERE status = 'searching'
@@ -95,6 +144,14 @@ export async function ensureRollingPoolSchema(): Promise<void> {
   await rawDb.execute(rawSql`
     CREATE INDEX IF NOT EXISTS idx_pool_requests_session
     ON pool_ride_requests(session_id, status)
+  `);
+  await rawDb.execute(rawSql`
+    CREATE INDEX IF NOT EXISTS idx_pool_requests_customer_status
+    ON pool_ride_requests(customer_id, status, created_at DESC)
+  `);
+  await rawDb.execute(rawSql`
+    CREATE INDEX IF NOT EXISTS idx_pool_requests_vehicle_status
+    ON pool_ride_requests(vehicle_category_id, status, searched_at DESC)
   `);
   await rawDb.execute(rawSql`
     CREATE INDEX IF NOT EXISTS idx_pool_sessions_active
@@ -150,12 +207,52 @@ function calcPoolFare(distKm: number, seats: number): { farePerSeat: number; tot
   const PER_KM = 8;
   const MIN_FARE = 40;
   const raw = Math.max(MIN_FARE, BASE + PER_KM * distKm);
-  // Pool discount: 25% off vs solo
-  const poolPrice = Math.round(raw * 0.75 * 100) / 100;
+  const seatDiscountFactor = seats >= 3 ? 0.70 : seats === 2 ? 0.73 : 0.76;
+  const poolPrice = Math.round(raw * seatDiscountFactor * 100) / 100;
   return {
     farePerSeat: poolPrice,
     totalFare: Math.round(poolPrice * seats * 100) / 100,
   };
+}
+
+async function emitSeatUpdate(sessionId: string): Promise<void> {
+  const sessionR = await rawDb.execute(rawSql`
+    SELECT dps.id, dps.driver_id, dps.max_seats, dps.available_seats, dps.status,
+           COUNT(prr.id) FILTER (WHERE prr.status IN ('matched', 'picked_up'))::int as active_passengers,
+           COUNT(prr.id) FILTER (WHERE prr.status = 'picked_up')::int as onboard_passengers,
+           COUNT(prr.id) FILTER (WHERE prr.status = 'matched')::int as pending_pickups
+    FROM driver_pool_sessions dps
+    LEFT JOIN pool_ride_requests prr ON prr.session_id = dps.id
+    WHERE dps.id = ${sessionId}::uuid
+    GROUP BY dps.id
+    LIMIT 1
+  `).catch(() => ({ rows: [] as any[] }));
+  const session = sessionR.rows[0] as any;
+  if (!session) return;
+
+  const maxSeats = parseInt(session.max_seats || 0);
+  const availableSeats = parseInt(session.available_seats || 0);
+  const payload = {
+    sessionId,
+    maxSeats,
+    availableSeats,
+    occupiedSeats: Math.max(0, maxSeats - availableSeats),
+    activePassengers: parseInt(session.active_passengers || 0),
+    onboardPassengers: parseInt(session.onboard_passengers || 0),
+    pendingPickups: parseInt(session.pending_pickups || 0),
+    occupancyPercent: maxSeats > 0 ? Math.round(((maxSeats - availableSeats) / maxSeats) * 100) : 0,
+    status: session.status,
+  };
+
+  io.to(`user:${session.driver_id}`).emit("pool:seat_update", payload);
+  const customerR = await rawDb.execute(rawSql`
+    SELECT customer_id
+    FROM pool_ride_requests
+    WHERE session_id = ${sessionId}::uuid AND status IN ('matched', 'picked_up')
+  `).catch(() => ({ rows: [] as any[] }));
+  for (const row of customerR.rows as any[]) {
+    io.to(`user:${row.customer_id}`).emit("pool:seat_update", payload);
+  }
 }
 
 // ── Core matching logic ───────────────────────────────────────────────────────
@@ -256,13 +353,16 @@ async function matchRequest(requestId: string): Promise<boolean> {
     );
     assignedPickupOrder = pickupOrderR.rows[0].next;
     const pickupOrder = assignedPickupOrder;
+    const dropOrder = assignedPickupOrder;
 
     await txClient.query(
       `UPDATE pool_ride_requests
        SET session_id = $1, status = 'matched', matched_at = NOW(),
-           pickup_order = $2, updated_at = NOW()
-       WHERE id = $3`,
-      [match.sessionId, pickupOrder, requestId],
+           pickup_order = $2, drop_order = $3,
+           seat_lock_expires_at = NOW() + INTERVAL '8 minutes',
+           updated_at = NOW()
+       WHERE id = $4`,
+      [match.sessionId, pickupOrder, dropOrder, requestId],
     );
     await txClient.query(
       `UPDATE driver_pool_sessions
@@ -328,8 +428,11 @@ async function matchRequest(requestId: string): Promise<boolean> {
       lat: parseFloat(di.current_lat || 0),
       lng: parseFloat(di.current_lng || 0),
     },
+    seatLockExpiresAt: new Date(Date.now() + 8 * 60 * 1000).toISOString(),
     message: "Driver found! Watch for pickup notification.",
   });
+
+  await emitSeatUpdate(match.sessionId);
 
   return true;
 }
@@ -376,7 +479,7 @@ async function runMatcher(): Promise<void> {
 
 // ── Route registration ────────────────────────────────────────────────────────
 
-export function registerRollingPoolRoutes(app: Express, authApp: any): void {
+export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdminAuth?: any): void {
 
   // ─── DRIVER: Start pool session ───────────────────────────────────────────
 
@@ -413,9 +516,10 @@ export function registerRollingPoolRoutes(app: Express, authApp: any): void {
       const session = r.rows[0] as any;
 
       console.log(`[ROLLING-POOL] driver ${driver.id} started session ${session.id}`);
-      res.json({ success: true, session });
+      await emitSeatUpdate(String(session.id));
+      res.json(poolResponse(true, "POOL_SESSION_STARTED", "Pool session started", { session }));
     } catch (e: any) {
-      res.status(500).json({ message: e.message });
+      res.status(500).json(poolResponse(false, "POOL_SESSION_START_FAILED", e.message || "Could not start pool session", {}, true));
     }
   });
 
@@ -425,13 +529,14 @@ export function registerRollingPoolRoutes(app: Express, authApp: any): void {
     try {
       const driver = req.currentUser;
       const { lat, lng, bearingDeg } = req.body;
-      if (!lat || !lng) return res.status(400).json({ message: "lat/lng required" });
+      if (!lat || !lng) return res.status(400).json(poolResponse(false, "POOL_LOCATION_REQUIRED", "lat/lng required"));
 
       await rawDb.execute(rawSql`
         UPDATE driver_pool_sessions
         SET current_lat = ${parseFloat(lat)},
             current_lng = ${parseFloat(lng)},
             current_bearing_deg = ${bearingDeg != null ? parseFloat(bearingDeg) : null},
+            last_location_at = NOW(),
             updated_at = NOW()
         WHERE driver_id = ${driver.id}::uuid AND status = 'active'
       `);
@@ -454,9 +559,18 @@ export function registerRollingPoolRoutes(app: Express, authApp: any): void {
         }
       }).catch(() => undefined);
 
-      res.json({ success: true });
+      const sessionR = await rawDb.execute(rawSql`
+        SELECT id FROM driver_pool_sessions
+        WHERE driver_id = ${driver.id}::uuid AND status = 'active' LIMIT 1
+      `).catch(() => ({ rows: [] as any[] }));
+      const session = sessionR.rows[0] as any;
+      if (session?.id) {
+        await emitSeatUpdate(String(session.id));
+      }
+
+      res.json(poolResponse(true, "POOL_LOCATION_UPDATED", "Pool location updated"));
     } catch (e: any) {
-      res.status(500).json({ message: e.message });
+      res.status(500).json(poolResponse(false, "POOL_LOCATION_UPDATE_FAILED", e.message || "Could not update pool location", {}, true));
     }
   });
 
@@ -470,7 +584,7 @@ export function registerRollingPoolRoutes(app: Express, authApp: any): void {
         WHERE driver_id = ${driver.id}::uuid AND status = 'active'
         LIMIT 1
       `);
-      if (!sessionR.rows.length) return res.json({ session: null, passengers: [] });
+      if (!sessionR.rows.length) return res.json(poolResponse(true, "POOL_SESSION_EMPTY", "No active pool session", { session: null, passengers: [] }));
 
       const session = sessionR.rows[0] as any;
       const passR = await rawDb.execute(rawSql`
@@ -481,9 +595,12 @@ export function registerRollingPoolRoutes(app: Express, authApp: any): void {
           AND prr.status IN ('matched', 'picked_up')
         ORDER BY prr.pickup_order ASC
       `);
-      res.json({ session, passengers: passR.rows });
+      res.json(poolResponse(true, "POOL_SESSION_ACTIVE", "Active pool session loaded", {
+        session,
+        passengers: passR.rows,
+      }));
     } catch (e: any) {
-      res.status(500).json({ message: e.message });
+      res.status(500).json(poolResponse(false, "POOL_SESSION_FETCH_FAILED", e.message || "Could not load pool session", {}, true));
     }
   });
 
@@ -493,6 +610,10 @@ export function registerRollingPoolRoutes(app: Express, authApp: any): void {
     try {
       const driver = req.currentUser;
       const requestId = String(req.params.requestId);
+      const otp = String(req.body?.otp ?? '').trim();
+      if (otp.length === 0) {
+        return res.status(400).json(poolResponse(false, "POOL_PICKUP_OTP_REQUIRED", "Boarding OTP required"));
+      }
 
       // Verify driver owns the session for this request
       const r = await rawDb.execute(rawSql`
@@ -504,9 +625,10 @@ export function registerRollingPoolRoutes(app: Express, authApp: any): void {
           AND dps.driver_id = ${driver.id}::uuid
           AND dps.status = 'active'
           AND prr.status = 'matched'
-        RETURNING prr.customer_id, prr.pickup_address, prr.drop_address
+          AND prr.boarding_otp = ${otp}
+        RETURNING prr.customer_id, prr.pickup_address, prr.drop_address, prr.session_id
       `);
-      if (!r.rows.length) return res.status(404).json({ message: "Passenger not found or already picked up" });
+      if (!r.rows.length) return res.status(404).json(poolResponse(false, "POOL_PICKUP_FAILED", "Passenger not found, already picked up, or OTP invalid"));
 
       const p = r.rows[0] as any;
       io.to(`user:${p.customer_id}`).emit("pool:picked_up", {
@@ -515,13 +637,60 @@ export function registerRollingPoolRoutes(app: Express, authApp: any): void {
         dropAddress: p.drop_address,
       });
 
-      res.json({ success: true });
+      await emitSeatUpdate(String(p.session_id));
+      res.json(poolResponse(true, "POOL_PASSENGER_PICKED_UP", "Passenger picked up"));
     } catch (e: any) {
-      res.status(500).json({ message: e.message });
+      res.status(500).json(poolResponse(false, "POOL_PICKUP_ERROR", e.message || "Could not pick up passenger", {}, true));
     }
   });
 
   // ─── DRIVER: Drop passenger + settle fare ────────────────────────────────
+
+  app.post("/api/app/driver/pool/passengers/:requestId/no-show", authApp, async (req: any, res: any) => {
+    try {
+      const driver = req.currentUser;
+      const requestId = String(req.params.requestId);
+
+      const r = await rawDb.execute(rawSql`
+        SELECT prr.session_id, prr.customer_id, prr.seats_requested
+        FROM pool_ride_requests prr
+        JOIN driver_pool_sessions dps ON dps.id = prr.session_id
+        WHERE prr.id = ${requestId}::uuid
+          AND dps.driver_id = ${driver.id}::uuid
+          AND dps.status = 'active'
+          AND prr.status = 'matched'
+        LIMIT 1
+      `);
+      if (!r.rows.length) {
+        return res.status(404).json(poolResponse(false, "POOL_NO_SHOW_NOT_FOUND", "Passenger not found or cannot be marked no-show"));
+      }
+
+      const row = r.rows[0] as any;
+      await rawDb.execute(rawSql`
+        UPDATE pool_ride_requests
+        SET status = 'cancelled',
+            cancelled_at = NOW(),
+            cancel_reason = 'Passenger no-show',
+            updated_at = NOW()
+        WHERE id = ${requestId}::uuid
+      `);
+      await rawDb.execute(rawSql`
+        UPDATE driver_pool_sessions
+        SET available_seats = available_seats + ${parseInt(row.seats_requested || 1)},
+            updated_at = NOW()
+        WHERE id = ${row.session_id}::uuid
+      `);
+
+      io.to(`user:${row.customer_id}`).emit("pool:cancelled", {
+        requestId,
+        reason: "Driver marked you as a no-show for this pooled ride.",
+      });
+      await emitSeatUpdate(String(row.session_id));
+      res.json(poolResponse(true, "POOL_PASSENGER_NO_SHOW", "Passenger marked as no-show"));
+    } catch (e: any) {
+      res.status(500).json(poolResponse(false, "POOL_NO_SHOW_FAILED", e.message || "Could not mark no-show", {}, true));
+    }
+  });
 
   app.post("/api/app/driver/pool/passengers/:requestId/drop", authApp, async (req: any, res: any) => {
     try {
@@ -592,9 +761,14 @@ export function registerRollingPoolRoutes(app: Express, authApp: any): void {
         message: "Thanks for riding! Have a great day.",
       });
 
-      res.json({ success: true, fare, driverEarnings, newWalletBalance });
+      await emitSeatUpdate(String(req_.session_id));
+      res.json(poolResponse(true, "POOL_PASSENGER_DROPPED", "Passenger dropped successfully", {
+        fare,
+        driverEarnings,
+        newWalletBalance,
+      }));
     } catch (e: any) {
-      res.status(500).json({ message: e.message });
+      res.status(500).json(poolResponse(false, "POOL_DROP_FAILED", e.message || "Could not complete pooled drop", {}, true));
     }
   });
 
@@ -609,7 +783,7 @@ export function registerRollingPoolRoutes(app: Express, authApp: any): void {
         SELECT id FROM driver_pool_sessions
         WHERE driver_id = ${driver.id}::uuid AND status = 'active' LIMIT 1
       `);
-      if (!sessionR.rows.length) return res.json({ success: true, message: "No active session" });
+      if (!sessionR.rows.length) return res.json(poolResponse(true, "POOL_SESSION_ALREADY_ENDED", "No active session"));
 
       const sessionId = (sessionR.rows[0] as any).id;
 
@@ -644,13 +818,13 @@ export function registerRollingPoolRoutes(app: Express, authApp: any): void {
       const stats = endR.rows[0] as any;
 
       console.log(`[ROLLING-POOL] driver ${driver.id} ended session ${sessionId}`);
-      res.json({
-        success: true,
+      await emitSeatUpdate(String(sessionId));
+      res.json(poolResponse(true, "POOL_SESSION_ENDED", "Pool session ended", {
         totalPassengersServed: parseInt(stats?.total_passengers_served || 0),
         totalEarnings: parseFloat(stats?.total_earnings || 0),
-      });
+      }));
     } catch (e: any) {
-      res.status(500).json({ message: e.message });
+      res.status(500).json(poolResponse(false, "POOL_SESSION_END_FAILED", e.message || "Could not end pool session", {}, true));
     }
   });
 
@@ -668,7 +842,7 @@ export function registerRollingPoolRoutes(app: Express, authApp: any): void {
       } = req.body;
 
       if (!pickupLat || !pickupLng || !dropLat || !dropLng) {
-        return res.status(400).json({ message: "Pickup and drop coordinates required" });
+        return res.status(400).json(poolResponse(false, "POOL_COORDS_REQUIRED", "Pickup and drop coordinates required"));
       }
 
       const seats = Math.min(Math.max(parseInt(String(seatsRequested)) || 1, 1), 4);
@@ -678,19 +852,30 @@ export function registerRollingPoolRoutes(app: Express, authApp: any): void {
       const dLng = parseFloat(dropLng);
       const distKm = haversineKmPool(pLat, pLng, dLat, dLng);
       const { farePerSeat, totalFare } = calcPoolFare(distKm, seats);
+      const commissionAmount = Math.round(totalFare * 0.15 * 100) / 100;
+      const driverEarnings = Math.round((totalFare - commissionAmount) * 100) / 100;
+      const boardingOtp = generateBoardingOtp();
+      const clusterKey = [
+        Math.round(pLat * 100) / 100,
+        Math.round(pLng * 100) / 100,
+        Math.round(dLat * 100) / 100,
+        Math.round(dLng * 100) / 100,
+      ].join(':');
 
       // Create request in 'searching' state
       const r = await rawDb.execute(rawSql`
         INSERT INTO pool_ride_requests
-          (customer_id, pickup_lat, pickup_lng, drop_lat, drop_lng,
+          (customer_id, vehicle_category_id, pickup_lat, pickup_lng, drop_lat, drop_lng,
            pickup_address, drop_address, seats_requested,
-           fare_per_seat, total_fare, distance_km, payment_method, status, searched_at)
+           fare_per_seat, total_fare, distance_km, commission_amount, driver_earnings,
+           payment_method, status, searched_at, boarding_otp, cluster_key)
         VALUES
           (${customer.id}::uuid,
+           ${vehicleCategoryId || null}${vehicleCategoryId ? rawSql`::uuid` : rawSql``},
            ${pLat}, ${pLng}, ${dLat}, ${dLng},
            ${pickupAddress || null}, ${dropAddress || null}, ${seats},
-           ${farePerSeat}, ${totalFare}, ${distKm},
-           ${paymentMethod}, 'searching', NOW())
+           ${farePerSeat}, ${totalFare}, ${distKm}, ${commissionAmount}, ${driverEarnings},
+           ${paymentMethod}, 'searching', NOW(), ${boardingOtp}, ${clusterKey})
         RETURNING id
       `);
       const requestId = String((r.rows[0] as any).id);
@@ -698,10 +883,10 @@ export function registerRollingPoolRoutes(app: Express, authApp: any): void {
       // Try immediate match
       const matched = await matchRequest(requestId);
 
-      res.json({
-        success: true,
+      res.json(poolResponse(true, matched ? "POOL_MATCHED" : "POOL_SEARCHING", matched ? "Driver found! Tracking now." : `Searching for a pool driver nearby... (up to ${SEARCH_TIMEOUT_MIN} min)`, {
         requestId,
         status: matched ? "matched" : "searching",
+        boardingOtp,
         farePerSeat,
         totalFare,
         seatsRequested: seats,
@@ -710,14 +895,13 @@ export function registerRollingPoolRoutes(app: Express, authApp: any): void {
           perSeatFare: farePerSeat,
           seatsBooked: seats,
           totalFare,
-          note: `Pool fare (25% off solo) — ₹${farePerSeat.toFixed(0)}/seat × ${seats} = ₹${totalFare.toFixed(0)}`,
+          commissionAmount,
+          driverEarnings,
+          note: `Dynamic pool fare — Rs ${farePerSeat.toFixed(0)}/seat x ${seats} = Rs ${totalFare.toFixed(0)}`,
         },
-        message: matched
-          ? "Driver found! Tracking now."
-          : `Searching for a pool driver nearby... (up to ${SEARCH_TIMEOUT_MIN} min)`,
-      });
+      }));
     } catch (e: any) {
-      res.status(500).json({ message: e.message });
+      res.status(500).json(poolResponse(false, "POOL_BOOKING_FAILED", e.message || "Could not create pooled booking", {}, true));
     }
   });
 
@@ -740,11 +924,11 @@ export function registerRollingPoolRoutes(app: Express, authApp: any): void {
         WHERE prr.id = ${requestId}::uuid AND prr.customer_id = ${customer.id}::uuid
         LIMIT 1
       `);
-      if (!r.rows.length) return res.status(404).json({ message: "Booking not found" });
+      if (!r.rows.length) return res.status(404).json(poolResponse(false, "POOL_STATUS_NOT_FOUND", "Booking not found"));
 
-      res.json({ data: r.rows[0] });
+      res.json(poolResponse(true, "POOL_STATUS_LOADED", "Pool booking loaded", { booking: r.rows[0] }));
     } catch (e: any) {
-      res.status(500).json({ message: e.message });
+      res.status(500).json(poolResponse(false, "POOL_STATUS_FAILED", e.message || "Could not load pool status", {}, true));
     }
   });
 
@@ -761,14 +945,14 @@ export function registerRollingPoolRoutes(app: Express, authApp: any): void {
         WHERE prr.id = ${requestId}::uuid AND prr.customer_id = ${customer.id}::uuid
         LIMIT 1
       `);
-      if (!r.rows.length) return res.status(404).json({ message: "Booking not found" });
+      if (!r.rows.length) return res.status(404).json(poolResponse(false, "POOL_CANCEL_NOT_FOUND", "Booking not found"));
 
       const booking = r.rows[0] as any;
       if (booking.status === "picked_up") {
-        return res.status(400).json({ message: "Cannot cancel — already picked up" });
+        return res.status(400).json(poolResponse(false, "POOL_CANCEL_TOO_LATE", "Cannot cancel - already picked up"));
       }
       if (["dropped", "cancelled"].includes(booking.status)) {
-        return res.json({ success: true, message: "Already completed/cancelled" });
+        return res.json(poolResponse(true, "POOL_ALREADY_CLOSED", "Already completed/cancelled"));
       }
 
       await rawDb.execute(rawSql`
@@ -797,11 +981,12 @@ export function registerRollingPoolRoutes(app: Express, authApp: any): void {
             message: "A passenger cancelled their booking.",
           });
         }
+        await emitSeatUpdate(String(booking.session_id));
       }
 
-      res.json({ success: true });
+      res.json(poolResponse(true, "POOL_CANCELLED", "Pool booking cancelled"));
     } catch (e: any) {
-      res.status(500).json({ message: e.message });
+      res.status(500).json(poolResponse(false, "POOL_CANCEL_FAILED", e.message || "Could not cancel pool booking", {}, true));
     }
   });
 
@@ -821,15 +1006,15 @@ export function registerRollingPoolRoutes(app: Express, authApp: any): void {
         ORDER BY prr.created_at DESC
         LIMIT 50
       `);
-      res.json({ data: r.rows });
+      res.json(poolResponse(true, "POOL_HISTORY_LOADED", "Pool booking history loaded", { bookings: r.rows }));
     } catch (e: any) {
-      res.status(500).json({ message: e.message });
+      res.status(500).json(poolResponse(false, "POOL_HISTORY_FAILED", e.message || "Could not load pool history", {}, true));
     }
   });
 
   // ─── ADMIN: Active pool sessions ──────────────────────────────────────────
 
-  app.get("/api/admin/pool/sessions", async (req: any, res: any) => {
+  app.get("/api/admin/pool/sessions", requireAdminAuth || ((_req: any, _res: any, next: any) => next()), async (req: any, res: any) => {
     try {
       const r = await rawDb.execute(rawSql`
         SELECT dps.*,
@@ -844,9 +1029,28 @@ export function registerRollingPoolRoutes(app: Express, authApp: any): void {
         GROUP BY dps.id, u.full_name, u.phone
         ORDER BY dps.started_at DESC
       `);
-      res.json({ data: r.rows });
+      res.json(poolResponse(true, "POOL_SESSIONS_LOADED", "Active pool sessions loaded", { sessions: r.rows }));
     } catch (e: any) {
-      res.status(500).json({ message: e.message });
+      res.status(500).json(poolResponse(false, "POOL_SESSIONS_FAILED", e.message || "Could not load active pool sessions", {}, true));
+    }
+  });
+
+  app.get("/api/admin/pool/stats", requireAdminAuth || ((_req: any, _res: any, next: any) => next()), async (_req: any, res: any) => {
+    try {
+      const r = await rawDb.execute(rawSql`
+        SELECT
+          COUNT(*) FILTER (WHERE status = 'active')::int as active_sessions,
+          COUNT(*) FILTER (WHERE status = 'ended')::int as ended_sessions,
+          COALESCE(SUM(total_passengers_served), 0)::int as total_passengers_served,
+          COALESCE(SUM(total_earnings), 0)::numeric as total_driver_earnings,
+          COALESCE(AVG(NULLIF(max_seats - available_seats, 0)), 0)::numeric as avg_occupied_seats
+        FROM driver_pool_sessions
+      `);
+      res.json(poolResponse(true, "POOL_STATS_LOADED", "Pool analytics loaded", {
+        stats: r.rows[0] ?? {},
+      }));
+    } catch (e: any) {
+      res.status(500).json(poolResponse(false, "POOL_STATS_FAILED", e.message || "Could not load pool analytics", {}, true));
     }
   });
 }

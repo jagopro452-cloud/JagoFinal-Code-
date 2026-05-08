@@ -16,6 +16,7 @@ import '../../services/trip_service.dart';
 import '../../services/vehicle_status_service.dart';
 import '../tracking/parcel_tracking_screen.dart';
 import '../tracking/tracking_screen.dart';
+import '../tracking/local_pool_status_screen.dart';
 import 'ride_for_whom_screen.dart';
 
 class BookingScreen extends StatefulWidget {
@@ -405,7 +406,9 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     'premium': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_31_05_AM_kavp5e',
     'parcel_bike': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_49_26_AM_gjbrxs',
     'parcel_auto': 'https://res.cloudinary.com/kits/image/upload/q_auto/f_auto/v1775367404/be5b86c2-7a8a-4dbd-ad33-e8da2b627d5e_vurdrg.png',
+    'tata_ace':    'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_51_59_AM_jzd119',
     'mini_truck':  'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_51_59_AM_jzd119',
+    'pickup_truck':'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_54_02_AM_hicx7s',
     'pickup_van':  'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_54_02_AM_hicx7s',
     'local_pool':       'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_27_28_AM_w0rcnh',
     'outstation_pool':  'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_31_05_AM_kavp5e',
@@ -967,25 +970,37 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
           'dropLat': widget.destLat, 'dropLng': widget.destLng,
           'pickupAddress': widget.pickup,
           'dropAddress': widget.destination,
-          'seatsBooked': _seatsBooked,
+          'seatsRequested': _seatsBooked,
           'paymentMethod': _paymentMethod,
           if (vcId != null && vcId.isNotEmpty) 'vehicleCategoryId': vcId,
         };
         debugPrint('[LOCAL_POOL_BOOK] payload=${jsonEncode(poolBody)}');
         final res = await http.post(
-          Uri.parse('${ApiConfig.baseUrl}/api/app/customer/local-pool/book'),
+          Uri.parse(ApiConfig.localPoolBook),
           headers: headers,
           body: jsonEncode(poolBody),
         );
         if (res.statusCode == 200) {
           final data = jsonDecode(res.body);
           if (!mounted) return;
-          _showSnack(
-            'Pool ride booked! $_seatsBooked seat(s) · ₹${data['totalFare']?.toStringAsFixed(0) ?? ''} · ${data['message'] ?? 'Matching driver...'}',
-            error: false,
-          );
           setState(() => _loading = false);
-          Navigator.pop(context);
+          final payload = (data['data'] is Map<String, dynamic>) ? data['data'] as Map<String, dynamic> : data;
+          final requestId = payload['requestId']?.toString() ?? '';
+          if (requestId.isEmpty) {
+            _showSnack('Pool booking created but tracking details are unavailable. Please check My Trips.', error: true);
+            Navigator.pop(context);
+            return;
+          }
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => LocalPoolStatusScreen(
+                requestId: requestId,
+                pickupAddress: widget.pickup,
+                dropAddress: widget.destination,
+              ),
+            ),
+          );
         } else {
           if (!mounted) return;
           final err = jsonDecode(res.body);

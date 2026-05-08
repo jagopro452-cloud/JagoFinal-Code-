@@ -131,6 +131,274 @@ const reverseGeocodeCache = new SimpleCache<ReverseGeocodeResult>(2000, 60 * 60 
 const placesCache = new SimpleCache<PlacePrediction[]>(1000, 5 * 60 * 1000);               // 5 min
 const etaCache = new SimpleCache<ETAResult>(3000, 2 * 60 * 1000);                          // 2 min
 
+export interface LocationSelectionPayload {
+  placeId?: string;
+  queryText?: string;
+  placeLabel: string;
+  placeAddress?: string;
+  lat?: number;
+  lng?: number;
+}
+
+export async function ensureLocationIntelligenceSchema(): Promise<void> {
+  await rawDb.execute(rawSql`
+    CREATE TABLE IF NOT EXISTS landmark_aliases (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      alias TEXT NOT NULL UNIQUE,
+      normalized_alias TEXT NOT NULL,
+      canonical_name TEXT NOT NULL,
+      canonical_address TEXT,
+      city_name TEXT,
+      latitude DOUBLE PRECISION,
+      longitude DOUBLE PRECISION,
+      popularity_score INTEGER NOT NULL DEFAULT 0,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await rawDb.execute(rawSql`
+    CREATE TABLE IF NOT EXISTS location_search_history (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      place_id TEXT,
+      query_text TEXT,
+      normalized_query TEXT NOT NULL,
+      place_label TEXT NOT NULL,
+      place_address TEXT,
+      latitude DOUBLE PRECISION,
+      longitude DOUBLE PRECISION,
+      use_count INTEGER NOT NULL DEFAULT 1,
+      last_used_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await rawDb.execute(rawSql`
+    CREATE TABLE IF NOT EXISTS pickup_quality_scores (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      geohash_key TEXT NOT NULL UNIQUE,
+      location_label TEXT,
+      latitude DOUBLE PRECISION,
+      longitude DOUBLE PRECISION,
+      quality_score NUMERIC(5,2) NOT NULL DEFAULT 0,
+      risk_flags JSONB NOT NULL DEFAULT '[]'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_landmark_aliases_lookup ON landmark_aliases(normalized_alias, is_active)`);
+  await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_location_search_history_user_used ON location_search_history(user_id, last_used_at DESC)`);
+  await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_location_search_history_query ON location_search_history(normalized_query)`);
+
+  await rawDb.execute(rawSql`
+    INSERT INTO landmark_aliases
+      (alias, normalized_alias, canonical_name, canonical_address, city_name, latitude, longitude, popularity_score)
+    VALUES
+      ('benz circle', 'benz circle', 'Benz Circle', 'Benz Circle, Vijayawada, Andhra Pradesh, India', 'Vijayawada', 16.501576, 80.649643, 90),
+      ('vja busstand', 'vijayawada bus stand', 'Vijayawada Bus Stand', 'Vijayawada Bus Stand, Vijayawada, Andhra Pradesh, India', 'Vijayawada', 16.516726, 80.616961, 92),
+      ('vijywada bus stand', 'vijayawada bus stand', 'Vijayawada Bus Stand', 'Vijayawada Bus Stand, Vijayawada, Andhra Pradesh, India', 'Vijayawada', 16.516726, 80.616961, 92),
+      ('railway stn', 'railway station', 'Vijayawada Junction Railway Station', 'Vijayawada Junction Railway Station, Vijayawada, Andhra Pradesh, India', 'Vijayawada', 16.518503, 80.620886, 88),
+      ('kphb metro', 'kphb metro station', 'KPHB Colony Metro Station', 'KPHB Colony Metro Station, Hyderabad, Telangana, India', 'Hyderabad', 17.494793, 78.399644, 75)
+    ON CONFLICT (alias) DO NOTHING
+  `).catch(() => {});
+}
+
+function normalizeLocationQuery(query: string): string {
+  let normalized = (query || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[.,]/g, " ")
+    .replace(/\s+/g, " ");
+
+  const replacements: Array<[RegExp, string]> = [
+    [/\bvja\b/g, "vijayawada"],
+    [/\bvijywada\b/g, "vijayawada"],
+    [/\bbusstand\b/g, "bus stand"],
+    [/\bstn\b/g, "station"],
+    [/\brly\b/g, "railway"],
+    [/\bjn\b/g, "junction"],
+    [/\bopp\b/g, "opposite"],
+    [/\bnear by\b/g, "near"],
+    [/\bmy home\b/g, "home"],
+  ];
+
+  for (const [pattern, value] of replacements) {
+    normalized = normalized.replace(pattern, value);
+  }
+
+  return normalized.replace(/\s+/g, " ").trim();
+}
+
+function locationScore(
+  place: PlacePrediction,
+  normalizedQuery: string,
+  lat?: number,
+  lng?: number,
+): number {
+  const hay = `${place.mainText} ${place.secondaryText} ${place.fullDescription}`.toLowerCase();
+  let score = 0;
+
+  if (place.mainText.toLowerCase() === normalizedQuery) score += 240;
+  if (place.mainText.toLowerCase().startsWith(normalizedQuery)) score += 180;
+  if (hay.startsWith(normalizedQuery)) score += 140;
+  if (hay.includes(normalizedQuery)) score += 80;
+
+  if (place.placeId.startsWith("history:")) score += 170;
+  else if (place.placeId.startsWith("alias:")) score += 150;
+  else if (place.placeId.startsWith("local:")) score += 120;
+  else if (place.placeId.startsWith("nom:")) score += 40;
+  else score += 70;
+
+  if (lat != null && lng != null && place.lat != null && place.lng != null) {
+    const distanceKm = haversineKm(lat, lng, place.lat, place.lng);
+    score += Math.max(0, 80 - Math.min(distanceKm, 40) * 2);
+  }
+
+  return score;
+}
+
+async function searchLandmarkAliases(
+  normalizedQuery: string,
+  lat?: number,
+  lng?: number,
+): Promise<PlacePrediction[]> {
+  try {
+    const r = await rawDb.execute(rawSql`
+      SELECT alias, canonical_name, canonical_address, latitude, longitude, popularity_score
+      FROM landmark_aliases
+      WHERE is_active = true
+        AND (
+          normalized_alias LIKE ${"%" + normalizedQuery + "%"}
+          OR canonical_name ILIKE ${"%" + normalizedQuery + "%"}
+          OR COALESCE(canonical_address, '') ILIKE ${"%" + normalizedQuery + "%"}
+        )
+      ORDER BY popularity_score DESC, canonical_name ASC
+      LIMIT 8
+    `);
+
+    return r.rows
+      .map((row: any) => ({
+        placeId: `alias:${row.alias}`,
+        mainText: row.canonical_name || row.alias || "",
+        secondaryText: row.canonical_address || "",
+        fullDescription: row.canonical_address || row.canonical_name || "",
+        types: ["landmark_alias"],
+        lat: row.latitude != null ? Number(row.latitude) : undefined,
+        lng: row.longitude != null ? Number(row.longitude) : undefined,
+      }))
+      .sort((a, b) => locationScore(b, normalizedQuery, lat, lng) - locationScore(a, normalizedQuery, lat, lng))
+      .slice(0, 6);
+  } catch {
+    return [];
+  }
+}
+
+async function searchRecentLocationHistory(
+  userId: string | undefined,
+  normalizedQuery: string,
+  lat?: number,
+  lng?: number,
+): Promise<PlacePrediction[]> {
+  if (!userId) return [];
+  try {
+    const r = await rawDb.execute(rawSql`
+      SELECT place_id, place_label, place_address, latitude, longitude, use_count, last_used_at
+      FROM location_search_history
+      WHERE user_id = ${userId}::uuid
+        AND (
+          normalized_query LIKE ${"%" + normalizedQuery + "%"}
+          OR place_label ILIKE ${"%" + normalizedQuery + "%"}
+          OR COALESCE(place_address, '') ILIKE ${"%" + normalizedQuery + "%"}
+        )
+      ORDER BY use_count DESC, last_used_at DESC
+      LIMIT 8
+    `);
+
+    return r.rows
+      .map((row: any) => ({
+        placeId: `history:${row.place_id || row.place_label}`,
+        mainText: row.place_label || "",
+        secondaryText: row.place_address || "",
+        fullDescription: row.place_address || row.place_label || "",
+        types: ["recent_search"],
+        lat: row.latitude != null ? Number(row.latitude) : undefined,
+        lng: row.longitude != null ? Number(row.longitude) : undefined,
+      }))
+      .sort((a, b) => locationScore(b, normalizedQuery, lat, lng) - locationScore(a, normalizedQuery, lat, lng))
+      .slice(0, 6);
+  } catch {
+    return [];
+  }
+}
+
+function mergeAndRankPredictions(
+  normalizedQuery: string,
+  groups: PlacePrediction[][],
+  lat?: number,
+  lng?: number,
+): PlacePrediction[] {
+  const deduped = new Map<string, PlacePrediction>();
+  for (const group of groups) {
+    for (const place of group) {
+      const key = `${place.mainText}|${place.secondaryText}|${place.fullDescription}`.toLowerCase().trim();
+      if (!deduped.has(key)) deduped.set(key, place);
+    }
+  }
+  return Array.from(deduped.values())
+    .sort((a, b) => locationScore(b, normalizedQuery, lat, lng) - locationScore(a, normalizedQuery, lat, lng))
+    .slice(0, 10);
+}
+
+export async function recordLocationSelection(
+  userId: string,
+  payload: LocationSelectionPayload,
+): Promise<void> {
+  if (!userId || !payload.placeLabel?.trim()) return;
+
+  const queryText = payload.queryText?.trim() || payload.placeLabel.trim();
+  const normalizedQuery = normalizeLocationQuery(queryText);
+
+  const existing = await rawDb.execute(rawSql`
+    SELECT id FROM location_search_history
+    WHERE user_id = ${userId}::uuid
+      AND normalized_query = ${normalizedQuery}
+      AND place_label = ${payload.placeLabel}
+    LIMIT 1
+  `).catch(() => ({ rows: [] as any[] }));
+
+  if (existing.rows.length) {
+    await rawDb.execute(rawSql`
+      UPDATE location_search_history
+      SET use_count = use_count + 1,
+          last_used_at = NOW(),
+          updated_at = NOW(),
+          place_address = COALESCE(${payload.placeAddress || null}, place_address),
+          latitude = COALESCE(${payload.lat ?? null}, latitude),
+          longitude = COALESCE(${payload.lng ?? null}, longitude)
+      WHERE id = ${(existing.rows[0] as any).id}::uuid
+    `).catch(() => {});
+    return;
+  }
+
+  await rawDb.execute(rawSql`
+    INSERT INTO location_search_history
+      (user_id, place_id, query_text, normalized_query, place_label, place_address, latitude, longitude)
+    VALUES
+      (${userId}::uuid,
+       ${payload.placeId || null},
+       ${queryText},
+       ${normalizedQuery},
+       ${payload.placeLabel},
+       ${payload.placeAddress || null},
+       ${payload.lat ?? null},
+       ${payload.lng ?? null})
+  `).catch(() => {});
+}
+
 // ── 1. PLACES AUTOCOMPLETE ──────────────────────────────────────────────────
 
 /**
@@ -143,24 +411,39 @@ export async function searchPlaces(
   sessionToken?: string,
   lat?: number,
   lng?: number,
-  radius?: number
+  radius?: number,
+  userId?: string
 ): Promise<PlacePrediction[]> {
   if (!query || query.length < 2) return [];
 
-  const cacheKey = `places:${query.toLowerCase().trim()}:${lat?.toFixed(2)}:${lng?.toFixed(2)}`;
+  const normalizedQuery = normalizeLocationQuery(query);
+  const cacheKey = `places:${normalizedQuery}:${lat?.toFixed(2)}:${lng?.toFixed(2)}:${userId || "anon"}`;
   const cached = placesCache.get(cacheKey);
   if (cached) return cached;
 
+  const [recentMatches, aliasMatches, popularMatches] = await Promise.all([
+    searchRecentLocationHistory(userId, normalizedQuery, lat, lng),
+    searchLandmarkAliases(normalizedQuery, lat, lng),
+    searchPopularLocations(normalizedQuery),
+  ]);
+
+  const mergeAndStore = (groups: PlacePrediction[][]): PlacePrediction[] => {
+    const merged = mergeAndRankPredictions(normalizedQuery, groups, lat, lng);
+    placesCache.set(cacheKey, merged);
+    return merged;
+  };
+
   const apiKey = await getGoogleMapsKey();
   if (!apiKey) {
-    return searchNominatimFallback(query, lat, lng);
+    const fallback = await searchNominatimFallback(normalizedQuery, lat, lng);
+    return mergeAndStore([recentMatches, aliasMatches, popularMatches, fallback]);
   }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 4000);
 
   try {
-    let url = `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(query)}&key=${apiKey}`;
+    let url = `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(normalizedQuery)}&key=${apiKey}`;
     url += `&components=country:in&region=in`;
 
     if (lat && lng) {
@@ -178,24 +461,25 @@ export async function searchPlaces(
     });
     if (!r.ok) {
         console.error(`[mapping] Google API returned status ${r.status}`);
-        return searchNominatimFallback(query, lat, lng);
+        const fallback = await searchNominatimFallback(normalizedQuery, lat, lng);
+        return mergeAndStore([recentMatches, aliasMatches, popularMatches, fallback]);
     }
     const data = await r.json() as any;
     console.log(`[mapping] Google response status: ${data.status}`);
 
     if (data?.status !== "OK") {
       console.warn(`[mapping-unified:searchPlaces] Google API Status: ${data?.status}, Msg: ${data?.error_message || 'none'}. Falling back to Nominatim/Local.`);
-      const nomResults = await searchNominatimFallback(query, lat, lng);
-      if (nomResults.length > 0) return nomResults;
-      return [];
+      const fallback = await searchNominatimFallback(normalizedQuery, lat, lng);
+      return mergeAndStore([recentMatches, aliasMatches, popularMatches, fallback]);
     }
 
     if (!data.predictions?.length) {
       console.log(`[mapping-unified:searchPlaces] Google returned 0 results. Trying Nominatim fallback.`);
-      return searchNominatimFallback(query, lat, lng);
+      const fallback = await searchNominatimFallback(normalizedQuery, lat, lng);
+      return mergeAndStore([recentMatches, aliasMatches, popularMatches, fallback]);
     }
 
-    const results: PlacePrediction[] = data.predictions
+    const googleResults: PlacePrediction[] = data.predictions
       .filter((p: any) => {
         const hay = `${p.description || ""} ${p.structured_formatting?.secondary_text || ""}`.toLowerCase();
         return hay.includes("india") || (!hay.includes("usa") && !hay.includes("united states"));
@@ -209,11 +493,11 @@ export async function searchPlaces(
       types: p.types || [],
     }));
 
-    placesCache.set(cacheKey, results);
-    return results;
+    return mergeAndStore([recentMatches, aliasMatches, popularMatches, googleResults]);
   } catch (e: any) {
     console.error(`[mapping-unified:searchPlaces] Failed:`, e.message || e);
-    return searchNominatimFallback(query, lat, lng);
+    const fallback = await searchNominatimFallback(normalizedQuery, lat, lng);
+    return mergeAndStore([recentMatches, aliasMatches, popularMatches, fallback]);
   } finally {
     clearTimeout(timeout);
   }

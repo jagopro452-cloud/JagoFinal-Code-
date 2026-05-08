@@ -14,6 +14,7 @@ import 'screens/splash_screen.dart';
 import 'services/fcm_service.dart';
 import 'services/localization_service.dart';
 import 'services/socket_service.dart';
+import 'services/runtime_config_service.dart';
 import 'config/api_config.dart';
 import 'screens/booking/voice_booking_screen.dart';
 
@@ -121,6 +122,7 @@ class _JagoCustomerAppState extends State<JagoCustomerApp> with WidgetsBindingOb
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _initDeepLinks();
+    unawaited(_ensureSocketAlive());
   }
 
   @override
@@ -144,8 +146,12 @@ class _JagoCustomerAppState extends State<JagoCustomerApp> with WidgetsBindingOb
   Future<void> _ensureSocketAlive() async {
     try {
       final socket = SocketService();
-      if (socket.isConnected) return;
-      await socket.connect(ApiConfig.socketUrl);
+      final config = RuntimeConfigService();
+      if (!socket.isConnected) {
+        await socket.connect(ApiConfig.socketUrl);
+      }
+      await config.initialize();
+      await config.refresh();
     } catch (_) {}
   }
 

@@ -36,6 +36,7 @@ import '../onboarding/subscription_plans_screen.dart';
 import '../earnings/earnings_screen.dart';
 import '../kyc/kyc_documents_screen.dart';
 import '../parcel/parcel_delivery_screen.dart';
+import '../local_pool/local_pool_screen.dart';
 import '../outstation_pool/outstation_pool_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -2233,6 +2234,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, 
                 _drawerItem(Icons.headset_mic_outlined, 'Support', null, () {
                   Navigator.pop(context);
                   Navigator.push(context, MaterialPageRoute(builder: (_) => const DriverSupportChatScreen()));
+                }),
+                _drawerItem(Icons.people_alt_outlined, 'Local Pool', null, () {
+                  Navigator.pop(context);
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => const LocalPoolScreen()));
                 }),
                 _drawerItem(Icons.directions_car_outlined, 'Outstation Pool', null, () {
                   Navigator.pop(context);
