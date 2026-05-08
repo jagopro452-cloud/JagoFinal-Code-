@@ -388,6 +388,49 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           padding-bottom: 18px;
           border-bottom: 1px solid rgba(255,255,255,0.08);
         }
+        .admin-shell .admin-brand {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          min-width: 0;
+        }
+        .admin-shell .admin-brand-mark {
+          width: 28px;
+          height: 28px;
+          border-radius: 10px;
+          background: rgba(255,255,255,0.14);
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          box-shadow: inset 0 0 0 1px rgba(255,255,255,0.12);
+          flex-shrink: 0;
+        }
+        .admin-shell .admin-brand-mark img {
+          width: 18px;
+          height: 18px;
+          object-fit: contain;
+          display: block;
+        }
+        .admin-shell .admin-brand-copy {
+          display: flex;
+          flex-direction: column;
+          min-width: 0;
+        }
+        .admin-shell .admin-brand-name {
+          font-size: 0.95rem;
+          line-height: 1;
+          font-weight: 800;
+          letter-spacing: 0.12em;
+          color: #ffffff;
+        }
+        .admin-shell .admin-brand-tag {
+          margin-top: 4px;
+          font-size: 0.48rem;
+          font-weight: 700;
+          color: rgba(255,255,255,0.62);
+          letter-spacing: 0.24em;
+          text-transform: uppercase;
+        }
         .admin-shell .user-profile {
           background: linear-gradient(180deg, rgba(255,255,255,0.16), rgba(255,255,255,0.08));
           border: 1px solid rgba(255,255,255,0.14);
@@ -752,10 +795,17 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             href="/admin/dashboard"
             className="logo"
             onClick={(e) => { e.preventDefault(); setLocation("/admin/dashboard"); }}
-            style={{ display: "flex", alignItems: "center", gap: 8, textDecoration: "none" }}
+            style={{ textDecoration: "none" }}
           >
-            <Logo variant="white" size="sm" style={{ flexShrink: 0 }} />
-            <span style={{ fontSize: "0.5rem", fontWeight: 700, color: "rgba(255,255,255,0.6)", letterSpacing: 2.5, marginTop: 1, alignSelf: "flex-end", paddingBottom: 2 }}>ADMIN PANEL</span>
+            <div className="admin-brand">
+              <span className="admin-brand-mark">
+                <img src="/jago-logo-small.png" alt="JAGO" />
+              </span>
+              <span className="admin-brand-copy">
+                <span className="admin-brand-name">JAGO</span>
+                <span className="admin-brand-tag">Admin Panel</span>
+              </span>
+            </div>
           </a>
           <button
             className="toggle-menu-button"
