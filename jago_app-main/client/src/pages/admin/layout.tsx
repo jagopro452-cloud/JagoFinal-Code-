@@ -558,6 +558,16 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         .admin-shell .card-body {
           padding: 1.15rem 1.25rem;
         }
+        .admin-shell .card-footer {
+          background: rgba(255,255,255,0.84);
+          border-top: 1px solid rgba(226,232,240,0.82);
+          padding: 1rem 1.25rem 1.15rem;
+        }
+        .admin-shell .card-header,
+        .admin-shell .card-footer,
+        .admin-shell .card-body > .d-flex:first-child {
+          gap: 12px;
+        }
         .admin-shell .table-responsive {
           border: 1px solid rgba(226,232,240,0.85);
           border-radius: 18px;
@@ -588,6 +598,14 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         }
         .admin-shell .table > tbody tr:hover {
           background: rgba(248,250,252,0.92);
+        }
+        .admin-shell .table > tbody td .btn,
+        .admin-shell .table > tbody td .badge,
+        .admin-shell .table > tbody td .switcher {
+          vertical-align: middle;
+        }
+        .admin-shell .table-hover > tbody > tr:hover > * {
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.62);
         }
         .admin-shell .form-label,
         .admin-shell .form-label-jago {
@@ -634,6 +652,13 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           border-color: rgba(96,165,250,0.95) !important;
           box-shadow: 0 0 0 4px rgba(59,130,246,0.12), 0 8px 20px rgba(59,130,246,0.08) !important;
           background: #fff !important;
+        }
+        .admin-shell .form-text,
+        .admin-shell .text-muted.small,
+        .admin-shell small.text-muted {
+          color: #64748b !important;
+          font-size: 11.5px;
+          line-height: 1.45;
         }
         .admin-shell .input-group {
           border-radius: 14px;
@@ -693,12 +718,50 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           color: #0f172a;
           border-color: rgba(148,163,184,0.72);
         }
+        .admin-shell .btn-outline-primary {
+          border-color: rgba(96,165,250,0.72);
+          background: rgba(255,255,255,0.92);
+          color: #2563eb;
+        }
+        .admin-shell .btn-outline-primary:hover,
+        .admin-shell .btn-outline-primary:focus {
+          background: rgba(239,246,255,0.98);
+          border-color: rgba(59,130,246,0.9);
+          color: #1d4ed8;
+        }
+        .admin-shell .btn-outline-danger {
+          border-color: rgba(252,165,165,0.72);
+          background: rgba(255,255,255,0.92);
+          color: #dc2626;
+        }
+        .admin-shell .btn-outline-danger:hover,
+        .admin-shell .btn-outline-danger:focus {
+          background: rgba(254,242,242,0.98);
+          border-color: rgba(248,113,113,0.88);
+          color: #b91c1c;
+        }
+        .admin-shell .btn-outline-success {
+          border-color: rgba(134,239,172,0.82);
+          background: rgba(255,255,255,0.92);
+          color: #15803d;
+        }
+        .admin-shell .btn-outline-success:hover,
+        .admin-shell .btn-outline-success:focus {
+          background: rgba(240,253,244,0.98);
+          border-color: rgba(74,222,128,0.88);
+          color: #166534;
+        }
         .admin-shell .badge {
           border-radius: 999px;
           padding: 7px 10px;
           font-size: 10.5px;
           font-weight: 800;
           letter-spacing: 0.03em;
+        }
+        .admin-shell .badge.bg-light {
+          color: #475569 !important;
+          background: #f8fafc !important;
+          border: 1px solid rgba(226,232,240,0.95);
         }
         .admin-shell .modal.show {
           background: rgba(15,23,42,0.42);
@@ -736,6 +799,164 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           color: #0f172a;
           letter-spacing: -0.02em;
         }
+        .admin-shell .modal-backdrop-jago {
+          position: fixed;
+          inset: 0;
+          z-index: 1200;
+          background: rgba(15,23,42,0.5);
+          backdrop-filter: blur(7px);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 24px 16px;
+        }
+        .admin-shell .modal-jago {
+          width: min(100%, 760px);
+          max-height: calc(100vh - 48px);
+          overflow: auto;
+          border-radius: 24px;
+          border: 1px solid rgba(226,232,240,0.92);
+          background: linear-gradient(180deg, rgba(255,255,255,0.99), rgba(248,250,252,0.98));
+          box-shadow: 0 32px 90px rgba(15,23,42,0.22);
+        }
+        .admin-shell .modal-jago-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 14px;
+          padding: 18px 22px;
+          border-bottom: 1px solid rgba(226,232,240,0.86);
+          background: rgba(255,255,255,0.88);
+          position: sticky;
+          top: 0;
+          z-index: 2;
+          backdrop-filter: blur(8px);
+        }
+        .admin-shell .modal-jago-title {
+          margin: 0;
+          font-size: 1.08rem;
+          font-weight: 800;
+          color: #0f172a;
+          letter-spacing: -0.02em;
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          min-width: 0;
+        }
+        .admin-shell .modal-jago-close {
+          width: 36px;
+          height: 36px;
+          border: 1px solid rgba(226,232,240,0.92);
+          border-radius: 12px;
+          background: rgba(255,255,255,0.92);
+          color: #475569;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          box-shadow: 0 6px 18px rgba(15,23,42,0.06);
+          transition: transform .16s ease, box-shadow .16s ease, background-color .16s ease;
+        }
+        .admin-shell .modal-jago-close:hover {
+          transform: translateY(-1px);
+          box-shadow: 0 10px 22px rgba(15,23,42,0.1);
+          background: #fff;
+        }
+        .admin-shell .modal-jago > :not(.modal-jago-header) {
+          padding-left: 22px;
+          padding-right: 22px;
+        }
+        .admin-shell .modal-jago > .d-flex:last-child,
+        .admin-shell .modal-jago > .border-top:last-child {
+          padding-bottom: 20px;
+        }
+        .admin-shell .switcher {
+          position: relative;
+          display: inline-flex;
+          align-items: center;
+          cursor: pointer;
+          user-select: none;
+          flex-shrink: 0;
+        }
+        .admin-shell .switcher_input {
+          position: absolute;
+          opacity: 0;
+          inset: 0;
+          width: 100%;
+          height: 100%;
+          cursor: pointer;
+        }
+        .admin-shell .switcher_control {
+          width: 44px;
+          height: 24px;
+          border-radius: 999px;
+          background: linear-gradient(180deg, #e2e8f0, #cbd5e1);
+          border: 1px solid rgba(148,163,184,0.44);
+          box-shadow: inset 0 1px 2px rgba(15,23,42,0.08);
+          position: relative;
+          transition: background-color .18s ease, border-color .18s ease, box-shadow .18s ease;
+        }
+        .admin-shell .switcher_control::after {
+          content: "";
+          position: absolute;
+          top: 2px;
+          left: 2px;
+          width: 18px;
+          height: 18px;
+          border-radius: 50%;
+          background: linear-gradient(180deg, #ffffff, #f8fafc);
+          box-shadow: 0 4px 10px rgba(15,23,42,0.18);
+          transition: transform .18s ease;
+        }
+        .admin-shell .switcher_input:checked + .switcher_control {
+          background: linear-gradient(135deg, #2f7bff 0%, #1d4ed8 100%);
+          border-color: rgba(37,99,235,0.9);
+          box-shadow: inset 0 1px 2px rgba(15,23,42,0.06), 0 0 0 4px rgba(59,130,246,0.08);
+        }
+        .admin-shell .switcher_input:checked + .switcher_control::after {
+          transform: translateX(20px);
+        }
+        .admin-shell .switcher_input:focus-visible + .switcher_control {
+          box-shadow: 0 0 0 4px rgba(59,130,246,0.12);
+        }
+        .admin-shell .nav--tabs,
+        .admin-shell .nav.nav--tabs {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          flex-wrap: wrap;
+          background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+          border: 1px solid rgba(226,232,240,0.92);
+          border-radius: 18px;
+          padding: 6px;
+        }
+        .admin-shell .nav--tabs .nav-link {
+          border: none;
+          border-radius: 12px;
+          color: #64748b;
+          font-size: 12px;
+          font-weight: 700;
+          padding: 10px 14px;
+          background: transparent;
+          transition: background-color .16s ease, color .16s ease, box-shadow .16s ease;
+        }
+        .admin-shell .nav--tabs .nav-link.active {
+          background: linear-gradient(135deg, #2f7bff 0%, #1d4ed8 100%);
+          color: #fff;
+          box-shadow: 0 10px 24px rgba(37,99,235,0.22);
+        }
+        .admin-shell .nav--tabs .nav-link:not(.active):hover {
+          background: rgba(255,255,255,0.92);
+          color: #0f172a;
+        }
+        .admin-shell .text-danger {
+          color: #dc2626 !important;
+        }
+        .admin-shell .text-success {
+          color: #15803d !important;
+        }
+        .admin-shell .text-warning {
+          color: #d97706 !important;
+        }
         .admin-shell .dropdown-menu {
           border-radius: 18px;
           border: 1px solid rgba(226,232,240,0.88);
@@ -759,6 +980,19 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         .admin-shell .d-flex.flex-wrap.gap-2 {
           row-gap: 10px !important;
         }
+        .admin-shell .sticky-action-bar,
+        .admin-shell .admin-action-bar {
+          position: sticky;
+          bottom: 0;
+          z-index: 3;
+          margin-top: 16px;
+          padding: 14px 18px;
+          border: 1px solid rgba(226,232,240,0.88);
+          border-radius: 18px;
+          background: rgba(255,255,255,0.9);
+          backdrop-filter: blur(10px);
+          box-shadow: 0 16px 34px rgba(15,23,42,0.1);
+        }
         .admin-shell .nav-pills .nav-link,
         .admin-shell .nav-tabs .nav-link {
           border-radius: 14px;
@@ -778,6 +1012,19 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           .admin-shell .admin-page-header {
             flex-direction: column;
             align-items: flex-start;
+          }
+          .admin-shell .modal-jago {
+            max-height: calc(100vh - 28px);
+            border-radius: 20px;
+          }
+          .admin-shell .modal-jago-header,
+          .admin-shell .modal-jago > :not(.modal-jago-header) {
+            padding-left: 16px;
+            padding-right: 16px;
+          }
+          .admin-shell .nav--tabs,
+          .admin-shell .nav.nav--tabs {
+            width: 100%;
           }
         }
       `}</style>
