@@ -13,6 +13,7 @@ import '../../config/api_config.dart';
 import '../../config/jago_theme.dart';
 import '../../services/auth_service.dart';
 import '../../services/socket_service.dart';
+import '../../services/runtime_config_service.dart';
 import '../history/trips_history_screen.dart';
 import '../wallet/wallet_screen.dart';
 import '../profile/profile_screen.dart';
@@ -44,6 +45,7 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final SocketService _socket = SocketService();
+  final RuntimeConfigService _runtimeConfig = RuntimeConfigService();
 
   String _userName = 'there';
   String _userPhone = '';
@@ -60,6 +62,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   StreamSubscription? _driverAssignedSub;
   StreamSubscription? _tripCancelledSub;
   StreamSubscription? _tripStatusSub;
+  StreamSubscription<Map<String, dynamic>>? _runtimeConfigSub;
   Timer? _searchingTimer; // auto-cancel if no pilot found within 5 min
   Timer?
       _statePollTimer; // 5s poll during searching — server is source of truth
@@ -115,6 +118,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         .addPostFrameCallback((_) => _checkPendingFcmNotification());
     WidgetsBinding.instance.addPostFrameCallback((_) => _checkActiveTrip());
     WidgetsBinding.instance.addPostFrameCallback((_) => _maybeShowTutorial());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _bindRuntimeConfig());
+  }
+
+  Future<void> _bindRuntimeConfig() async {
+    await _runtimeConfig.initialize();
+    await _runtimeConfig.refresh();
+    _runtimeConfigSub ??= _runtimeConfig.onConfigChanged.listen((_) {
+      if (!mounted) return;
+      setState(() {});
+    });
   }
 
   Future<void> _fetchUnreadCount() async {
@@ -644,6 +657,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _driverAssignedSub?.cancel();
     _tripCancelledSub?.cancel();
     _tripStatusSub?.cancel();
+    _runtimeConfigSub?.cancel();
     // Don't disconnect socket — it's a shared singleton used by other screens
     super.dispose();
   }
@@ -655,9 +669,18 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       _getLocation();
       // App came back to foreground — refresh pickup location and restart polling
       _socket.connect(ApiConfig.socketUrl);
+      _runtimeConfig.refresh();
       _checkPendingFcmNotification();
       _checkActiveTrip();
     }
+  }
+
+  bool _runtimeServiceEnabled(String serviceKey, {bool defaultValue = true}) {
+    return _runtimeConfig.isServiceEnabled(serviceKey, defaultValue: defaultValue);
+  }
+
+  bool _runtimeVehicleEnabled(String vehicleKey, {bool defaultValue = true}) {
+    return _runtimeConfig.isVehicleEnabled(vehicleKey, defaultValue: defaultValue);
   }
 
   Future<void> _loadUser() async {
@@ -904,9 +927,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       final r = await http.get(uri, headers: headers);
       if (r.statusCode == 200 && mounted) {
         final data = jsonDecode(r.body) as Map<String, dynamic>;
-        final services = (data['services'] as List<dynamic>?)
-                ?.cast<Map<String, dynamic>>() ??
-            [];
+        final services = ((data['services'] as List<dynamic>?)
+                    ?.cast<Map<String, dynamic>>() ??
+                [])
+            .where(_runtimeAllowsService)
+            .toList();
         setState(() => _activeServices = services);
       }
     } catch (_) {
@@ -917,13 +942,39 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             headers: headers);
         if (r.statusCode == 200 && mounted) {
           final data = jsonDecode(r.body) as Map<String, dynamic>;
-          final services = (data['services'] as List<dynamic>?)
-                  ?.cast<Map<String, dynamic>>() ??
-              [];
+          final services = ((data['services'] as List<dynamic>?)
+                      ?.cast<Map<String, dynamic>>() ??
+                  [])
+              .where(_runtimeAllowsService)
+              .toList();
           setState(() => _activeServices = services);
         }
       } catch (_) {}
     }
+  }
+
+  bool _runtimeAllowsService(Map<String, dynamic> service) {
+    final serviceKey = (service['serviceKey'] ??
+            service['key'] ??
+            service['type'] ??
+            service['name'] ??
+            '')
+        .toString()
+        .trim()
+        .toLowerCase();
+    final vehicleKey = (service['vehicleKey'] ?? service['vehicle_key'] ?? service['key'] ?? '')
+        .toString()
+        .trim()
+        .toLowerCase();
+
+    if (serviceKey.contains('parcel') || serviceKey.contains('cargo')) {
+      return _runtimeServiceEnabled('parcel', defaultValue: true) &&
+          _runtimeVehicleEnabled(vehicleKey.isEmpty ? 'bike_parcel' : vehicleKey, defaultValue: true);
+    }
+    if (serviceKey.contains('pool') || serviceKey.contains('share')) {
+      return _runtimeServiceEnabled('pool', defaultValue: true);
+    }
+    return _runtimeServiceEnabled('ride', defaultValue: true);
   }
 
   /// Map a service key to its default emoji and color fallback.
@@ -2146,8 +2197,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final rideCats = _vehicleCategories.where((v) => v['type']?.toString() == 'ride').toList();
     final parcelCats = _vehicleCategories.where((v) => v['type']?.toString() == 'parcel' || v['type']?.toString() == 'cargo').toList();
     
-    final isRideActive = rideCats.any((v) => v['isActive'] == true);
-    final isParcelActive = parcelCats.any((v) => v['isActive'] == true);
+    final isRideActive = _runtimeServiceEnabled('ride', defaultValue: true) &&
+        rideCats.any((v) =>
+            v['isActive'] == true &&
+            _runtimeVehicleEnabled((v['key'] ?? v['vehicleKey'] ?? v['name'] ?? '').toString(), defaultValue: true));
+    final isParcelActive = _runtimeServiceEnabled('parcel', defaultValue: true) &&
+        parcelCats.any((v) =>
+            v['isActive'] == true &&
+            _runtimeVehicleEnabled((v['key'] ?? v['vehicleKey'] ?? v['name'] ?? '').toString(), defaultValue: true));
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
@@ -21,6 +21,7 @@ const CONFIG_TABS = [
   { id: "firebase", label: "Firebase & SMS", icon: "bi-bell-fill", color: "#f97316", bg: "#fff7ed" },
   { id: "maps", label: "Google Maps", icon: "bi-map-fill", color: "#059669", bg: "#f0fdf4" },
   { id: "ai", label: "Claude AI", icon: "bi-stars", color: "#7c3aed", bg: "#f5f3ff" },
+  { id: "runtime", label: "Runtime Control", icon: "bi-sliders2-vertical", color: "#2563eb", bg: "#eff6ff" },
 ];
 
 function Toggle({ label, desc, value, onChange, id }: any) {
@@ -81,6 +82,10 @@ export default function ConfigurationsPage() {
   const { toast } = useToast();
   const [tab, setTab] = useState("otp");
   const [local, setLocal] = useState<Record<string, string>>({});
+  const [runtimeScopeType, setRuntimeScopeType] = useState("global");
+  const [runtimeScopeKey, setRuntimeScopeKey] = useState("default");
+  const [runtimeReason, setRuntimeReason] = useState("");
+  const [runtimeDraft, setRuntimeDraft] = useState<Record<string, any>>({});
 
   const { data: settingsData = [] } = useQuery<any[]>({
     queryKey: ["/api/business-settings"],
@@ -96,7 +101,43 @@ export default function ConfigurationsPage() {
   const get = (key: string) => local[key] !== undefined ? local[key] : (dbMap[key] ?? "");
   const set = (key: string) => (val: string) => setLocal(p => ({ ...p, [key]: val }));
 
-  const hasChanges = Object.keys(local).length > 0;
+  const { data: runtimeSnapshotResponse, isLoading: runtimeSnapshotLoading } = useQuery<any>({
+    queryKey: ["/api/admin/runtime-config"],
+    queryFn: () => apiRequest("GET", "/api/admin/runtime-config").then(r => r.json()),
+  });
+
+  const { data: runtimeAuditResponse, isLoading: runtimeAuditLoading } = useQuery<any>({
+    queryKey: ["/api/admin/runtime-config/audit"],
+    queryFn: () => apiRequest("GET", "/api/admin/runtime-config/audit?limit=12").then(r => r.json()),
+  });
+
+  const runtimeSnapshot = runtimeSnapshotResponse?.data;
+  const runtimeAudit = Array.isArray(runtimeAuditResponse?.data) ? runtimeAuditResponse.data : [];
+
+  const resolvedRuntimeConfig = useMemo(() => {
+    if (!runtimeSnapshot?.effectiveConfig) return {};
+    const effective = runtimeSnapshot.effectiveConfig;
+    const resolved: Record<string, any> = { ...(effective.global || {}) };
+    const scopeKey = runtimeScopeKey.trim().toLowerCase();
+    if (runtimeScopeType === "city" && scopeKey && effective.city?.[scopeKey]) {
+      Object.assign(resolved, effective.city[scopeKey]);
+    }
+    if (runtimeScopeType === "service" && scopeKey && effective.service?.[scopeKey]) {
+      Object.assign(resolved, effective.service[scopeKey]);
+    }
+    if (runtimeScopeType === "vehicle" && scopeKey && effective.vehicle?.[scopeKey]) {
+      Object.assign(resolved, effective.vehicle[scopeKey]);
+    }
+    return resolved;
+  }, [runtimeSnapshot, runtimeScopeType, runtimeScopeKey]);
+
+  const hasBusinessChanges = Object.keys(local).length > 0;
+  const hasRuntimeChanges = Object.keys(runtimeDraft).length > 0;
+  const hasChanges = hasBusinessChanges || hasRuntimeChanges;
+
+  const runtimeGet = (key: string, fallback: any = "") =>
+    runtimeDraft[key] !== undefined ? runtimeDraft[key] : (resolvedRuntimeConfig?.[key] ?? fallback);
+  const setRuntime = (key: string) => (val: any) => setRuntimeDraft(p => ({ ...p, [key]: val }));
 
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
@@ -116,6 +157,33 @@ export default function ConfigurationsPage() {
     onError: () => toast({ title: "Failed to save settings", variant: "destructive" }),
   });
 
+  const saveRuntime = useMutation({
+    mutationFn: () => apiRequest("PUT", "/api/admin/runtime-config", {
+      scopeType: runtimeScopeType,
+      scopeKey: runtimeScopeType === "global" ? "default" : (runtimeScopeKey.trim() || "default"),
+      reason: runtimeReason.trim() || "admin_runtime_update",
+      entries: Object.entries(runtimeDraft).map(([key, value]) => ({ key, value })),
+    }).then(r => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/runtime-config"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/runtime-config/audit"] });
+      setRuntimeDraft({});
+      setRuntimeReason("");
+      toast({ title: "Runtime config updated" });
+    },
+    onError: (error: any) => toast({ title: error?.message || "Failed to update runtime config", variant: "destructive" }),
+  });
+
+  const rollbackRuntime = useMutation({
+    mutationFn: (auditLogId: string) => apiRequest("POST", "/api/admin/runtime-config/rollback", { auditLogId }).then(r => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/runtime-config"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/runtime-config/audit"] });
+      toast({ title: "Runtime config rolled back" });
+    },
+    onError: (error: any) => toast({ title: error?.message || "Rollback failed", variant: "destructive" }),
+  });
+
   const curTab = CONFIG_TABS.find(t => t.id === tab)!;
 
   return (
@@ -126,12 +194,20 @@ export default function ConfigurationsPage() {
           <h4 className="fw-bold mb-0">Configurations</h4>
           <div className="text-muted small">OTP setup, payment gateway, commission rates and feature toggles</div>
         </div>
-        {hasChanges && (
+        {hasBusinessChanges && tab !== "runtime" && (
           <button className="btn btn-primary" onClick={() => save.mutate()} disabled={save.isPending}
             data-testid="btn-save-settings">
             {save.isPending
               ? <><span className="spinner-border spinner-border-sm me-2"></span>Saving…</>
               : <><i className="bi bi-save-fill me-1"></i>Save Changes ({Object.keys(local).length})</>}
+          </button>
+        )}
+        {hasRuntimeChanges && tab === "runtime" && (
+          <button className="btn btn-primary" onClick={() => saveRuntime.mutate()} disabled={saveRuntime.isPending}
+            data-testid="btn-save-runtime-settings">
+            {saveRuntime.isPending
+              ? <><span className="spinner-border spinner-border-sm me-2"></span>Publishingâ€¦</>
+              : <><i className="bi bi-lightning-charge-fill me-1"></i>Publish Runtime ({Object.keys(runtimeDraft).length})</>}
           </button>
         )}
       </div>
@@ -619,6 +695,173 @@ export default function ConfigurationsPage() {
             </div>
           )}
 
+          {/* ===== RUNTIME CONTROL ===== */}
+          {tab === "runtime" && (
+            <div>
+              <div className="mb-4 p-3 rounded-3" style={{ background: "linear-gradient(135deg,#eff6ff,#f8fbff)", border: "1.5px solid #bfdbfe" }}>
+                <div className="d-flex align-items-center justify-content-between flex-wrap gap-3">
+                  <div>
+                    <div className="d-flex align-items-center gap-2 mb-1">
+                      <i className="bi bi-sliders2-vertical" style={{ fontSize: 18, color: "#2563eb" }}></i>
+                      <span style={{ fontWeight: 700, fontSize: 14, color: "#1d4ed8" }}>Runtime Governance Console</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: "#64748b" }}>
+                      Scope-safe live overrides with audit visibility, rollback actions, and config precedence awareness.
+                    </div>
+                  </div>
+                  <div className="d-flex align-items-center gap-2 flex-wrap">
+                    <span className="badge" style={{ background: "#dbeafe", color: "#1d4ed8", fontSize: 11, padding: "6px 10px" }}>
+                      version {runtimeSnapshot?.version || "loading"}
+                    </span>
+                    <span className="badge" style={{ background: "#eff6ff", color: "#1e40af", fontSize: 11, padding: "6px 10px" }}>
+                      realtime &gt; city &gt; service &gt; vehicle &gt; global
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="row g-4 mb-4">
+                <div className="col-12 col-xl-4">
+                  <div className="card border-0 h-100" style={{ borderRadius: 14, background: "#f8fbff", border: "1px solid #dbeafe" }}>
+                    <div className="card-body p-4">
+                      <div style={{ fontSize: 12, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: ".5px", marginBottom: 14 }}>Scope Selector</div>
+                      <div className="mb-3">
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "#0f172a", marginBottom: 6 }}>Override Scope</div>
+                        <select className="admin-form-control" value={runtimeScopeType} onChange={e => { setRuntimeScopeType(e.target.value); setRuntimeDraft({}); }} data-testid="runtime-scope-type">
+                          <option value="global">Global</option>
+                          <option value="city">City</option>
+                          <option value="service">Service</option>
+                          <option value="vehicle">Vehicle</option>
+                        </select>
+                      </div>
+                      <div className="mb-3">
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "#0f172a", marginBottom: 6 }}>Scope Key</div>
+                        <input
+                          className="admin-form-control"
+                          value={runtimeScopeType === "global" ? "default" : runtimeScopeKey}
+                          onChange={e => setRuntimeScopeKey(e.target.value)}
+                          disabled={runtimeScopeType === "global"}
+                          placeholder={runtimeScopeType === "city" ? "vijayawada" : runtimeScopeType === "service" ? "parcel" : runtimeScopeType === "vehicle" ? "bike_parcel" : "default"}
+                          data-testid="runtime-scope-key"
+                        />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "#0f172a", marginBottom: 6 }}>Change Reason</div>
+                        <textarea
+                          className="admin-form-control"
+                          rows={3}
+                          value={runtimeReason}
+                          onChange={e => setRuntimeReason(e.target.value)}
+                          placeholder="Reason for this live production change"
+                          data-testid="runtime-reason"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div className="col-12 col-xl-8">
+                  <div className="card border-0 h-100" style={{ borderRadius: 14 }}>
+                    <div className="card-body p-4">
+                      <div className="d-flex align-items-center justify-content-between mb-3 flex-wrap gap-2">
+                        <div>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: ".5px" }}>Live Overrides</div>
+                          <div style={{ fontSize: 12, color: "#94a3b8" }}>Changes publish through runtime cache invalidation and realtime socket propagation.</div>
+                        </div>
+                        {runtimeSnapshotLoading && <span className="text-muted small">Loading runtime snapshotâ€¦</span>}
+                      </div>
+                      <div className="row g-3">
+                        <div className="col-12 col-md-6">
+                          <Toggle label="Rides Enabled" id="runtime_rides_enabled" desc="Booking and dispatch for ride services" value={runtimeGet("rides_enabled", true)} onChange={setRuntime("rides_enabled")} />
+                          <Toggle label="Parcel Enabled" id="runtime_parcel_enabled" desc="Parcel visibility, booking and dispatch" value={runtimeGet("parcel_enabled", true)} onChange={setRuntime("parcel_enabled")} />
+                          <Toggle label="Pool Enabled" id="runtime_pool_enabled" desc="Local pool and outstation pool flows" value={runtimeGet("pool_enabled", true)} onChange={setRuntime("pool_enabled")} />
+                          <Toggle label="Subscriptions Enabled" id="runtime_subscriptions_enabled" desc="Subscription plan access and validation" value={runtimeGet("subscriptions_enabled", true)} onChange={setRuntime("subscriptions_enabled")} />
+                        </div>
+                        <div className="col-12 col-md-6">
+                          <Field label="Commission Rate" id="runtime_commission_rate" desc="Platform commission percentage for this scope" value={runtimeGet("commission_rate", "")} onChange={setRuntime("commission_rate")} type="number" placeholder="18" suffix="%" />
+                          <Field label="Surge Multiplier" id="runtime_surge_multiplier" desc="Realtime pricing pressure multiplier" value={runtimeGet("surge_multiplier", "")} onChange={setRuntime("surge_multiplier")} type="number" placeholder="1.2" suffix="x" />
+                          <Field label="Ride Radius" id="runtime_max_ride_radius_km" desc="Maximum driver discovery radius" value={runtimeGet("max_ride_radius_km", "")} onChange={setRuntime("max_ride_radius_km")} type="number" placeholder="6" suffix="km" />
+                          <Toggle label="Force Update" id="runtime_force_update" desc="Force app update prompt after next config refresh" value={runtimeGet("force_update", false)} onChange={setRuntime("force_update")} />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="row g-4">
+                <div className="col-12 col-xl-6">
+                  <div className="card border-0 h-100" style={{ borderRadius: 14 }}>
+                    <div className="card-body p-4">
+                      <div className="d-flex align-items-center justify-content-between mb-3">
+                        <div>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: ".5px" }}>Resolved Snapshot Preview</div>
+                          <div style={{ fontSize: 12, color: "#94a3b8" }}>Current effective values before publish.</div>
+                        </div>
+                        <span className="badge" style={{ background: "#f8fafc", color: "#475569", fontSize: 11, padding: "6px 10px" }}>
+                          {runtimeScopeType}:{runtimeScopeType === "global" ? "default" : (runtimeScopeKey || "unset")}
+                        </span>
+                      </div>
+                      <div className="table-responsive">
+                        <table className="table align-middle mb-0">
+                          <thead>
+                            <tr>
+                              <th>Key</th>
+                              <th>Current</th>
+                              <th>Draft</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {["rides_enabled","parcel_enabled","pool_enabled","subscriptions_enabled","commission_rate","surge_multiplier","max_ride_radius_km","force_update"].map((key) => (
+                              <tr key={key}>
+                                <td style={{ fontSize: 12.5, fontWeight: 600, color: "#334155" }}>{key}</td>
+                                <td style={{ fontSize: 12.5, color: "#64748b" }}>{String(resolvedRuntimeConfig?.[key] ?? "-")}</td>
+                                <td style={{ fontSize: 12.5, color: runtimeDraft[key] !== undefined ? "#1d4ed8" : "#94a3b8", fontWeight: runtimeDraft[key] !== undefined ? 700 : 500 }}>
+                                  {runtimeDraft[key] !== undefined ? String(runtimeDraft[key]) : "No change"}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div className="col-12 col-xl-6">
+                  <div className="card border-0 h-100" style={{ borderRadius: 14 }}>
+                    <div className="card-body p-4">
+                      <div className="d-flex align-items-center justify-content-between mb-3">
+                        <div>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: ".5px" }}>Rollback & Audit Timeline</div>
+                          <div style={{ fontSize: 12, color: "#94a3b8" }}>Latest mutations with rollback access.</div>
+                        </div>
+                        {runtimeAuditLoading && <span className="text-muted small">Loading auditâ€¦</span>}
+                      </div>
+                      <div className="d-flex flex-column gap-2">
+                        {runtimeAudit.slice(0, 8).map((log: any) => (
+                          <div key={log.id} className="d-flex align-items-start justify-content-between gap-3 p-3 rounded-3" style={{ background: "#f8fafc", border: "1px solid #e2e8f0" }}>
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontSize: 12.5, fontWeight: 700, color: "#0f172a" }}>{log.scopeType}:{log.scopeKey} â†’ {log.configKey}</div>
+                              <div style={{ fontSize: 11.5, color: "#64748b", marginTop: 2 }}>{log.updatedBy || "admin"} â€¢ {new Date(log.createdAt).toLocaleString()}</div>
+                              <div style={{ fontSize: 11.5, color: "#94a3b8", marginTop: 4, wordBreak: "break-word" }}>
+                                {JSON.stringify(log.previousValue)} â†’ {JSON.stringify(log.nextValue)}
+                              </div>
+                            </div>
+                            <button className="btn btn-sm btn-outline-secondary" onClick={() => rollbackRuntime.mutate(log.id)} disabled={rollbackRuntime.isPending} data-testid={`runtime-rollback-${log.id}`}>
+                              Rollback
+                            </button>
+                          </div>
+                        ))}
+                        {!runtimeAudit.length && !runtimeAuditLoading && (
+                          <div className="text-muted small">No runtime audit history yet.</div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* ===== DISPATCH SETTINGS ===== */}
           {tab === "dispatch" && (
             <div>
@@ -784,7 +1027,7 @@ export default function ConfigurationsPage() {
       </div>
 
       {/* Bottom save bar */}
-      {hasChanges && (
+      {hasBusinessChanges && tab !== "runtime" && (
         <div style={{
           position: "fixed", bottom: 24, right: 24, left: "auto", zIndex: 999,
           background: "#0f172a", borderRadius: 14, padding: "14px 20px",
@@ -800,6 +1043,28 @@ export default function ConfigurationsPage() {
             onClick={() => save.mutate()} disabled={save.isPending}
             data-testid="btn-save-float">
             {save.isPending ? "Saving…" : "Save Changes"}
+          </button>
+        </div>
+      )}
+      {hasRuntimeChanges && tab === "runtime" && (
+        <div style={{
+          position: "fixed", bottom: 24, right: 24, left: "auto", zIndex: 999,
+          background: "#0f172a", borderRadius: 14, padding: "14px 20px",
+          display: "flex", alignItems: "center", gap: 12,
+          boxShadow: "0 8px 32px rgba(0,0,0,0.3)",
+        }}>
+          <div style={{ fontSize: 13, color: "#94a3b8" }}>
+            <span style={{ color: "#fff", fontWeight: 700 }}>{Object.keys(runtimeDraft).length}</span> runtime changes
+          </div>
+          <button className="btn btn-sm" style={{ background: "#475569", color: "#fff", borderRadius: 8, fontSize: 12, border: "none" }}
+            onClick={() => {
+              setRuntimeDraft({});
+              setRuntimeReason("");
+            }}>Discard</button>
+          <button className="btn btn-sm btn-primary" style={{ borderRadius: 8, fontSize: 12 }}
+            onClick={() => saveRuntime.mutate()} disabled={saveRuntime.isPending}
+            data-testid="btn-save-runtime-float">
+            {saveRuntime.isPending ? "Publishingâ€¦" : "Publish Runtime"}
           </button>
         </div>
       )}

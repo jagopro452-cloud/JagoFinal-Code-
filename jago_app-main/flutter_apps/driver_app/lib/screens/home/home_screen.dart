@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:razorpay_flutter/razorpay_flutter.dart';
 import '../../services/heatmap_service.dart';
+import '../../services/runtime_config_service.dart';
 import '../../config/api_config.dart';
 import '../../config/jago_theme.dart';
 import '../../services/auth_service.dart';
@@ -48,6 +49,7 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, WidgetsBindingObserver {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final SocketService _socket = SocketService();
+  final RuntimeConfigService _runtimeConfig = RuntimeConfigService();
   GoogleMapController? _mapController;
   LatLng _center = const LatLng(16.5062, 80.6480);
   bool _isOnline = false;
@@ -83,6 +85,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, 
     for (final status in VehicleStatusService.fallbackStatuses) status.key: status,
   };
   StreamSubscription<Map<String, VehicleStatus>>? _vehicleStatusSub;
+  StreamSubscription<Map<String, dynamic>>? _runtimeConfigSub;
   bool _serviceUnavailableNoticeShown = false;
 
   // ── Heatmap ────────────────────────────────────────────────────────────
@@ -166,12 +169,22 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, 
       _fetchEligibleServices();
       _fetchRevenueConfig();
       _watchVehicleAvailability();
+      _bindRuntimeConfig();
       
       await _recoverActiveTrip();
       await _checkPendingDriverOffer();
       _connectSocket();
       await _consumeQueuedAlertAction();
       await _checkPendingFcmTrip();
+    });
+  }
+
+  Future<void> _bindRuntimeConfig() async {
+    await _runtimeConfig.initialize();
+    await _runtimeConfig.refresh();
+    _runtimeConfigSub ??= _runtimeConfig.onConfigChanged.listen((_) {
+      if (!mounted) return;
+      setState(() {});
     });
   }
 
@@ -257,6 +270,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, 
       final pendingParcelStr = prefs.getString('pending_parcel_data');
       if (pendingParcelStr != null && pendingParcelStr.isNotEmpty) {
         await prefs.remove('pending_parcel_data');
+        if (!_isParcelRuntimeEnabled) {
+          _showUnavailableByAdminOnce();
+          return;
+        }
         final parcelData = jsonDecode(pendingParcelStr) as Map<String, dynamic>;
         if (mounted && _incomingParcel == null && _incomingTrip == null) {
           await Future.delayed(const Duration(milliseconds: 300));
@@ -402,6 +419,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, 
     _subs.add(_socket.onNewParcel.listen((parcel) {
       if (!mounted) return;
       if (!_isOnline) return;
+      if (!_isParcelRuntimeEnabled) {
+        _showUnavailableByAdminOnce();
+        return;
+      }
       if (_incomingTrip != null || _incomingParcel != null) return;
       setState(() => _incomingParcel = parcel);
       _showIncomingParcel();
@@ -484,6 +505,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, 
         setState(() => _incomingTrip = data);
         _showIncomingTrip();
       } else if (type == 'new_parcel' && _incomingParcel == null && _incomingTrip == null) {
+        if (!_isParcelRuntimeEnabled) {
+          _showUnavailableByAdminOnce();
+          return;
+        }
         setState(() => _incomingParcel = data);
         _showIncomingParcel();
       }
@@ -495,6 +520,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, 
     WidgetsBinding.instance.removeObserver(this);
     for (final s in _subs) s.cancel();
     _vehicleStatusSub?.cancel();
+    _runtimeConfigSub?.cancel();
     _locationTimer?.cancel();
     _incomingTripPollTimer?.cancel();
     _posStream?.cancel();
@@ -515,6 +541,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, 
     _isAppInForeground = !isBackgroundState;
     if (state == AppLifecycleState.resumed) {
       _socket.connect(ApiConfig.socketUrl);
+      _runtimeConfig.refresh();
       _consumeQueuedAlertAction();
       _checkPendingFcmTrip();
       _recoverActiveTrip();
@@ -538,6 +565,31 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, 
       }
       return;
     }
+  }
+
+  bool _runtimeServiceEnabled(String serviceKey, {bool defaultValue = true}) {
+    return _runtimeConfig.isServiceEnabled(serviceKey, defaultValue: defaultValue);
+  }
+
+  bool get _isParcelRuntimeEnabled => _runtimeServiceEnabled('parcel', defaultValue: true);
+  bool get _isPoolRuntimeEnabled => _runtimeServiceEnabled('pool', defaultValue: true);
+
+  bool _runtimeAllowsDriverService(Map<String, dynamic> service) {
+    final serviceKey = (service['serviceKey'] ??
+            service['key'] ??
+            service['type'] ??
+            service['name'] ??
+            '')
+        .toString()
+        .trim()
+        .toLowerCase();
+    if (serviceKey.contains('parcel') || serviceKey.contains('cargo')) {
+      return _isParcelRuntimeEnabled;
+    }
+    if (serviceKey.contains('pool') || serviceKey.contains('share')) {
+      return _isPoolRuntimeEnabled;
+    }
+    return _runtimeServiceEnabled('ride', defaultValue: true);
   }
 
   Future<void> _refreshLocationAfterResume() async {
@@ -766,6 +818,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, 
     }
 
     if (actionId == 'parcel_open' && _incomingTrip == null && _incomingParcel == null) {
+      if (!_isParcelRuntimeEnabled) {
+        _showUnavailableByAdminOnce();
+        return;
+      }
       setState(() => _incomingParcel = data);
       _showIncomingParcel();
     }
@@ -842,7 +898,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, 
       final res = await http.get(Uri.parse(ApiConfig.eligibleServices), headers: headers);
       if (res.statusCode == 200 && mounted) {
         final data = jsonDecode(res.body);
-        final list = (data['services'] as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+        final list = ((data['services'] as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [])
+            .where(_runtimeAllowsDriverService)
+            .toList();
         setState(() => _eligibleServices = list);
       }
     } catch (_) {}
@@ -2235,14 +2293,16 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, 
                   Navigator.pop(context);
                   Navigator.push(context, MaterialPageRoute(builder: (_) => const DriverSupportChatScreen()));
                 }),
-                _drawerItem(Icons.people_alt_outlined, 'Local Pool', null, () {
-                  Navigator.pop(context);
-                  Navigator.push(context, MaterialPageRoute(builder: (_) => const LocalPoolScreen()));
-                }),
-                _drawerItem(Icons.directions_car_outlined, 'Outstation Pool', null, () {
-                  Navigator.pop(context);
-                  Navigator.push(context, MaterialPageRoute(builder: (_) => const OutstationPoolScreen()));
-                }),
+                if (_isPoolRuntimeEnabled)
+                  _drawerItem(Icons.people_alt_outlined, 'Local Pool', null, () {
+                    Navigator.pop(context);
+                    Navigator.push(context, MaterialPageRoute(builder: (_) => const LocalPoolScreen()));
+                  }),
+                if (_isPoolRuntimeEnabled)
+                  _drawerItem(Icons.directions_car_outlined, 'Outstation Pool', null, () {
+                    Navigator.pop(context);
+                    Navigator.push(context, MaterialPageRoute(builder: (_) => const OutstationPoolScreen()));
+                  }),
                 _drawerItem(Icons.card_giftcard_rounded, 'Refer & Earn', null, () {
                   Navigator.pop(context);
                   Navigator.push(context, MaterialPageRoute(builder: (_) => const ReferralScreen()));
