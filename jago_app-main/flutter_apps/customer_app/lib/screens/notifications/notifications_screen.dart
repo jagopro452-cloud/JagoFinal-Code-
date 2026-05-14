@@ -92,7 +92,6 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   Widget build(BuildContext context) {
     
     final bg = Colors.white;
-    final cardBg = Colors.white;
     final textColor = JT.textPrimary;
     final subColor = JT.textSecondary;
 

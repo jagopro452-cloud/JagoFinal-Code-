@@ -21,13 +21,7 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen>
 
   // Color system
   static const _bg = Color(0xFFFFFFFF);
-  static const _surface = JT.bgSoft;
-  static const _card = Color(0xFFF0F5FF);
   static const _border = Color(0xFFDDE8FF);
-  static const _primary = Color(0xFF2F7BFF);
-  static const _green = Color(0xFF00E676);
-  static const _amber = Color(0xFFFFB300);
-  static const _red = Color(0xFFFF3D57);
   static const _textSecondary = JT.textSecondary;
 
   static const _slides = [

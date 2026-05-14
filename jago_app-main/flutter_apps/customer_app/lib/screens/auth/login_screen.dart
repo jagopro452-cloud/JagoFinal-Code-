@@ -6,7 +6,6 @@ import 'package:sms_autofill/sms_autofill.dart';
 import '../../config/jago_theme.dart';
 import '../../services/auth_service.dart';
 import '../../services/firebase_otp_service.dart';
-import '../home/home_screen.dart';
 import '../main_screen.dart';
 import 'register_screen.dart';
 import 'forgot_password_screen.dart';

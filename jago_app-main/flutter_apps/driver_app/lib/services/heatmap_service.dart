@@ -114,7 +114,6 @@ class HeatmapService {
   List<HeatmapZone> _zones = [];
   HeatmapSuggestion? _suggestion;
   bool _isActive = true;
-  int _gridSizeMeters = 500;
   int _idleTimeoutMinutes = 5;
   int _refreshIntervalSeconds = 30;
 
@@ -166,7 +165,6 @@ class HeatmapService {
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         _isActive = data['isActive'] != false;
-        _gridSizeMeters = (data['gridSizeMeters'] ?? 500) as int;
         _idleTimeoutMinutes = (data['idleTimeoutMinutes'] ?? 5) as int;
         _refreshIntervalSeconds = (data['refreshIntervalSeconds'] ?? 30) as int;
 

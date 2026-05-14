@@ -53,7 +53,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                 prefixIcon: const Icon(Icons.my_location_rounded, color: JagoTheme.primaryBlue),
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
                 filled: true,
-                fillColor: Colors.white.withOpacity(0.9),
+                fillColor: Colors.white.withValues(alpha: 0.9),
               ),
               onChanged: (v) => _pickup = v,
             ),
@@ -90,7 +90,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                 prefixIcon: const Icon(Icons.location_on_rounded, color: JagoTheme.primaryBlue),
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
                 filled: true,
-                fillColor: Colors.white.withOpacity(0.9),
+                fillColor: Colors.white.withValues(alpha: 0.9),
               ),
               onChanged: (v) => _drop = v,
             ),
@@ -202,11 +202,11 @@ class _RideTypeOption extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         decoration: BoxDecoration(
           gradient: selected ? JagoTheme.primaryGradient : null,
-          color: selected ? null : Colors.white.withOpacity(0.9),
+          color: selected ? null : Colors.white.withValues(alpha: 0.9),
           borderRadius: BorderRadius.circular(14),
           boxShadow: [
             BoxShadow(
-              color: JagoTheme.primaryBlue.withOpacity(0.08),
+              color: JagoTheme.primaryBlue.withValues(alpha: 0.08),
               blurRadius: 8,
               offset: const Offset(0, 2),
             ),

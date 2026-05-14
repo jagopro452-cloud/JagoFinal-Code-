@@ -47,11 +47,11 @@ class RideRequestPopup extends StatelessWidget {
             const SizedBox(height: 18),
             Row(
               children: [
-                Icon(Icons.route_rounded, color: JagoTheme.primaryBlue.withOpacity(0.7)),
+                Icon(Icons.route_rounded, color: JagoTheme.primaryBlue.withValues(alpha: 0.7)),
                 const SizedBox(width: 6),
                 Text(distance, style: const TextStyle(fontWeight: FontWeight.w500)),
                 const SizedBox(width: 18),
-                Icon(Icons.attach_money_rounded, color: JagoTheme.primaryBlue.withOpacity(0.7)),
+                Icon(Icons.attach_money_rounded, color: JagoTheme.primaryBlue.withValues(alpha: 0.7)),
                 const SizedBox(width: 6),
                 Text(price, style: const TextStyle(fontWeight: FontWeight.w500)),
               ],
@@ -64,7 +64,7 @@ class RideRequestPopup extends StatelessWidget {
                     style: OutlinedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 16),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                      side: BorderSide(color: JagoTheme.primaryBlue.withOpacity(0.7), width: 1.5),
+                      side: BorderSide(color: JagoTheme.primaryBlue.withValues(alpha: 0.7), width: 1.5),
                     ),
                     onPressed: onReject,
                     child: Text('Reject', style: TextStyle(color: JagoTheme.primaryBlue, fontWeight: FontWeight.bold)),

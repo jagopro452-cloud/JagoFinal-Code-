@@ -12,11 +12,8 @@ import 'package:google_fonts/google_fonts.dart';
 import '../../config/api_config.dart';
 import '../../config/jago_theme.dart';
 import '../../services/auth_service.dart';
-import '../../services/trip_service.dart';
 import '../../services/vehicle_status_service.dart';
-import '../tracking/parcel_tracking_screen.dart';
 import '../tracking/tracking_screen.dart';
-import '../tracking/local_pool_status_screen.dart';
 import 'ride_for_whom_screen.dart';
 
 class BookingScreen extends StatefulWidget {
@@ -42,15 +39,10 @@ class BookingScreen extends StatefulWidget {
 
 class _BookingScreenState extends State<BookingScreen> with TickerProviderStateMixin {
   GoogleMapController? _mapController;
-  bool _mapCreated = false;
   bool _loading = false;
   bool _estimating = true;
-  bool _fareEstimateFromServer = false;
-  String? _fareEstimateWarning;
   List<Map<String, dynamic>> _allFares = [];
   int _selectedFareIndex = 0;
-  List<Map<String, dynamic>> _bookableVehicleCategories = [];
-  Map<String, dynamic>? _selectedVehicleSelection;
   String _paymentMethod = 'cash';
   double _walletBalance = 0;
   final TextEditingController _promoCtrl = TextEditingController();
@@ -63,20 +55,6 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
 
   late Razorpay _razorpay;
 
-  // Pool ride seat selection
-  int _seatsBooked = 1;
-  double _poolFarePerSeat = 0;
-  bool _poolFareLoading = false;
-
-  bool get _isLocalPoolVehicle {
-    final vt = _normalizeVehicleType(
-      _fare?['vehicleType']?.toString() ??
-      _fare?['type']?.toString() ??
-      _fareVehicleName(_fare ?? const <String, dynamic>{}),
-    );
-    return vt == 'local_pool' || vt == 'carpool';
-  }
-
   bool _bookForSomeone = false;
   final _passengerNameCtrl = TextEditingController();
   final _passengerPhoneCtrl = TextEditingController();
@@ -87,10 +65,17 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
   double _routedDistanceKm = 0.0;
 
   static const Color _jagoPrimary = JT.primary;
-  static const Color _jagoSecondary = JT.secondary;
 
   static const Color _blue = Color(0xFF6366F1); // Vibrant Indigo
   static const Color _green = JT.success;
+  static const Color _ridePrimary = Color(0xFF6366F1);
+  static const Color _ridePrimaryDark = Color(0xFF4F4ACF);
+  static const Color _rideSecondary = Color(0xFF8B5CF6);
+  static const Color _rideBg = Color(0xFFF5F3FF);
+  static const Color _parcelPrimary = Color(0xFFC29763);
+  static const Color _parcelPrimaryDark = Color(0xFFB07D42);
+  static const Color _parcelSecondary = Color(0xFFD6B58F);
+  static const Color _parcelBg = Color(0xFFFBF8F3);
 
   LatLng get _pickupLatLng => LatLng(widget.pickupLat, widget.pickupLng);
   LatLng get _destLatLng => widget.destLat != 0 && widget.destLng != 0
@@ -98,6 +83,19 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     : LatLng(widget.pickupLat + 0.02, widget.pickupLng + 0.02);
 
   Map<String, dynamic>? get _fare => _allFares.isNotEmpty ? _allFares[_selectedFareIndex] : null;
+
+  bool get _useParcelPalette => widget.category == 'parcel' || _isParcel;
+  Color get _accentPrimary => _useParcelPalette ? _parcelPrimary : _ridePrimary;
+  Color get _accentPrimaryDark =>
+      _useParcelPalette ? _parcelPrimaryDark : _ridePrimaryDark;
+  Color get _accentSecondary =>
+      _useParcelPalette ? _parcelSecondary : _rideSecondary;
+  Color get _accentBg => _useParcelPalette ? _parcelBg : _rideBg;
+  LinearGradient get _accentGradient => LinearGradient(
+        colors: [_accentPrimaryDark, _accentPrimary],
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+      );
 
   String get _vehicleName => _fare?['vehicleCategoryName']?.toString() ?? _fare?['name']?.toString() ?? widget.vehicleCategoryName ?? 'Bike';
 
@@ -108,219 +106,13 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         'Bike';
   }
 
-  String _normalizeVehicleLookupKey(String? raw) {
-    return (raw ?? '')
-        .trim()
-        .toLowerCase()
-        .replaceAll('&', 'and')
-        .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
-        .replaceAll(RegExp(r'^_+|_+$'), '');
-  }
-
-  String? _normalizeVehicleType(String? raw) {
-    final key = (raw ?? '').trim().toLowerCase();
-    if (key.isEmpty) return null;
-    if (key.contains('bike parcel')) return 'bike_parcel';
-    if (key.contains('parcel auto')) return 'auto_parcel';
-    if (key.contains('mini truck') || key.contains('tata ace')) return 'mini_truck';
-    if (key.contains('pickup')) return 'pickup_truck';
-    if (key.contains('tempo')) return 'tempo_407';
-    if (key.contains('outstation pool') || key.contains('outstation')) return 'outstation_pool';
-    if (key.contains('local pool') || key.contains('city pool')) return 'local_pool';
-    if (key.contains('pool') || key.contains('carpool')) return 'local_pool';
-    if (key.contains('bike')) return 'bike';
-    if (key.contains('auto')) return 'auto';
-    if (key.contains('cab') ||
-        key.contains('car') ||
-        key.contains('sedan') ||
-        key.contains('suv') ||
-        key.contains('premium')) {
-      return 'car';
-    }
-    return null;
-  }
-
-  bool _isParcelVehicleType(String? value) {
-    final normalized = _normalizeVehicleType(value) ?? _normalizeVehicleLookupKey(value);
-    return normalized.contains('parcel') ||
-        normalized.contains('truck') ||
-        normalized.contains('pickup') ||
-        normalized.contains('tempo');
-  }
-
-  bool _isBookableCategoryActive(Map<String, dynamic> category) {
-    final raw = category['isActive'] ?? category['is_active'];
-    if (raw is bool) return raw;
-    return raw?.toString().toLowerCase() != 'false';
-  }
-
-  int _categoryMatchScore(
-    Map<String, dynamic> category,
-    String? requestedType,
-    String requestedName,
-  ) {
-    if (!_isBookableCategoryActive(category)) return -1;
-
-    final categoryType = category['type']?.toString().toLowerCase() ?? '';
-    final name = category['name']?.toString() ?? '';
-    final nameKey = _normalizeVehicleLookupKey(name);
-    final isParcel = _isParcelVehicleType(requestedType) || requestedName.contains('parcel');
-
-    if (isParcel) {
-      if (categoryType != 'parcel' && categoryType != 'cargo') return -1;
-    } else if (categoryType == 'parcel' || categoryType == 'cargo') {
-      return -1;
-    }
-
-    final requestedKey = _normalizeVehicleLookupKey(requestedName);
-    var score = 0;
-
-    if (requestedType == 'local_pool' && (nameKey.contains('local_pool') || nameKey.contains('city_pool') || nameKey.contains('pool'))) score += 120;
-    if (requestedType == 'outstation_pool' && (nameKey.contains('outstation') || nameKey.contains('outstation_pool'))) score += 120;
-    if (requestedType == 'bike' && nameKey.contains('bike')) score += 120;
-    if (requestedType == 'auto' && nameKey.contains('auto')) score += 120;
-    if (requestedType == 'car') {
-      if (requestedKey.contains('premium') && nameKey.contains('premium')) score += 180;
-      if (requestedKey.contains('sedan') && nameKey.contains('sedan')) score += 170;
-      if (requestedKey.contains('suv') && nameKey.contains('suv')) score += 170;
-      if (nameKey.contains('cab') || nameKey.contains('car') || nameKey.contains('sedan') || nameKey.contains('suv')) {
-        score += 110;
-      }
-    }
-    if (requestedType == 'bike_parcel' && nameKey.contains('bike') && nameKey.contains('parcel')) score += 180;
-    if (requestedType == 'auto_parcel' && nameKey.contains('auto') && nameKey.contains('parcel')) score += 180;
-    if (requestedType == 'mini_truck' && (nameKey.contains('mini') || nameKey.contains('tata'))) score += 180;
-    if (requestedType == 'pickup_truck' && nameKey.contains('pickup')) score += 180;
-
-    if (requestedKey.isNotEmpty) {
-      if (requestedKey == nameKey) score += 240;
-      if (requestedKey.contains('bike') && nameKey.contains('bike')) score += 90;
-      if (requestedKey.contains('auto') && nameKey.contains('auto')) score += 90;
-      if (requestedKey.contains('cab') && (nameKey.contains('cab') || nameKey.contains('car'))) score += 80;
-      if (requestedKey.contains('premium') && nameKey.contains('premium')) score += 90;
-      if (requestedKey.contains('parcel') && nameKey.contains('parcel')) score += 100;
-      if (requestedKey.contains('truck') && nameKey.contains('truck')) score += 100;
-      if (requestedKey.contains('pickup') && nameKey.contains('pickup')) score += 100;
-    }
-
-    return score;
-  }
-
-  Map<String, dynamic>? _resolveVehicleCategoryForFare(Map<String, dynamic> fare) {
-    if (_bookableVehicleCategories.isEmpty) return null;
-    final requestedName = _fareVehicleName(fare);
-    final requestedType = _normalizeVehicleType(
-      fare['vehicleType']?.toString() ??
-          fare['type']?.toString() ??
-          requestedName,
-    );
-
-    Map<String, dynamic>? best;
-    var bestScore = -1;
-    for (final category in _bookableVehicleCategories) {
-      final score = _categoryMatchScore(category, requestedType, requestedName);
-      if (score > bestScore) {
-        bestScore = score;
-        best = category;
-      }
-    }
-    return bestScore >= 0 ? best : null;
-  }
-
-  List<Map<String, dynamic>> _hydrateFaresWithCatalog(List<Map<String, dynamic>> fares) {
-    return fares.map((fare) {
-      final existingId = fare['vehicleCategoryId']?.toString() ?? fare['id']?.toString() ?? '';
-      if (existingId.isNotEmpty) return fare;
-      final resolved = _resolveVehicleCategoryForFare(fare);
-      if (resolved == null) return fare;
-      return {
-        ...fare,
-        'vehicleCategoryId': resolved['id']?.toString(),
-        'vehicleCategoryName': fare['vehicleCategoryName'] ?? resolved['name'],
-      };
-    }).toList();
-  }
-
-  Map<String, dynamic>? _buildSelectionFromFare(Map<String, dynamic>? fare) {
-    if (fare == null) return null;
-    final resolvedCategory = _resolveVehicleCategoryForFare(fare);
-    final categoryId = fare['vehicleCategoryId']?.toString() ??
-        fare['id']?.toString() ??
-        resolvedCategory?['id']?.toString();
-    final vehicleName = _fareVehicleName({
-      ...fare,
-      if (resolvedCategory != null && fare['vehicleCategoryName'] == null) 'vehicleCategoryName': resolvedCategory['name'],
-    });
-    final vehicleType = _normalizeVehicleType(
-      fare['vehicleType']?.toString() ??
-          fare['type']?.toString() ??
-          vehicleName,
-    );
-    return {
-      'vehicleCategoryId': categoryId,
-      'vehicleType': vehicleType,
-      'vehicleName': vehicleName,
-      'resolved': categoryId != null && categoryId.isNotEmpty && vehicleType != null && vehicleType.isNotEmpty,
-    };
-  }
-
-  void _refreshSelectedVehicleSelection() {
-    final selection = _buildSelectionFromFare(_fare);
-    if (!mounted) {
-      _selectedVehicleSelection = selection;
-      return;
-    }
-    setState(() => _selectedVehicleSelection = selection);
-  }
-
-  bool get _hasResolvedVehicleSelection =>
-      _selectedVehicleSelection?['resolved'] == true;
-
-  bool get _hasBookingInputs =>
-      widget.pickup.trim().isNotEmpty &&
-      widget.destination.trim().isNotEmpty &&
-      widget.pickupLat != 0 &&
-      widget.pickupLng != 0 &&
-      widget.destLat != 0 &&
-      widget.destLng != 0;
-
-  bool get _canConfirmRide =>
-      !_loading &&
-      !_estimating &&
-      _allFares.isNotEmpty &&
-      _hasBookingInputs &&
-      _hasResolvedVehicleSelection;
-
   List<MapEntry<int, Map<String, dynamic>>> _visibleFareEntries(
     Map<String, VehicleStatus> statuses,
   ) {
     return _allFares.asMap().entries.where((entry) {
-      return _isFareAvailable(entry.value, statuses);
+      final name = _fareVehicleName(entry.value);
+      return VehicleStatusService.isActive(statuses, name);
     }).toList();
-  }
-
-  bool _isFareAvailable(
-    Map<String, dynamic> fare,
-    Map<String, VehicleStatus> statuses,
-  ) {
-    final backendFlag = fare['isActive'];
-    if (backendFlag is bool) return backendFlag;
-    if (backendFlag != null) {
-      return backendFlag.toString().toLowerCase() == 'true';
-    }
-    final name = _fareVehicleName(fare);
-    return VehicleStatusService.isActive(statuses, name);
-  }
-
-  void _syncSelectedFareToVisible(Map<String, VehicleStatus> statuses) {
-    if (_allFares.isEmpty) return;
-    if (_isFareAvailable(_allFares[_selectedFareIndex], statuses)) return;
-    final visible = _visibleFareEntries(statuses);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || visible.isEmpty) return;
-      setState(() => _selectedFareIndex = visible.first.key);
-      _refreshSelectedVehicleSelection();
-    });
   }
 
   static IconData _iconForVehicle(String name) {
@@ -357,39 +149,20 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
   }
 
   // Rule 3: Parcel Auto subtitle must clearly say GOODS ONLY
-  static String _subtitleForVehicle(String name) {
-    final n = name.toLowerCase();
-    if (n.contains('parcel auto')) return 'Goods Carrier Auto · CARGO ONLY';
-    if (n.contains('parcel bike')) return 'Delivery bike · Up to 10 kg';
-    if (n.contains('mini truck') || n.contains('tata ace')) return 'Mini cargo truck · Up to 500 kg';
-    if (n.contains('pickup van') || n.contains('pickup')) return 'Large pickup van · Up to 2000 kg';
-    if (n.contains('parcel')) return 'Parcel delivery';
-    if (n.contains('outstation pool') || (n.contains('outstation') && n.contains('pool'))) return 'Intercity shared ride · Save more';
-    if (n.contains('local pool') || n.contains('city pool')) return 'Share your ride · 2-3 seats';
-    if (n.contains('pool') || n.contains('carpool')) return 'Shared ride · Cost effective';
-    if (n.contains('bike')) return '1 passenger · Fastest';
-    if (n.contains('auto')) return 'Up to 3 passengers';
-    if (n.contains('suv')) return 'Up to 6 passengers · AC';
-    if (n.contains('car')) return 'Up to 4 passengers · AC';
-    return '';
-  }
-
   // Rule 4: Returns true if vehicle should be HIDDEN
   static bool _shouldHideVehicle(String name) {
     final n = name.toLowerCase();
-
-    // Whitelist all valid ride categories
+    
+    // Whitelist only requested categories: bike, auto, cab, premium
+    // Relaxed contains checks to avoid hiding valid variations (e.g. "Bike - Fast")
     if (n.contains('bike')) return false;
     if (n.contains('auto')) return false;
     if (n.contains('cab')) return false;
     if (n.contains('premium')) return false;
     if (n.contains('sedan')) return false;
     if (n.contains('car')) return false;
-    if (n.contains('pool')) return false;      // local pool, city pool, outstation pool
-    if (n.contains('carpool')) return false;
-    if (n.contains('outstation')) return false;
 
-    // Hide cargo/parcel vehicles from ride list
+    // Hide everything else (Parcel, SUV, Pool, etc. if not requested)
     return true;
   }
 
@@ -405,13 +178,9 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     'cab': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_27_28_AM_w0rcnh',
     'premium': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_31_05_AM_kavp5e',
     'parcel_bike': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_49_26_AM_gjbrxs',
-    'parcel_auto': 'https://res.cloudinary.com/kits/image/upload/q_auto/f_auto/v1775367404/be5b86c2-7a8a-4dbd-ad33-e8da2b627d5e_vurdrg.png',
-    'tata_ace':    'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_51_59_AM_jzd119',
+    'parcel_auto': 'https://oyster-app-9e9cd.ondigitalocean.app/static/vehicles/parcel_auto.png',
     'mini_truck':  'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_51_59_AM_jzd119',
-    'pickup_truck':'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_54_02_AM_hicx7s',
     'pickup_van':  'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_54_02_AM_hicx7s',
-    'local_pool':       'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_27_28_AM_w0rcnh',
-    'outstation_pool':  'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_31_05_AM_kavp5e',
   };
 
   static String? _vehicleImageKey(String name) {
@@ -422,38 +191,14 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     if (n.contains('parcel bike') || n.contains('bike parcel')) return 'parcel_bike';
     if (n.contains('parcel auto')) return 'parcel_auto';
     if (n.contains('parcel')) return 'parcel_bike';
-    if (n.contains('outstation pool') || (n.contains('outstation') && n.contains('pool'))) return 'outstation_pool';
-    if (n.contains('local pool') || n.contains('city pool') || n.contains('pool') || n.contains('carpool')) return 'local_pool';
     if (n.contains('bike')) return 'bike';
     if (n.contains('auto')) return 'auto';
     if (n.contains('cab') || n.contains('car') || n.contains('suv')) return 'cab';
     return null;
   }
 
-  Widget _buildVehicleImage(String name, {BoxFit fit = BoxFit.contain, double? width, double? height, Color? tint}) {
-    final imgKey = _vehicleImageKey(name);
-    final imgUrl = imgKey != null ? _vehicleImageUrls[imgKey] : null;
-    final fallback = Center(
-      child: Text(
-        _emojiForVehicle(name),
-        style: TextStyle(fontSize: ((height ?? width ?? 72) * 0.42).clamp(24, 52).toDouble()),
-      ),
-    );
-    if (imgUrl == null) return fallback;
-    return Image.network(
-      imgUrl,
-      width: width,
-      height: height,
-      fit: fit,
-      color: tint,
-      colorBlendMode: tint != null ? BlendMode.modulate : null,
-      loadingBuilder: (context, child, progress) => progress == null ? child : fallback,
-      errorBuilder: (_, __, ___) => fallback,
-    );
-  }
-
   /// Renders vehicle artwork — real network image with icon fallback.
-  Widget _buildVehicleArtwork(String name, Color accent, bool isSelected, {double size = 96}) {
+  Widget buildVehicleArtwork(String name, Color accent, bool isSelected, {double size = 96}) {
     final imageKey = _vehicleImageKey(name);
     final imageUrl = imageKey != null ? _vehicleImageUrls[imageKey] : null;
     final icon = _iconForVehicle(name);
@@ -472,7 +217,14 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         Padding(
           padding: const EdgeInsets.fromLTRB(8, 8, 8, 18),
           child: imageUrl != null
-            ? _buildVehicleImage(name, fit: BoxFit.contain, height: size * 0.62)
+            ? Image.network(
+                imageUrl,
+                fit: BoxFit.contain,
+                errorBuilder: (_, __, ___) => Icon(
+                  icon, size: size * 0.44,
+                  color: accent.withValues(alpha: isSelected ? 0.85 : 0.60),
+                ),
+              )
             : Icon(
                 icon, size: size * 0.44,
                 color: accent.withValues(alpha: isSelected ? 0.85 : 0.60),
@@ -498,7 +250,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     );
   }
 
-  Widget _buildVehicleHero() {
+  Widget buildVehicleHero() {
     if (_allFares.isEmpty) return const SizedBox.shrink();
     final fare = _allFares[_selectedFareIndex];
     final name = fare['vehicleCategoryName']?.toString() ?? fare['name']?.toString() ?? 'Bike';
@@ -548,31 +300,23 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
             Text('₹${displayMin.floor()} – ₹${displayMax.ceil()}',
               style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w400)),
             Text('estimated fare', style: TextStyle(color: Colors.white.withValues(alpha: 0.75), fontSize: 11)),
-            if (!_fareEstimateFromServer && _fareEstimateWarning != null) ...[
-              const SizedBox(height: 6),
-              Text(
-                _fareEstimateWarning!,
-                style: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.92),
-                  fontSize: 10,
-                  fontWeight: FontWeight.w400,
-                ),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ],
           ])),
           // Real vehicle image — emoji fallback if network fails
           Builder(builder: (_) {
+            final imgKey = _vehicleImageKey(name);
+            final imgUrl = imgKey != null ? _vehicleImageUrls[imgKey] : null;
             return SizedBox(
               width: 100, height: 80,
-              child: _buildVehicleImage(
-                name,
-                fit: BoxFit.contain,
-                width: 100,
-                height: 80,
-                tint: Colors.white.withValues(alpha: 0.92),
-              ),
+              child: imgUrl != null
+                ? Image.network(
+                    imgUrl,
+                    fit: BoxFit.contain,
+                    color: Colors.white.withValues(alpha: 0.92),
+                    colorBlendMode: BlendMode.modulate,
+                    errorBuilder: (_, __, ___) =>
+                        Text(emoji, style: const TextStyle(fontSize: 64)),
+                  )
+                : Text(emoji, style: const TextStyle(fontSize: 64)),
             );
           }),
         ]),
@@ -594,24 +338,6 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     final m = dropTime.minute.toString().padLeft(2, '0');
     final ampm = dropTime.hour >= 12 ? 'pm' : 'am';
     return '$h:$m $ampm';
-  }
-
-  static String _capacityForVehicle(String name) {
-    final n = name.toLowerCase();
-    if (n.contains('pickup van') || n.contains('pickup')) return 'Up to 2000 kg';
-    if (n.contains('mini truck') || n.contains('tata ace')) return 'Up to 500 kg';
-    if (n.contains('parcel bike') || n.contains('bike parcel')) return 'Up to 10 kg';
-    if (n.contains('parcel auto')) return 'Up to 50 kg';
-    if (n.contains('parcel')) return 'Package delivery';
-    if (n.contains('outstation pool')) return 'Shared · intercity';
-    if (n.contains('local pool') || n.contains('city pool') || n.contains('pool')) return 'Shared · 2-3 seats';
-    if (n.contains('suv')) return '6 seats';
-    if (n.contains('car')) return '4 seats';
-    if (n.contains('auto')) return '3 seats';
-    if (n.contains('bike')) return '1 rider';
-    if (n.contains('cargo truck')) return 'Up to 1000 kg';
-    if (n.contains('cargo')) return 'Up to 500 kg';
-    return '';
   }
 
   double get _distanceKm {
@@ -648,54 +374,9 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     _razorpay.on(Razorpay.EVENT_PAYMENT_SUCCESS, _handleRazorpaySuccess);
     _razorpay.on(Razorpay.EVENT_PAYMENT_ERROR, _handleRazorpayError);
     _razorpay.on(Razorpay.EVENT_EXTERNAL_WALLET, _handleExternalWallet);
-    _bootstrapBookingFlow();
+    _estimateFare();
     _fetchWallet();
     _fetchRoutePolyline();
-  }
-
-  Future<void> _bootstrapBookingFlow() async {
-    await _loadBookableVehicleCategories();
-    await _estimateFare();
-  }
-
-  Future<void> _loadBookableVehicleCategories() async {
-    try {
-      final headers = await AuthService.getHeaders();
-      List<Map<String, dynamic>> categories = const [];
-
-      try {
-        final res = await http
-            .get(Uri.parse(ApiConfig.customerHomeData), headers: headers)
-            .timeout(const Duration(seconds: 10));
-        if (res.statusCode == 200) {
-          final data = jsonDecode(res.body) as Map<String, dynamic>;
-          categories =
-              (data['vehicleCategories'] as List<dynamic>? ?? const [])
-                  .whereType<Map<String, dynamic>>()
-                  .toList();
-        }
-      } catch (_) {}
-
-      if (categories.isEmpty) {
-        final fallbackRes = await http
-            .get(Uri.parse(ApiConfig.configs), headers: headers)
-            .timeout(const Duration(seconds: 10));
-        if (fallbackRes.statusCode == 200) {
-          final data = jsonDecode(fallbackRes.body) as Map<String, dynamic>;
-          categories =
-              (data['vehicleCategories'] as List<dynamic>? ?? const [])
-                  .whereType<Map<String, dynamic>>()
-                  .toList();
-        }
-      }
-
-      if (!mounted || categories.isEmpty) return;
-      setState(() {
-        _bookableVehicleCategories = categories;
-        _allFares = _hydrateFaresWithCatalog(_allFares);
-      });
-      _refreshSelectedVehicleSelection();
-    } catch (_) {}
   }
 
   @override
@@ -788,8 +469,6 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         final fares = rawFares is List ? rawFares.whereType<Map<String, dynamic>>().toList() : null;
         if (fares != null && fares.isNotEmpty) {
           setState(() {
-            _fareEstimateFromServer = true;
-            _fareEstimateWarning = null;
             // Rule 2: Strict service separation — filter by category, hide inactive
             var filtered = fares.toList();
             final cat = widget.category ?? 'ride';
@@ -812,7 +491,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
                 return true;
               }).toList();
             }
-            _allFares = _hydrateFaresWithCatalog(filtered);
+            _allFares = filtered;
             
             // Ensure we have at least the core categories (Bike, Auto, Cab)
             if (widget.category != 'parcel') {
@@ -824,17 +503,13 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
                   final name = (f['vehicleCategoryName'] ?? f['name'] ?? '').toString().toLowerCase();
                   return name.contains(fbName.split(' ').first.toLowerCase());
                 })) {
-                  _allFares.add(_hydrateFaresWithCatalog([fb]).first);
+                  _allFares.add(fb);
                 }
               }
             }
             
-            // Keep the UI usable, but clearly mark when we are no longer showing live server fares.
-            if (_allFares.isEmpty) {
-              _fareEstimateFromServer = false;
-              _fareEstimateWarning = 'Live fares unavailable. Please retry if totals look outdated.';
-              _allFares = _hydrateFaresWithCatalog(_buildFallbackFares());
-            }
+            // Final safety check: if still empty (shouldn't happen with fallbacks), use all fallbacks
+            if (_allFares.isEmpty) _allFares = _buildFallbackFares();
             if (widget.vehicleCategoryId != null || widget.vehicleCategoryName != null) {
               final targetName = (widget.vehicleCategoryName ?? '').toLowerCase();
               final idx = _allFares.indexWhere((f) {
@@ -846,39 +521,17 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
               if (idx >= 0) _selectedFareIndex = idx;
             }
           });
-          _refreshSelectedVehicleSelection();
         } else {
           // Server returned 200 but body wasn't as expected — use fallbacks
-          if (mounted) {
-            setState(() {
-              _fareEstimateFromServer = false;
-              _fareEstimateWarning = 'Live fares unavailable. Please retry if totals look outdated.';
-              _allFares = _hydrateFaresWithCatalog(_buildFallbackFares());
-            });
-            _refreshSelectedVehicleSelection();
-          }
+          if (mounted) setState(() => _allFares = _buildFallbackFares());
         }
       } else {
         // Server returned error status — use fallbacks
-        if (mounted) {
-          setState(() {
-            _fareEstimateFromServer = false;
-            _fareEstimateWarning = 'Live fares unavailable. Please retry in a moment.';
-            _allFares = _hydrateFaresWithCatalog(_buildFallbackFares());
-          });
-          _refreshSelectedVehicleSelection();
-        }
+        if (mounted) setState(() => _allFares = _buildFallbackFares());
       }
     } catch (_) {
       // Network error — show client-side estimates only on connectivity failure
-      if (mounted) {
-        setState(() {
-          _fareEstimateFromServer = false;
-          _fareEstimateWarning = 'Network issue while fetching fares. Showing temporary estimates.';
-          _allFares = _hydrateFaresWithCatalog(_buildFallbackFares());
-        });
-        _refreshSelectedVehicleSelection();
-      }
+      if (mounted) setState(() => _allFares = _buildFallbackFares());
     }
     if (mounted) setState(() => _estimating = false);
   }
@@ -887,13 +540,6 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
   /// no fares. Formula: Total = Base + (Distance × Per-KM Rate) + 5% GST.
   List<Map<String, dynamic>> _buildFallbackFares() {
     final dist = _distanceKm;
-    final requestKey = _normalizeVehicleLookupKey(widget.vehicleCategoryName);
-    final hasPoolCatalog = _bookableVehicleCategories.any((category) {
-      final key = _normalizeVehicleLookupKey(category['name']?.toString());
-      return key.contains('pool') || key.contains('carpool') || key.contains('outstation');
-    });
-    final includePoolOptions =
-        requestKey.contains('pool') || requestKey.contains('carpool') || hasPoolCatalog;
     Map<String, dynamic> make(
         String name, double base, double perKm, double minFareVal, int eta) {
       final raw = (base + dist * perKm).clamp(minFareVal, double.infinity);
@@ -903,7 +549,6 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         'vehicleCategoryId': null,
         'vehicleCategoryName': name,
         'vehicleName': name,
-        'vehicleType': _normalizeVehicleType(name),
         'baseFare': base,
         'farePerKm': perKm,
         'billableKm': dist,
@@ -932,84 +577,19 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         make('Pickup Van',  150, 35, 180, (dist * 5).ceil()),
       ];
     }
-    // Ride vehicles (default) — includes pool options
+    // Ride vehicles (default)
     return [
-      make('Bike',           25, 10, 28, (dist * 3).ceil()),
-      make('Auto',           35, 13, 40, (dist * 3.5).ceil()),
-      make('Cab',            50, 16, 60, (dist * 4).ceil()),
-      make('Premium Cab',    70, 20, 80, (dist * 4).ceil()),
-      if (includePoolOptions) make('Local Pool',     18,  8, 22, (dist * 2.5).ceil()),
-      if (includePoolOptions) make('Outstation Pool', 30, 12, 40, (dist * 3).ceil()),
+      make('Bike', 25, 10, 28, (dist * 3).ceil()),
+      make('Auto', 35, 13, 40, (dist * 3.5).ceil()),
+      make('Cab',  50, 16, 60, (dist * 4).ceil()),
+      make('Premium Cab', 70, 20, 80, (dist * 4).ceil()),
     ];
   }
 
   Future<void> _confirmBooking({String? razorpayPaymentId}) async {
-    if (!_validateBookingBeforeConfirm()) return;
     setState(() => _loading = true);
     try {
       final headers = await AuthService.getHeaders();
-      final selection = _selectedVehicleSelection ?? _buildSelectionFromFare(_fare);
-
-      // Determine if this is a local pool booking
-      final selectedVehicleType = selection?['vehicleType']?.toString() ??
-          _normalizeVehicleType(
-            _fare?['vehicleType']?.toString() ??
-                _fare?['type']?.toString() ??
-                _fareVehicleName(_fare ?? const <String, dynamic>{}),
-          );
-      final isLocalPool = selectedVehicleType == 'local_pool' || selectedVehicleType == 'carpool';
-
-      if (isLocalPool) {
-        // Route to dedicated local pool endpoint
-        final vcId = selection?['vehicleCategoryId']?.toString() ??
-            _fare?['vehicleCategoryId']?.toString() ??
-            _fare?['id']?.toString() ??
-            widget.vehicleCategoryId;
-        final poolBody = <String, dynamic>{
-          'pickupLat': widget.pickupLat, 'pickupLng': widget.pickupLng,
-          'dropLat': widget.destLat, 'dropLng': widget.destLng,
-          'pickupAddress': widget.pickup,
-          'dropAddress': widget.destination,
-          'seatsRequested': _seatsBooked,
-          'paymentMethod': _paymentMethod,
-          if (vcId != null && vcId.isNotEmpty) 'vehicleCategoryId': vcId,
-        };
-        debugPrint('[LOCAL_POOL_BOOK] payload=${jsonEncode(poolBody)}');
-        final res = await http.post(
-          Uri.parse(ApiConfig.localPoolBook),
-          headers: headers,
-          body: jsonEncode(poolBody),
-        );
-        if (res.statusCode == 200) {
-          final data = jsonDecode(res.body);
-          if (!mounted) return;
-          setState(() => _loading = false);
-          final payload = (data['data'] is Map<String, dynamic>) ? data['data'] as Map<String, dynamic> : data;
-          final requestId = payload['requestId']?.toString() ?? '';
-          if (requestId.isEmpty) {
-            _showSnack('Pool booking created but tracking details are unavailable. Please check My Trips.', error: true);
-            Navigator.pop(context);
-            return;
-          }
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (_) => LocalPoolStatusScreen(
-                requestId: requestId,
-                pickupAddress: widget.pickup,
-                dropAddress: widget.destination,
-              ),
-            ),
-          );
-        } else {
-          if (!mounted) return;
-          final err = jsonDecode(res.body);
-          _showSnack(err['message']?.toString() ?? 'Pool booking failed', error: true);
-          setState(() => _loading = false);
-        }
-        return;
-      }
-
       final body = <String, dynamic>{
         'pickupAddress': widget.pickup,
         'destinationAddress': widget.destination,
@@ -1040,19 +620,8 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         if (_bookForSomeone && _noteCtrl.text.trim().isNotEmpty)
           'note': _noteCtrl.text.trim(),
       };
-      final vcId = selection?['vehicleCategoryId']?.toString() ??
-          _fare?['vehicleCategoryId']?.toString() ??
-          _fare?['id']?.toString() ??
-          widget.vehicleCategoryId;
+      final vcId = _fare?['vehicleCategoryId']?.toString() ?? _fare?['id']?.toString() ?? widget.vehicleCategoryId;
       if (vcId != null && vcId.isNotEmpty) body['vehicleCategoryId'] = vcId;
-      if (selectedVehicleType != null) body['vehicleType'] = selectedVehicleType;
-      final selectedVehicleName =
-          selection?['vehicleName']?.toString() ?? _fareVehicleName(_fare ?? const <String, dynamic>{});
-      if (selectedVehicleName.isNotEmpty) {
-        body['vehicleCategoryName'] = selectedVehicleName;
-        body['vehicleName'] = selectedVehicleName;
-      }
-      debugPrint('[BOOK_RIDE] payload=${jsonEncode(body)}');
       final res = await http.post(Uri.parse(ApiConfig.bookRide),
         headers: headers,
         body: jsonEncode(body));
@@ -1072,12 +641,9 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         if (!mounted) return;
         try {
           final err = jsonDecode(res.body);
-          if (err['tripId'] != null || err['orderId'] != null) {
-            await _ensureNoActiveBookingBeforeContinue();
-          }
-          _showSnack(_friendlyBookingError(err is Map<String, dynamic> ? err : <String, dynamic>{}), error: true);
+          _showSnack(err['message'] ?? 'Booking failed', error: true);
         } catch (_) {
-          _showSnack('Booking could not be created. Please retry.', error: true);
+          _showSnack('Booking failed. Please try again.', error: true);
         }
       }
     } catch (_) {
@@ -1089,7 +655,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
 
   /// Offers Google Maps navigation to pickup location after booking is confirmed.
   /// Shows a premium bottom sheet with "Navigate" and "Skip" options.
-  Future<void> _offerNavigateToPickup() async {
+  Future<void> offerNavigateToPickup() async {
     if (!mounted) return;
     final pickupLat = widget.pickupLat;
     final pickupLng = widget.pickupLng;
@@ -1186,138 +752,14 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     );
   }
 
-  bool _validateBookingBeforeConfirm() {
-    if (widget.pickup.trim().isEmpty || widget.pickupLat == 0 || widget.pickupLng == 0) {
-      _showSnack('Pickup location is missing. Please choose a valid pickup point.', error: true);
-      return false;
-    }
-    if (widget.destination.trim().isEmpty || widget.destLat == 0 || widget.destLng == 0) {
-      _showSnack('Drop location is missing. Please choose a valid destination.', error: true);
-      return false;
-    }
-    if (!_hasResolvedVehicleSelection) {
-      _showSnack('Please select a live vehicle option before confirming your ride.', error: true);
-      return false;
-    }
-    return true;
-  }
-
-  Future<bool> _ensureNoActiveBookingBeforeContinue() async {
-    final active = await TripService.getActiveBooking();
-    final booking = active['booking'];
-    final bookingType = active['bookingType']?.toString();
-    if (booking is! Map<String, dynamic> || bookingType == null || bookingType.isEmpty) {
-      return true;
-    }
-
-    final canCancel = booking['canCancel'] == true;
-    final bookingId = booking['id']?.toString() ?? '';
-    final title = bookingType == 'parcel' ? 'Active parcel found' : 'Active ride found';
-    final subtitle = bookingType == 'parcel'
-        ? (booking['pickupAddress']?.toString() ?? 'Parcel booking in progress')
-        : (booking['destinationAddress']?.toString() ?? 'Ride booking in progress');
-
-    final action = await showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (_) => Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
-            const SizedBox(height: 8),
-            Text(
-              subtitle,
-              style: const TextStyle(fontSize: 14, color: Color(0xFF64748B)),
-            ),
-            const SizedBox(height: 18),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: () => Navigator.pop(context, 'track'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: JT.primary,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                ),
-                child: const Text('Track Current Booking', style: TextStyle(color: Colors.white)),
-              ),
-            ),
-            if (canCancel) ...[
-              const SizedBox(height: 10),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton(
-                  onPressed: () => Navigator.pop(context, 'cancel'),
-                  style: OutlinedButton.styleFrom(
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                  ),
-                  child: const Text('Cancel Current Booking And Continue'),
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-
-    if (!mounted) return false;
-    if (action == 'track' && bookingId.isNotEmpty) {
-      if (bookingType == 'parcel') {
-        await Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => ParcelTrackingScreen(orderId: bookingId)),
-        );
-      } else {
-        await Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => TrackingScreen(tripId: bookingId)),
-        );
-      }
-      return false;
-    }
-
-    if (action == 'cancel' && bookingId.isNotEmpty && canCancel) {
-      final result = bookingType == 'parcel'
-          ? await TripService.cancelParcelOrder(
-              bookingId,
-              reason: 'Customer cancelled to continue with a new ride booking',
-            )
-          : await TripService.cancelTrip(
-              bookingId,
-              'Customer cancelled to continue with a new ride booking',
-            );
-      if (result['success'] == true) {
-        _showSnack('Previous booking cancelled. Continue with your new ride.', error: false);
-        return true;
-      }
-      _showSnack(
-        result['message']?.toString() ?? result['error']?.toString() ?? 'Could not cancel current booking.',
-        error: true,
-      );
-    }
-
-    return false;
-  }
-
   Future<void> _goToRideForWhomScreen() async {
-    if (!_validateBookingBeforeConfirm()) return;
     try {
       final statuses = await _vehicleStatusService.watchVehicleStatuses().first;
-      final currentFare = (_selectedFareIndex >= 0 && _selectedFareIndex < _allFares.length)
-          ? _allFares[_selectedFareIndex]
-          : <String, dynamic>{'vehicleName': _vehicleName, 'isActive': true};
-      if (!_isFareAvailable(currentFare, statuses)) {
+      if (!VehicleStatusService.isActive(statuses, _vehicleName)) {
         _showSnack('$_vehicleName is temporarily unavailable by admin.', error: true);
         return;
       }
     } catch (_) {}
-    final canContinue = await _ensureNoActiveBookingBeforeContinue();
-    if (!canContinue) return;
     final result = await Navigator.push(context, MaterialPageRoute(
       builder: (_) => RideForWhomScreen(vehicleName: _vehicleName),
     ));
@@ -1446,38 +888,6 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     ));
   }
 
-  String _friendlyBookingError(Map<String, dynamic> err) {
-    final code = err['code']?.toString().trim().toUpperCase() ?? '';
-    final rawMessage = err['message']?.toString().trim();
-    if (code == 'BOOKING_IN_FLIGHT') {
-      return 'You already have an active booking. Complete or cancel it before booking again.';
-    }
-    if (code == 'SERVICE_INACTIVE') {
-      return rawMessage ?? 'Selected service is temporarily unavailable.';
-    }
-    if (rawMessage == null || rawMessage.isEmpty) {
-      return 'Booking could not be created. Please retry.';
-    }
-
-    final lower = rawMessage.toLowerCase();
-    if (lower.contains('no driver available') || lower.contains('no pilot available')) {
-      return 'No drivers nearby right now. Please try again in a moment.';
-    }
-    if (lower.contains('no pilot accepted') || lower.contains('no driver accepted')) {
-      return 'Drivers did not respond in time. Please retry.';
-    }
-    if (lower.contains('route') && lower.contains('unavailable')) {
-      return 'Route unavailable for the selected trip. Please adjust pickup or destination.';
-    }
-    if (lower.contains('fare configuration unavailable')) {
-      return 'Live fare service is temporarily unavailable. Please retry shortly.';
-    }
-    if (lower.contains('invalid pickup') || lower.contains('invalid destination')) {
-      return 'Pickup or destination looks invalid. Please reselect the location.';
-    }
-    return rawMessage;
-  }
-
   List<LatLng> _decodePolyline(String encoded) {
     final List<LatLng> pts = [];
     int index = 0;
@@ -1510,61 +920,71 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     List<LatLng> points = [];
     double fetchedDistMeters = 0.0;
 
-    // Attempt 1: backend route proxy using one controlled server-side Maps key
+    // Attempt 1: OSRM Public Routing API (Highly reliable, no API key, returns distance)
     try {
-      final headers = await AuthService.getHeaders();
-      final res = await http.post(
-        Uri.parse(ApiConfig.routeMultiWaypoint),
-        headers: {...headers, 'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'origin': {'lat': widget.pickupLat, 'lng': widget.pickupLng},
-          'destination': {'lat': widget.destLat, 'lng': widget.destLng},
-          'waypoints': [],
-          'optimize': false,
-        }),
-      ).timeout(const Duration(seconds: 4));
+      final uri = Uri.parse(
+        'https://router.project-osrm.org/route/v1/driving/${widget.pickupLng},${widget.pickupLat};${widget.destLng},${widget.destLat}?overview=full&geometries=polyline'
+      );
+      final res = await http.get(uri).timeout(const Duration(seconds: 4));
       if (res.statusCode == 200) {
-        final data = jsonDecode(res.body) as Map<String, dynamic>;
-        final overviewPolyline = data['overviewPolyline']?.toString() ?? '';
-        if (overviewPolyline.isNotEmpty) {
-          points = _decodePolyline(overviewPolyline);
-          final totalDistanceKm =
-              (data['totalDistanceKm'] as num?)?.toDouble() ??
-              (data['distanceKm'] as num?)?.toDouble() ??
-              0.0;
-          fetchedDistMeters = totalDistanceKm * 1000;
+        final data = jsonDecode(res.body);
+        if (data['code'] == 'Ok' && data['routes'] != null && data['routes'].isNotEmpty) {
+          final route = data['routes'][0];
+          final encoded = route['geometry'];
+          points = _decodePolyline(encoded);
+          fetchedDistMeters = (route['distance'] as num).toDouble();
           success = points.isNotEmpty;
         }
       }
     } catch (_) {}
 
-    // Attempt 2: simpler backend route proxy fallback
+    // Attempt 2: Backend routing proxy (uses server-managed key/caching)
     if (!success) {
       try {
         final headers = await AuthService.getHeaders();
-        final uri = Uri.parse(ApiConfig.route).replace(queryParameters: {
-          'originLat': widget.pickupLat.toString(),
-          'originLng': widget.pickupLng.toString(),
-          'destLat': widget.destLat.toString(),
-          'destLng': widget.destLng.toString(),
-        });
-        final res = await http.get(uri, headers: headers).timeout(const Duration(seconds: 4));
+        final res = await http.post(
+          Uri.parse(ApiConfig.routeMultiWaypoint),
+          headers: {...headers, 'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'origin': {'lat': widget.pickupLat, 'lng': widget.pickupLng},
+            'destination': {'lat': widget.destLat, 'lng': widget.destLng},
+            'waypoints': [],
+            'optimize': false,
+          }),
+        ).timeout(const Duration(seconds: 4));
         if (res.statusCode == 200) {
           final data = jsonDecode(res.body) as Map<String, dynamic>;
-          final encoded = data['polyline']?.toString() ?? '';
-          if (encoded.isNotEmpty) {
-            points = _decodePolyline(encoded);
-            fetchedDistMeters = ((data['distanceKm'] as num?)?.toDouble() ?? 0.0) * 1000;
+          final overviewPolyline = data['overviewPolyline']?.toString();
+          if (overviewPolyline != null && overviewPolyline.isNotEmpty) {
+            points = _decodePolyline(overviewPolyline);
+            fetchedDistMeters =
+                ((data['totalDistanceKm'] as num?)?.toDouble() ?? 0.0) * 1000;
             success = points.isNotEmpty;
           }
         }
       } catch (_) {}
     }
 
-    // Attempt 3: straight-line fallback so the map still renders a route
+    // Attempt 3: Direct Google Directions API fallback
     if (!success) {
-      points = [_pickupLatLng, _destLatLng];
-      success = true;
+      try {
+        final uri = Uri.parse(
+          'https://maps.googleapis.com/maps/api/directions/json?origin=${widget.pickupLat},${widget.pickupLng}&destination=${widget.destLat},${widget.destLng}&key=${ApiConfig.googleMapsApiKey}'
+        );
+        final res = await http.get(uri).timeout(const Duration(seconds: 4));
+        if (res.statusCode == 200) {
+          final data = jsonDecode(res.body);
+          if (data['routes'] != null && data['routes'].isNotEmpty) {
+            final encoded = data['routes'][0]['overview_polyline']['points'];
+            points = _decodePolyline(encoded);
+            final legs = data['routes'][0]['legs'];
+            if (legs != null && legs.isNotEmpty) {
+               fetchedDistMeters = (legs[0]['distance']['value'] as num).toDouble();
+            }
+            success = points.isNotEmpty;
+          }
+        }
+      } catch (_) {}
     }
 
     if (!mounted) return;
@@ -1609,7 +1029,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F3FF),
+      backgroundColor: _accentBg,
       body: Column(
         children: [
           // Global Header
@@ -1642,36 +1062,24 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
                 color: Colors.white,
                 borderRadius: BorderRadius.vertical(top: Radius.circular(32)),
               ),
-              child: Stack(
-                children: [
-                  GoogleMap(
-                    initialCameraPosition: CameraPosition(target: _pickupLatLng, zoom: 14),
-                    onMapCreated: (c) {
-                      _mapController = c;
-                      if (mounted) setState(() => _mapCreated = true);
-                      debugPrint(
-                        '[MAP] Booking map created pickup=${_pickupLatLng.latitude},${_pickupLatLng.longitude} dest=${_destLatLng.latitude},${_destLatLng.longitude}',
-                      );
-                      _fitMapToRoute();
-                    },
-                    markers: {
-                      Marker(markerId: const MarkerId('p'), position: _pickupLatLng, icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure)),
-                      Marker(markerId: const MarkerId('d'), position: _destLatLng, icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed)),
-                    },
-                    polylines: _polylines,
-                    zoomControlsEnabled: false,
-                    myLocationButtonEnabled: false,
-                    mapToolbarEnabled: false,
-                    compassEnabled: false,
-                    buildingsEnabled: true,
-                  ),
-                  if (!_mapCreated)
-                    const Positioned.fill(
-                      child: IgnorePointer(
-                        child: Center(
-                          child: CircularProgressIndicator(color: JT.primary),
-                        ),
-                      ),
+              child: ClipRRect(
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(32)),
+                child: Stack(
+                  children: [
+                    GoogleMap(
+                      initialCameraPosition: CameraPosition(target: _pickupLatLng, zoom: 14),
+                      onMapCreated: (c) {
+                        _mapController = c;
+                        _fitMapToRoute();
+                      },
+                      markers: {
+                        Marker(markerId: const MarkerId('p'), position: _pickupLatLng, icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure)),
+                        Marker(markerId: const MarkerId('d'), position: _destLatLng, icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed)),
+                      },
+                      polylines: _polylines,
+                      zoomControlsEnabled: false,
+                      myLocationButtonEnabled: false,
+                      mapToolbarEnabled: false,
                     ),
                     
                     // Floating Address Card
@@ -1694,12 +1102,12 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
                     ),
 
                     // Draggable Sheet
-                  DraggableScrollableSheet(
-                    initialChildSize: 0.45,
-                    minChildSize: 0.35,
-                    maxChildSize: 0.9,
-                    builder: (context, scrollController) {
-                      return Container(
+                    DraggableScrollableSheet(
+                      initialChildSize: 0.45,
+                      minChildSize: 0.35,
+                      maxChildSize: 0.9,
+                      builder: (context, scrollController) {
+                        return Container(
                           decoration: const BoxDecoration(
                             color: Colors.white,
                             borderRadius: BorderRadius.vertical(top: Radius.circular(32)),
@@ -1709,8 +1117,8 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
                             stream: _vehicleStatusService.watchVehicleStatuses(),
                             builder: (context, snapshot) {
                               final statuses = snapshot.data ?? {};
-                              final visibleFares = _visibleFareEntries(statuses);
-                              final canBook = _canConfirmRide && visibleFares.isNotEmpty;
+                              final visibleFares = _allFares;
+                              final canBook = !_loading && !_estimating && visibleFares.isNotEmpty;
 
                               return Container(
                                 decoration: BoxDecoration(
@@ -1721,7 +1129,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
                                   ),
                                   boxShadow: [
                                     BoxShadow(
-                                      color: Colors.black.withOpacity(0.1),
+                                      color: Colors.black.withValues(alpha: 0.1),
                                       blurRadius: 20,
                                       offset: const Offset(0, -5),
                                     ),
@@ -1743,37 +1151,6 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
                                         padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                                         children: [
                                           _buildVehicleSelector(statuses),
-                                          if (_isLocalPoolVehicle) ...[
-                                            const SizedBox(height: 12),
-                                            _buildPoolSeatSelector(),
-                                          ],
-                                          if (!_hasResolvedVehicleSelection && !_estimating) ...[
-                                            const SizedBox(height: 12),
-                                            Container(
-                                              padding: const EdgeInsets.all(12),
-                                              decoration: BoxDecoration(
-                                                color: const Color(0xFFFEF2F2),
-                                                borderRadius: BorderRadius.circular(14),
-                                                border: Border.all(color: const Color(0xFFFCA5A5)),
-                                              ),
-                                              child: const Row(
-                                                children: [
-                                                  Icon(Icons.info_outline, color: Color(0xFFDC2626), size: 18),
-                                                  SizedBox(width: 10),
-                                                  Expanded(
-                                                    child: Text(
-                                                      'Live vehicle selection not resolved yet. Please wait or reselect a vehicle before confirming.',
-                                                      style: TextStyle(
-                                                        fontSize: 12,
-                                                        color: Color(0xFF991B1B),
-                                                        fontWeight: FontWeight.w600,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                          ],
                                           const SizedBox(height: 24),
                                           _buildPaymentSection(),
                                           const SizedBox(height: 24),
@@ -1782,13 +1159,13 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
                                               borderRadius: BorderRadius.circular(16),
                                               boxShadow: [
                                                 BoxShadow(
-                                                  color: const Color(0xFF2D8CFF).withOpacity(0.3),
+                                                  color: _accentPrimaryDark.withValues(alpha: 0.3),
                                                   blurRadius: 15,
                                                   offset: const Offset(0, 8),
                                                 ),
                                               ],
                                             ),
-                                            child: JT.gradientButton(
+                                            child: _accentGradientButton(
                                               label: visibleFares.isEmpty ? 'No vehicles available' : 'Confirm Ride',
                                               loading: _loading,
                                               onTap: canBook ? () => _goToRideForWhomScreen() : () {},
@@ -1806,9 +1183,10 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
                             },
                           ),
                         );
-                    },
-                  ),
-                ],
+                      },
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -1874,16 +1252,16 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
-            color: const Color(0xFFF0F7FF),
+            color: _accentPrimary.withValues(alpha: 0.07),
             borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: _blue.withValues(alpha: 0.2)),
+            border: Border.all(color: _accentPrimary.withValues(alpha: 0.2)),
           ),
           child: Row(children: [
-            const Icon(Icons.lock_rounded, color: _blue, size: 15),
+            Icon(Icons.lock_rounded, color: _accentPrimary, size: 15),
             const SizedBox(width: 8),
-            const Expanded(child: Text(
+            Expanded(child: Text(
               'Secure payment via Razorpay — UPI, Cards, Netbanking accepted',
-              style: TextStyle(fontSize: 12, color: JT.primary, fontWeight: FontWeight.w500),
+              style: TextStyle(fontSize: 12, color: _accentPrimary, fontWeight: FontWeight.w500),
             )),
           ]),
         ),
@@ -1893,8 +1271,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
 
   Widget _payBtn(String method, IconData icon, String label) {
     final selected = _paymentMethod == method;
-    const blue = Color(0xFF2D8CFF);
-    const lavender = Color(0xFF8B5CF6);
+    final accent = _accentSecondary;
     
     return GestureDetector(
       onTap: () {
@@ -1905,27 +1282,27 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         duration: const Duration(milliseconds: 250),
         padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
         decoration: BoxDecoration(
-          color: selected ? lavender.withOpacity(0.08) : Colors.white,
+          color: selected ? accent.withValues(alpha: 0.08) : Colors.white,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
-            color: selected ? lavender : Colors.grey.shade200,
+            color: selected ? accent : Colors.grey.shade200,
             width: selected ? 2 : 1.5,
           ),
           boxShadow: selected ? [
-            BoxShadow(color: lavender.withOpacity(0.15), blurRadius: 10, offset: const Offset(0, 4))
+            BoxShadow(color: accent.withValues(alpha: 0.15), blurRadius: 10, offset: const Offset(0, 4))
           ] : [],
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 22, color: selected ? lavender : Colors.grey.shade500),
+            Icon(icon, size: 22, color: selected ? accent : Colors.grey.shade500),
             const SizedBox(height: 6),
             Text(
               label,
               style: GoogleFonts.outfit(
                 fontSize: 13,
                 fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                color: selected ? lavender : Colors.grey.shade600,
+                color: selected ? accent : Colors.grey.shade600,
               ),
             ),
           ],
@@ -1967,7 +1344,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     return hour >= 22 || hour < 6;
   }
 
-  Widget _buildNightChargeIndicator() {
+  Widget buildNightChargeIndicator() {
     if (!_isNightTime()) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -2013,7 +1390,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     return null;
   }
 
-  Widget _vehicleTagBadge(String tag) {
+  Widget vehicleTagBadge(String tag) {
     Color color;
     IconData icon;
     switch (tag) {
@@ -2098,7 +1475,6 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         ),
       );
     }
-    _syncSelectedFareToVisible(statuses);
     final visibleFares = _visibleFareEntries(statuses);
     if (visibleFares.isEmpty && !_estimating) {
       return Container(
@@ -2160,23 +1536,22 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
             if (!isActive) return;
             HapticFeedback.selectionClick();
             setState(() => _selectedFareIndex = i);
-            _refreshSelectedVehicleSelection();
           },
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 300),
             margin: const EdgeInsets.only(bottom: 12),
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: isSelected ? selColor.withOpacity(0.06) : Colors.white,
+              color: isSelected ? selColor.withValues(alpha: 0.06) : Colors.white,
               borderRadius: BorderRadius.circular(20),
               border: Border.all(
-                color: isSelected ? selColor.withOpacity(0.3) : Colors.grey.shade100,
+                color: isSelected ? selColor.withValues(alpha: 0.3) : Colors.grey.shade100,
                 width: isSelected ? 2 : 1,
               ),
               boxShadow: isSelected ? [
-                BoxShadow(color: selColor.withOpacity(0.08), blurRadius: 12, offset: const Offset(0, 4))
+                BoxShadow(color: selColor.withValues(alpha: 0.08), blurRadius: 12, offset: const Offset(0, 4))
               ] : [
-                BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 5, offset: const Offset(0, 2))
+                BoxShadow(color: Colors.black.withValues(alpha: 0.02), blurRadius: 5, offset: const Offset(0, 2))
               ],
             ),
             child: Opacity(
@@ -2188,11 +1563,15 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
                     width: 70, height: 70,
                     padding: const EdgeInsets.all(4),
                     decoration: BoxDecoration(
-                      color: isSelected ? selColor.withOpacity(0.1) : const Color(0xFFF9FAFB),
+                      color: isSelected ? selColor.withValues(alpha: 0.1) : const Color(0xFFF9FAFB),
                       borderRadius: BorderRadius.circular(16),
                     ),
                     child: Builder(builder: (_) {
-                      return _buildVehicleImage(name, fit: BoxFit.contain, height: 56);
+                      final imgKey = _vehicleImageKey(name);
+                      final imgUrl = imgKey != null ? _vehicleImageUrls[imgKey] : null;
+                      return imgUrl != null 
+                          ? Image.network(imgUrl, fit: BoxFit.contain)
+                          : Center(child: Text(_emojiForVehicle(name), style: const TextStyle(fontSize: 32)));
                     }),
                   ),
                   const SizedBox(width: 16),
@@ -2240,35 +1619,28 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
                   ),
                   
                   // Pricing
-                  Builder(builder: (_) {
-                    final vt = _normalizeVehicleType(
-                      f['vehicleType']?.toString() ?? f['type']?.toString() ?? name,
-                    );
-                    final isPool = vt == 'local_pool' || vt == 'carpool';
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        '₹${displayFare.toStringAsFixed(0)}',
+                        style: GoogleFonts.outfit(
+                          fontSize: 22, 
+                          fontWeight: FontWeight.w800, 
+                          color: const Color(0xFF1E293B)
+                        ),
+                      ),
+                      if (isSelected && _promoDiscount > 0)
                         Text(
-                          '₹${displayFare.toStringAsFixed(0)}',
-                          style: GoogleFonts.outfit(
-                            fontSize: 22,
-                            fontWeight: FontWeight.w800,
-                            color: const Color(0xFF1E293B),
+                          '₹${fareVal.toInt()}',
+                          style: const TextStyle(
+                            fontSize: 12, 
+                            color: Colors.grey, 
+                            decoration: TextDecoration.lineThrough
                           ),
                         ),
-                        if (isPool)
-                          Text(
-                            'per seat',
-                            style: GoogleFonts.outfit(fontSize: 11, color: const Color(0xFF7C3AED), fontWeight: FontWeight.w600),
-                          ),
-                        if (isSelected && _promoDiscount > 0)
-                          Text(
-                            '₹${fareVal.toInt()}',
-                            style: const TextStyle(fontSize: 12, color: Colors.grey, decoration: TextDecoration.lineThrough),
-                          ),
-                      ],
-                    );
-                  }),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -2278,137 +1650,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     );
   }
 
-  Widget _buildPoolSeatSelector() {
-    // fareVal = per-seat fare for THIS passenger's pickup→drop distance
-    // (server/fallback calculates: perSeatBase + perSeatKmRate × distanceKm)
-    final farePerSeat = (_fare?['estimatedFare'] ?? 0).toDouble();
-    final totalFare = farePerSeat * _seatsBooked;
-
-    const purple = Color(0xFF7C3AED);
-    const green = Color(0xFF16A34A);
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: purple.withOpacity(0.04),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: purple.withOpacity(0.18), width: 1.5),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Header
-          Row(children: [
-            const Icon(Icons.people_rounded, size: 18, color: purple),
-            const SizedBox(width: 8),
-            Text('Select Seats', style: GoogleFonts.outfit(fontWeight: FontWeight.w700, fontSize: 15, color: const Color(0xFF1E293B))),
-            const Spacer(),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-              decoration: BoxDecoration(color: purple.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
-              child: Text('Pool Ride', style: GoogleFonts.outfit(color: purple, fontSize: 11, fontWeight: FontWeight.w700)),
-            ),
-          ]),
-          const SizedBox(height: 6),
-          // Distance-based fare explanation
-          if (farePerSeat > 0)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: const Color(0xFFF0FDF4),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: const Color(0xFFBBF7D0)),
-              ),
-              child: Row(children: [
-                const Icon(Icons.route_rounded, size: 14, color: green),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    'Your fare: ₹${farePerSeat.toStringAsFixed(0)} per seat based on your route (${_distanceKm.toStringAsFixed(1)} km)',
-                    style: GoogleFonts.outfit(fontSize: 11, color: green, fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ]),
-            ),
-          const SizedBox(height: 12),
-          // Seat buttons
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: List.generate(4, (idx) {
-              final n = idx + 1;
-              final sel = _seatsBooked == n;
-              return GestureDetector(
-                onTap: () { HapticFeedback.selectionClick(); setState(() => _seatsBooked = n); },
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  margin: const EdgeInsets.symmetric(horizontal: 6),
-                  width: 60, height: 64,
-                  decoration: BoxDecoration(
-                    color: sel ? purple : const Color(0xFFF1F5F9),
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: sel ? purple : Colors.grey.shade200, width: sel ? 2 : 1),
-                    boxShadow: sel ? [BoxShadow(color: purple.withOpacity(0.25), blurRadius: 8, offset: const Offset(0, 3))] : [],
-                  ),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.person_rounded, size: 22, color: sel ? Colors.white : Colors.grey.shade500),
-                      const SizedBox(height: 2),
-                      Text('$n seat${n > 1 ? 's' : ''}',
-                        style: GoogleFonts.outfit(fontSize: 10, fontWeight: FontWeight.w700, color: sel ? Colors.white : Colors.grey.shade600)),
-                    ],
-                  ),
-                ),
-              );
-            }),
-          ),
-          const SizedBox(height: 14),
-          // Fare calculation breakdown — the core logic display
-          if (farePerSeat > 0) ...[
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: purple.withOpacity(0.12)),
-              ),
-              child: Column(children: [
-                // Per-seat × seats = total
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text('₹${farePerSeat.toStringAsFixed(0)}/seat  ×  $_seatsBooked seat${_seatsBooked > 1 ? 's' : ''}',
-                      style: GoogleFonts.outfit(fontSize: 13, color: const Color(0xFF64748B))),
-                    Text('₹${totalFare.toStringAsFixed(0)}',
-                      style: GoogleFonts.outfit(fontSize: 13, fontWeight: FontWeight.w700, color: const Color(0xFF1E293B))),
-                  ],
-                ),
-                const Divider(height: 16, thickness: 0.5),
-                // YOU PAY
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text('You Pay',
-                      style: GoogleFonts.outfit(fontSize: 15, fontWeight: FontWeight.w700, color: const Color(0xFF1E293B))),
-                    Text('₹${totalFare.toStringAsFixed(0)}',
-                      style: GoogleFonts.outfit(fontSize: 20, fontWeight: FontWeight.w800, color: purple)),
-                  ],
-                ),
-              ]),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Each passenger pays based on their own route distance. Other passengers in your pool may pay differently.',
-              style: GoogleFonts.outfit(fontSize: 10, color: const Color(0xFF94A3B8)),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildFareBreakdown(Map<String, dynamic> fare) {
+  Widget buildFareBreakdown(Map<String, dynamic> fare) {
     const cardBg = Color(0xFFF8FAFF);
     const borderCol = Color(0xFFE8EFFF);
     const textMain = JT.textPrimary;
@@ -2571,7 +1813,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     );
   }
 
-  Widget _buildPromoRow() {
+  Widget buildPromoRow() {
     const cardBg = Color(0xFFF8FAFF);
     const borderCol = Color(0xFFE2E8F0);
     const textColor = JT.textPrimary;
@@ -2681,14 +1923,14 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         decoration: isSelected
             ? BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF7C3AED), Color(0xFF6366F1)], 
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
+                gradient: _accentGradient,
                 borderRadius: BorderRadius.circular(20),
                 boxShadow: [
-                  BoxShadow(color: const Color(0xFF7C3AED).withValues(alpha: 0.3), blurRadius: 10, offset: const Offset(0, 4)),
+                  BoxShadow(
+                    color: _accentPrimaryDark.withValues(alpha: 0.3),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
+                  ),
                 ],
               )
             : null,
@@ -2708,6 +1950,51 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
               ),
             ]
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _accentGradientButton({
+    required String label,
+    required VoidCallback onTap,
+    bool loading = false,
+    double height = 54,
+    double radius = 16,
+  }) {
+    return GestureDetector(
+      onTap: loading ? null : onTap,
+      child: Container(
+        height: height,
+        decoration: BoxDecoration(
+          gradient: _accentGradient,
+          borderRadius: BorderRadius.circular(radius),
+          boxShadow: [
+            BoxShadow(
+              color: _accentPrimaryDark.withValues(alpha: 0.28),
+              blurRadius: 14,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Center(
+          child: loading
+              ? const SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(
+                    color: Colors.white,
+                    strokeWidth: 2.5,
+                  ),
+                )
+              : Text(
+                  label,
+                  style: GoogleFonts.poppins(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white,
+                  ),
+                ),
         ),
       ),
     );

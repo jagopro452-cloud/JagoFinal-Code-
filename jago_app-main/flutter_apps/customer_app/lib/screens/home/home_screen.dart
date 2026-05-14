@@ -7,34 +7,29 @@ import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
-import 'package:shimmer/shimmer.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../config/api_config.dart';
 import '../../config/jago_theme.dart';
 import '../../services/auth_service.dart';
 import '../../services/socket_service.dart';
-import '../../services/runtime_config_service.dart';
 import '../history/trips_history_screen.dart';
 import '../wallet/wallet_screen.dart';
 import '../profile/profile_screen.dart';
 import '../booking/booking_screen.dart';
 import '../booking/map_location_picker.dart';
 import '../tracking/tracking_screen.dart';
-import '../notifications/notifications_screen.dart';
 import '../booking/intercity_booking_screen.dart';
 import '../offers/offers_screen.dart';
 import '../profile/support_chat_screen.dart';
 import '../referral/referral_screen.dart';
 import '../saved_places/saved_places_screen.dart';
 import '../booking/parcel_booking_screen.dart';
-import '../booking/voice_booking_screen.dart';
 import '../booking/location_screen.dart';
 import '../booking/premium_location_screen.dart';
 import '../../services/trip_service.dart';
 import '../auth/login_screen.dart';
 import '../b2b/b2b_login_screen.dart';
 import '../outstation_pool/outstation_pool_screen.dart';
-import 'modern_components.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -45,28 +40,22 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final SocketService _socket = SocketService();
-  final RuntimeConfigService _runtimeConfig = RuntimeConfigService();
 
   String _userName = 'there';
   String _userPhone = '';
   String _pickup = 'Getting location...';
   double _pickupLat = 0.0, _pickupLng = 0.0;
   bool _locationReady = false;
-  int _unreadNotifCount = 0;
-  double _walletBalance = 0;
   List<Map<String, dynamic>> _vehicleCategories = [];
-  List<Map<String, dynamic>> _activeServices = [];
   List<dynamic> _savedPlaces = [];
   List<Map<String, dynamic>> _recentTrips = [];
   Map<String, dynamic>? _activeTrip;
   StreamSubscription? _driverAssignedSub;
   StreamSubscription? _tripCancelledSub;
   StreamSubscription? _tripStatusSub;
-  StreamSubscription<Map<String, dynamic>>? _runtimeConfigSub;
   Timer? _searchingTimer; // auto-cancel if no pilot found within 5 min
   Timer?
       _statePollTimer; // 5s poll during searching — server is source of truth
-  int _navIndex = 0;
   bool _homeLoading = true;
   Timer? _loadingTimeout;
 
@@ -77,16 +66,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final PageController _bannerPageCtrl = PageController();
 
   // ── Live Map state ────────────────────────────────────────────────────────
-
-  // Brand colors — mapped to JT design system
   GoogleMapController? _mapController;
-  Set<Marker> _mapMarkers = {};
   Timer? _nearbyDriversTimer;
   final Map<String, BitmapDescriptor> _markerIconCache = {};
-  bool _mapReady = false;
-  static const Color _primary = JT.primary;
+
+  // Brand colors — mapped to JT design system
   static const Color _darkBg = JT.textPrimary;
-  static const Color _darkCard = JT.surface;
 
   @override
   void initState() {
@@ -95,9 +80,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _loadUser();
     _getLocation();
     _fetchHome();
-    _fetchActiveServices();
-    _fetchUnreadCount();
-    _fetchWalletBalance();
     _loadSavedPlaces();
     _loadRecentTrips();
     _fetchBanners();
@@ -118,44 +100,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         .addPostFrameCallback((_) => _checkPendingFcmNotification());
     WidgetsBinding.instance.addPostFrameCallback((_) => _checkActiveTrip());
     WidgetsBinding.instance.addPostFrameCallback((_) => _maybeShowTutorial());
-    WidgetsBinding.instance.addPostFrameCallback((_) => _bindRuntimeConfig());
-  }
-
-  Future<void> _bindRuntimeConfig() async {
-    await _runtimeConfig.initialize();
-    await _runtimeConfig.refresh();
-    _runtimeConfigSub ??= _runtimeConfig.onConfigChanged.listen((_) {
-      if (!mounted) return;
-      setState(() {});
-    });
-  }
-
-  Future<void> _fetchUnreadCount() async {
-    try {
-      final headers = await AuthService.getHeaders();
-      final r = await http
-          .get(Uri.parse('${ApiConfig.baseUrl}/api/app/notifications?limit=1'),
-              headers: headers)
-          .timeout(const Duration(seconds: 8));
-      if (r.statusCode == 200 && mounted) {
-        final data = jsonDecode(r.body);
-        setState(() => _unreadNotifCount = (data['unreadCount'] as int?) ?? 0);
-      }
-    } catch (_) {}
-  }
-
-  Future<void> _fetchWalletBalance() async {
-    try {
-      final headers = await AuthService.getHeaders();
-      final r = await http
-          .get(Uri.parse(ApiConfig.wallet), headers: headers)
-          .timeout(const Duration(seconds: 8));
-      if (r.statusCode == 200 && mounted) {
-        final data = jsonDecode(r.body);
-        setState(() => _walletBalance =
-            double.tryParse(data['balance']?.toString() ?? '0') ?? 0.0);
-      }
-    } catch (_) {}
+    // Start nearby drivers polling (10s — battery-optimised, still smooth enough)
+    _nearbyDriversTimer = Timer.periodic(
+        const Duration(seconds: 10), (_) => _fetchNearbyDrivers());
+    _fetchNearbyDrivers(); // fetch immediately
   }
 
   Future<void> _loadSavedPlaces() async {
@@ -287,15 +235,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       final uri = Uri.parse(ApiConfig.nearbyDrivers).replace(queryParameters: {
         'lat': _pickupLat.toString(),
         'lng': _pickupLng.toString(),
-        'radius': '10',
-        'ts': DateTime.now().millisecondsSinceEpoch.toString(),
+        'radius': '5',
       });
       final r = await http
-          .get(uri, headers: {
-            ...headers,
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache',
-          })
+          .get(uri, headers: headers)
           .timeout(const Duration(seconds: 5));
       if (!mounted || r.statusCode != 200) return;
 
@@ -303,8 +246,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       final drivers =
           (data['drivers'] as List<dynamic>?)?.cast<Map<String, dynamic>>() ??
               [];
-      debugPrint(
-          '[NEARBY_DRIVERS][HOME] status=${r.statusCode} radiusKm=10 count=${drivers.length} pickup=$_pickupLat,$_pickupLng');
 
       final Set<Marker> newMarkers = {};
       for (final d in drivers) {
@@ -336,7 +277,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         ));
       }
 
-      if (mounted) setState(() => _mapMarkers = newMarkers);
+      if (!mounted) return;
     } catch (_) {}
   }
 
@@ -657,30 +598,28 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _driverAssignedSub?.cancel();
     _tripCancelledSub?.cancel();
     _tripStatusSub?.cancel();
-    _runtimeConfigSub?.cancel();
+    _nearbyDriversTimer?.cancel();
+    _mapController?.dispose();
     // Don't disconnect socket — it's a shared singleton used by other screens
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
       // App went to background — pause the nearby-drivers poll to save battery
-      _getLocation();
+      _nearbyDriversTimer?.cancel();
+      _nearbyDriversTimer = null;
+    } else if (state == AppLifecycleState.resumed) {
       // App came back to foreground — refresh pickup location and restart polling
-      _socket.connect(ApiConfig.socketUrl);
-      _runtimeConfig.refresh();
-      _checkPendingFcmNotification();
-      _checkActiveTrip();
+      _getLocation();
+      if (_nearbyDriversTimer == null) {
+        _nearbyDriversTimer = Timer.periodic(
+            const Duration(seconds: 10), (_) => _fetchNearbyDrivers());
+        _fetchNearbyDrivers(); // refresh immediately on resume
+      }
     }
-  }
-
-  bool _runtimeServiceEnabled(String serviceKey, {bool defaultValue = true}) {
-    return _runtimeConfig.isServiceEnabled(serviceKey, defaultValue: defaultValue);
-  }
-
-  bool _runtimeVehicleEnabled(String vehicleKey, {bool defaultValue = true}) {
-    return _runtimeConfig.isVehicleEnabled(vehicleKey, defaultValue: defaultValue);
   }
 
   Future<void> _loadUser() async {
@@ -735,6 +674,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           });
           _reverseGeocode(
               fallbackPosition.latitude, fallbackPosition.longitude);
+          _mapController?.animateCamera(
+            CameraUpdate.newLatLngZoom(
+              LatLng(fallbackPosition.latitude, fallbackPosition.longitude),
+              15,
+            ),
+          );
+          _fetchNearbyDrivers();
         } else if (mounted) {
           setState(() {
             _pickup = 'Turn on location services to detect pickup';
@@ -824,6 +770,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         });
       }
       _reverseGeocode(pos.latitude, pos.longitude);
+      _mapController?.animateCamera(
+        CameraUpdate.newLatLngZoom(LatLng(pos.latitude, pos.longitude), 16),
+      );
+      _fetchNearbyDrivers();
     } catch (_) {
       // Unexpected error — try last known position before giving up
       try {
@@ -836,6 +786,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             _pickup = 'Current Location';
           });
           _reverseGeocode(last.latitude, last.longitude);
+          _mapController?.animateCamera(
+            CameraUpdate.newLatLngZoom(LatLng(last.latitude, last.longitude), 15),
+          );
+          _fetchNearbyDrivers();
           return;
         }
       } catch (_) {}
@@ -890,7 +844,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   void _handleUnauthorized() {
-    AuthService.handle401(source: 'customer_home');
+    AuthService.logout().then((_) {
+      if (!mounted) return;
+      Navigator.pushAndRemoveUntil(context,
+          MaterialPageRoute(builder: (_) => const LoginScreen()), (_) => false);
+    });
   }
 
   Future<void> _fetchHome() async {
@@ -913,104 +871,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       }
     } catch (_) {}
     if (mounted) setState(() => _homeLoading = false);
-  }
-
-  Future<void> _fetchActiveServices() async {
-    try {
-      final headers = await AuthService.getHeaders();
-      // Use location-based endpoint for city-filtered services
-      final uri =
-          Uri.parse(ApiConfig.servicesForLocation).replace(queryParameters: {
-        if (_locationReady) 'lat': _pickupLat.toString(),
-        if (_locationReady) 'lng': _pickupLng.toString(),
-      });
-      final r = await http.get(uri, headers: headers);
-      if (r.statusCode == 200 && mounted) {
-        final data = jsonDecode(r.body) as Map<String, dynamic>;
-        final services = ((data['services'] as List<dynamic>?)
-                    ?.cast<Map<String, dynamic>>() ??
-                [])
-            .where(_runtimeAllowsService)
-            .toList();
-        setState(() => _activeServices = services);
-      }
-    } catch (_) {
-      // Fallback to non-location endpoint
-      try {
-        final headers = await AuthService.getHeaders();
-        final r = await http.get(Uri.parse(ApiConfig.activeServices),
-            headers: headers);
-        if (r.statusCode == 200 && mounted) {
-          final data = jsonDecode(r.body) as Map<String, dynamic>;
-          final services = ((data['services'] as List<dynamic>?)
-                      ?.cast<Map<String, dynamic>>() ??
-                  [])
-              .where(_runtimeAllowsService)
-              .toList();
-          setState(() => _activeServices = services);
-        }
-      } catch (_) {}
-    }
-  }
-
-  bool _runtimeAllowsService(Map<String, dynamic> service) {
-    final serviceKey = (service['serviceKey'] ??
-            service['key'] ??
-            service['type'] ??
-            service['name'] ??
-            '')
-        .toString()
-        .trim()
-        .toLowerCase();
-    final vehicleKey = (service['vehicleKey'] ?? service['vehicle_key'] ?? service['key'] ?? '')
-        .toString()
-        .trim()
-        .toLowerCase();
-
-    if (serviceKey.contains('parcel') || serviceKey.contains('cargo')) {
-      return _runtimeServiceEnabled('parcel', defaultValue: true) &&
-          _runtimeVehicleEnabled(vehicleKey.isEmpty ? 'bike_parcel' : vehicleKey, defaultValue: true);
-    }
-    if (serviceKey.contains('pool') || serviceKey.contains('share')) {
-      return _runtimeServiceEnabled('pool', defaultValue: true);
-    }
-    return _runtimeServiceEnabled('ride', defaultValue: true);
-  }
-
-  /// Map a service key to its default emoji and color fallback.
-  Map<String, dynamic> _serviceDefaults(String key) {
-    switch (key) {
-      case 'bike_ride':
-      case 'bike_taxi':
-      case 'bike':
-        return {'emoji': '🏍️', 'color': _primary};
-      case 'auto_ride':
-      case 'auto':
-        return {'emoji': '🛺', 'color': const Color(0xFF5B9DFF)};
-      case 'parcel_delivery':
-      case 'parcel':
-        return {'emoji': '📦', 'color': const Color(0xFF1A6FDB)};
-      case 'cargo':
-      case 'cargo_freight':
-        return {'emoji': '🚛', 'color': const Color(0xFF2563EB)};
-      case 'mini_car':
-      case 'car':
-        return {'emoji': '🚗', 'color': const Color(0xFF2563EB)};
-      case 'sedan':
-        return {'emoji': '🚗', 'color': const Color(0xFF1A6FDB)};
-      default:
-        return {'emoji': '🚖', 'color': _primary};
-    }
-  }
-
-  Color _colorFromHex(String? hex, Color fallback) {
-    if (hex == null || hex.isEmpty) return fallback;
-    try {
-      final h = hex.replaceAll('#', '');
-      return Color(int.parse('FF$h', radix: 16));
-    } catch (_) {
-      return fallback;
-    }
   }
 
   Map<String, dynamic> _vehicleStyle(String name) {
@@ -1059,7 +919,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         n.contains('all') ||
         n.contains('service'))
       return {
-        'icon': Icons.groups_rounded,
+        'icon': Icons.grid_view_rounded,
         'color': JT.primary,
         'gradient': [JT.primary, JT.primary],
       };
@@ -1080,56 +940,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             pickupAddress: _pickup.isNotEmpty ? _pickup : null,
             pickupLat: _pickupLat,
             pickupLng: _pickupLng,
-          ),
-        ));
-  }
-
-  void _showAllServicesSheet() {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Theme.of(context).cardColor,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (ctx) => _AllServicesSheet(
-        vehicleCategories: _vehicleCategories,
-        activeServices: _activeServices,
-        pickup: _pickup,
-        pickupLat: _pickupLat,
-        pickupLng: _pickupLng,
-        onServiceTap: (cat) {
-          Navigator.pop(ctx);
-          if (cat['type'] == 'parcel' ||
-              (cat['key']?.toString().contains('parcel') ?? false)) {
-            Navigator.push(
-                context,
-                MaterialPageRoute(
-                    builder: (_) => ParcelBookingScreen(
-                        pickupAddress: _pickup,
-                        pickupLat: _pickupLat,
-                        pickupLng: _pickupLng)));
-          } else {
-            _openSearchWithCategory(cat);
-          }
-        },
-      ),
-    );
-  }
-
-  void _openSearchWithCategory(Map<String, dynamic> cat) {
-    final isParcel = cat['type'] == 'parcel' ||
-        (cat['key']?.toString().contains('parcel') ?? false);
-    Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => PremiumLocationScreen(
-            serviceType: isParcel ? 'parcel' : 'ride',
-            pickupAddress: _pickup.isNotEmpty ? _pickup : null,
-            pickupLat: _pickupLat,
-            pickupLng: _pickupLng,
-            vehicleCategoryId: cat['id']?.toString(),
-            vehicleCategoryName: cat['name']?.toString(),
           ),
         ));
   }
@@ -1187,7 +997,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       color: Colors.white,
                       borderRadius: BorderRadius.circular(20),
                       boxShadow: [
-                        BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 10, offset: const Offset(0, 4)),
+                        BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 10, offset: const Offset(0, 4)),
                       ],
                     ),
                     child: Stack(
@@ -1279,10 +1089,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 ),
                 
                 const SizedBox(height: 16),
-
-                // Live preview map — user location + nearby drivers
-                const SizedBox(height: 8),
-
+                
                 // Action Buttons (Modern Rectangle Cards)
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -1298,7 +1105,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                               gradient: const LinearGradient(colors: [Color(0xFF4F4ACF), Color(0xFF6366F1)], begin: Alignment.topLeft, end: Alignment.bottomRight),
                               borderRadius: BorderRadius.circular(16), 
                               boxShadow: [
-                                BoxShadow(color: const Color(0xFF4F4ACF).withOpacity(0.3), blurRadius: 12, offset: const Offset(0, 4)),
+                                BoxShadow(color: const Color(0xFF4F4ACF).withValues(alpha: 0.3), blurRadius: 12, offset: const Offset(0, 4)),
                               ],
                             ),
                             child: Stack(
@@ -1349,7 +1156,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                               gradient: const LinearGradient(colors: [Color(0xFFC29763), Color(0xFFD6B58F)], begin: Alignment.topLeft, end: Alignment.bottomRight),
                               borderRadius: BorderRadius.circular(16), 
                               boxShadow: [
-                                BoxShadow(color: const Color(0xFFC29763).withOpacity(0.3), blurRadius: 12, offset: const Offset(0, 4)),
+                                BoxShadow(color: const Color(0xFFC29763).withValues(alpha: 0.3), blurRadius: 12, offset: const Offset(0, 4)),
                               ],
                             ),
                             child: Stack(
@@ -1421,7 +1228,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                             color: Colors.white, 
                             borderRadius: BorderRadius.circular(16),
                             boxShadow: [
-                              BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4)),
+                              BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 4)),
                             ],
                           ),
                           child: Stack(
@@ -1460,7 +1267,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                             color: Colors.white, 
                             borderRadius: BorderRadius.circular(16),
                             boxShadow: [
-                              BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4)),
+                              BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 4)),
                             ],
                           ),
                           child: Stack(
@@ -1499,7 +1306,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                             color: Colors.white, 
                             borderRadius: BorderRadius.circular(16),
                             boxShadow: [
-                              BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4)),
+                              BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 4)),
                             ],
                           ),
                           child: Stack(
@@ -1538,7 +1345,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                             color: Colors.white, 
                             borderRadius: BorderRadius.circular(16),
                             boxShadow: [
-                              BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4)),
+                              BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 4)),
                             ],
                           ),
                           child: Stack(
@@ -1577,7 +1384,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                             color: Colors.white, 
                             borderRadius: BorderRadius.circular(16),
                             boxShadow: [
-                              BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4)),
+                              BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 4)),
                             ],
                           ),
                           child: Stack(
@@ -1616,7 +1423,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                               color: Colors.white, 
                               borderRadius: BorderRadius.circular(16),
                               boxShadow: [
-                                BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4)),
+                                BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 4)),
                               ],
                             ),
                             child: Stack(
@@ -1673,480 +1480,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   // Approximate height of the visible bottom card area — responsive
-  double _bottomCardHeight(BuildContext ctx) =>
-      (MediaQuery.of(ctx).size.height * 0.40).clamp(260.0, 360.0);
-
-  Widget _buildRecenterButton() {
-    return GestureDetector(
-      onTap: () {
-        if (!_locationReady) return;
-        _mapController?.animateCamera(
-          CameraUpdate.newCameraPosition(CameraPosition(
-            target: LatLng(_pickupLat, _pickupLng),
-            zoom: 15,
-          )),
-        );
-        _fetchNearbyDrivers();
-      },
-      child: Container(
-        width: 44,
-        height: 44,
-        decoration: BoxDecoration(
-          color: Colors.white,
-          shape: BoxShape.circle,
-          boxShadow: [
-            BoxShadow(
-                color: Colors.black.withValues(alpha: 0.08),
-                blurRadius: 12,
-                offset: const Offset(0, 4)),
-          ],
-        ),
-        child:
-            const Icon(Icons.my_location_rounded, color: JT.primary, size: 22),
-      ),
-    );
-  }
-
-  Widget _buildBottomCard(bool isDark) {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(36)),
-        boxShadow: [
-          BoxShadow(
-              color: Colors.black.withValues(alpha: 0.08),
-              blurRadius: 18,
-              offset: const Offset(0, -4)),
-        ],
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Drag handle
-          Container(
-            margin: const EdgeInsets.only(top: 10, bottom: 4),
-            width: 36,
-            height: 4,
-            decoration: BoxDecoration(
-              color: JT.border,
-              borderRadius: BorderRadius.circular(2),
-            ),
-          ),
-          // Content
-          if (_homeLoading)
-            _buildSkeletonLoader(isDark, JT.bgSoft)
-          else 
-            ModernBottomCard(
-              userName: _userName,
-              pickupAddress: _pickup,
-              pickupLat: _pickupLat,
-              pickupLng: _pickupLng,
-              onLocationTap: _getLocation,
-              onSearchRideTap: () {
-                Navigator.push(context, MaterialPageRoute(builder: (_) => LocationScreen(
-                  serviceType: 'ride',
-                  pickupAddress: _pickup.isNotEmpty ? _pickup : null,
-                  pickupLat: _pickupLat, pickupLng: _pickupLng
-                )));
-              },
-              onSearchParcelTap: () {
-                Navigator.push(context, MaterialPageRoute(builder: (_) => ParcelBookingScreen(
-                  pickupAddress: _pickup,
-                  pickupLat: _pickupLat, pickupLng: _pickupLng
-                )));
-              },
-            ),
-          // Bottom nav removed
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSkeletonLoader(bool isDark, Color cardBg) {
-    final baseColor =
-        isDark ? const Color(0xFF2A3A50) : const Color(0xFFE5E7EB);
-    final highlightColor =
-        isDark ? const Color(0xFF3A4E66) : const Color(0xFFF3F4F6);
-    Widget box(double w, double h, {double r = 10}) => Container(
-          width: w,
-          height: h,
-          decoration: BoxDecoration(
-              color: Colors.white, borderRadius: BorderRadius.circular(r)),
-        );
-    return Shimmer.fromColors(
-      baseColor: baseColor,
-      highlightColor: highlightColor,
-      child: SingleChildScrollView(
-        physics: const NeverScrollableScrollPhysics(),
-        padding: const EdgeInsets.all(16),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // Search bar skeleton
-          box(double.infinity, 52, r: 14),
-          const SizedBox(height: 20),
-          // Service icons skeleton label
-          box(120, 18, r: 8),
-          const SizedBox(height: 12),
-          Row(
-              children: List.generate(
-                  4,
-                  (_) => Expanded(
-                          child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 4),
-                        child: Column(children: [
-                          box(double.infinity, 56, r: 14),
-                          const SizedBox(height: 6),
-                          box(50, 12, r: 6),
-                        ]),
-                      )))),
-          const SizedBox(height: 20),
-          // Banner skeleton
-          box(double.infinity, 130, r: 16),
-          const SizedBox(height: 20),
-          box(double.infinity, 80, r: 12),
-          const SizedBox(height: 12),
-          box(double.infinity, 80, r: 12),
-        ]),
-      ),
-    );
-  }
-
-  // ── TOP BAR ──────────────────────────────────────────────────────────────
-  Widget _buildTopBar(bool isDark, Color cardBg, Color textColor) {
-    return Container(
-      color: cardBg == Colors.transparent
-          ? Colors.transparent
-          : (isDark ? _darkBg : JT.bg),
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-      child: Row(children: [
-        // Logo
-        GestureDetector(
-          onTap: () => _scaffoldKey.currentState?.openDrawer(),
-          child: isDark ? JT.logoWhite(height: 32) : JT.logoBlue(height: 32),
-        ),
-        const SizedBox(width: 8),
-        // Location indicator — tap to pick on map
-        Expanded(
-          child: GestureDetector(
-            onTap: () async {
-              final result = await Navigator.push<PickedLocation>(
-                context,
-                MaterialPageRoute(
-                    builder: (_) => MapLocationPicker(
-                          title: 'Select Pickup Location',
-                          initialLat: _pickupLat,
-                          initialLng: _pickupLng,
-                        )),
-              );
-              if (result != null && mounted) {
-                setState(() {
-                  _pickupLat = result.lat;
-                  _pickupLng = result.lng;
-                  _pickup = result.address;
-                  _locationReady = true;
-                });
-              }
-            },
-            child: Row(children: [
-              Icon(Icons.location_on_rounded, color: JT.primary, size: 13),
-              const SizedBox(width: 3),
-              Flexible(
-                child: Text(
-                  _pickup == 'Getting location...'
-                      ? 'Getting location...'
-                      : _pickup.split(',').first,
-                  style: GoogleFonts.poppins(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    color: isDark ? Colors.white70 : JT.textSecondary,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ]),
-          ),
-        ),
-        // Wallet balance chip
-        if (_walletBalance > 0) ...[
-          GestureDetector(
-            onTap: () => Navigator.push(context,
-                MaterialPageRoute(builder: (_) => const WalletScreen())),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: JT.surfaceAlt,
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
-                Icon(Icons.account_balance_wallet_rounded,
-                    color: JT.primary, size: 13),
-                const SizedBox(width: 4),
-                Text(
-                  '₹${_walletBalance.toStringAsFixed(0)}',
-                  style: GoogleFonts.poppins(
-                      color: JT.primary,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500),
-                ),
-              ]),
-            ),
-          ),
-          const SizedBox(width: 8),
-        ],
-        // Notification bell — outline icon in JT.primary
-        GestureDetector(
-          onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                      builder: (_) => const NotificationsScreen()))
-              .then((_) => _fetchUnreadCount()),
-          child: Stack(clipBehavior: Clip.none, children: [
-            Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                color: isDark ? _darkCard : JT.surfaceAlt,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                    color: isDark ? const Color(0xFF334155) : JT.border),
-              ),
-              child: Icon(Icons.notifications_outlined,
-                  color: JT.primary, size: 20),
-            ),
-            if (_unreadNotifCount > 0)
-              Positioned(
-                top: -4,
-                right: -4,
-                child: Container(
-                  constraints:
-                      const BoxConstraints(minWidth: 17, minHeight: 17),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: JT.primaryDark,
-                    borderRadius: BorderRadius.circular(10),
-                    boxShadow: [
-                      BoxShadow(
-                          color: JT.primaryDark.withValues(alpha: 0.26),
-                          blurRadius: 4)
-                    ],
-                  ),
-                  child: Center(
-                      child: Text(
-                    _unreadNotifCount > 9 ? '9+' : _unreadNotifCount.toString(),
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 9,
-                        fontWeight: FontWeight.w500),
-                  )),
-                ),
-              ),
-          ]),
-        ),
-      ]),
-    );
-  }
-
-  // ── SEARCH BAR ────────────────────────────────────────────────────────────
-  Widget _buildSearchBar(bool isDark, Color cardBg, Color textColor) {
-    final firstName =
-        _userName == 'there' ? 'there' : _userName.split(' ').first;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        // Profile greeting row
-        Row(children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: JT.primary,
-              borderRadius: BorderRadius.circular(12),
-              boxShadow: JT.btnShadow,
-            ),
-            child: Center(
-                child: Text(
-              firstName.isNotEmpty ? firstName[0].toUpperCase() : 'U',
-              style: GoogleFonts.poppins(
-                  color: Colors.white,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w500),
-            )),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                Text(
-                  'Hello, $firstName!',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: GoogleFonts.poppins(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w400,
-                      color: JT.textPrimary),
-                ),
-                Text(
-                  'Where are you heading today?',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: GoogleFonts.poppins(
-                      fontSize: 12,
-                      color: JT.textSecondary,
-                      fontWeight: FontWeight.w400),
-                ),
-              ])),
-          GestureDetector(
-            onTap: () => Navigator.push(context,
-                MaterialPageRoute(builder: (_) => const VoiceBookingScreen())),
-            child: Stack(clipBehavior: Clip.none, children: [
-              Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  color: JT.surfaceAlt,
-                  borderRadius: BorderRadius.circular(12),
-                  ),
-                child:
-                    const Icon(Icons.mic_rounded, color: JT.primary, size: 19),
-              ),
-              Positioned(
-                top: -3,
-                right: -3,
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: JT.primary,
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: Colors.white, width: 1),
-                  ),
-                  child: const Text('AI',
-                      style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 7,
-                          fontWeight: FontWeight.w500,
-                          letterSpacing: 0.3)),
-                ),
-              ),
-            ]),
-          ),
-        ]),
-        const SizedBox(height: 16),
-        // "Where to?" search bar (Uber-style)
-        GestureDetector(
-          onTap: (_pickup.contains('retry') || _pickup.contains('Tap'))
-              ? _getLocation
-              : _openSearch,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(14),
-              boxShadow: [
-                BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.06),
-                    blurRadius: 12,
-                    offset: const Offset(0, 3)),
-              ],
-            ),
-            child: Row(children: [
-              // Pickup dot indicator
-              Column(mainAxisSize: MainAxisSize.min, children: [
-                Container(
-                  width: 10, height: 10,
-                  decoration: BoxDecoration(
-                    color: JT.primary,
-                    shape: BoxShape.circle,
-                  ),
-                ),
-              ]),
-              const SizedBox(width: 12),
-              Expanded(
-                  child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                    Text(
-                      'Where to?',
-                      style: GoogleFonts.poppins(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w400,
-                          color: JT.textPrimary),
-                    ),
-                    const SizedBox(height: 1),
-                    if (_locationReady && _pickup.isNotEmpty &&
-                        !_pickup.contains('retry') && !_pickup.contains('Tap') &&
-                        !_pickup.contains('Turn on') && !_pickup.contains('permission'))
-                      Row(children: [
-                        const Icon(Icons.my_location_rounded,
-                            size: 10, color: JT.primary),
-                        const SizedBox(width: 3),
-                        Flexible(
-                          child: Text(
-                            _pickup.split(',').first,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: GoogleFonts.poppins(
-                                fontSize: 11,
-                                color: JT.textSecondary,
-                                fontWeight: FontWeight.w400),
-                          ),
-                        ),
-                      ])
-                    else if (_pickup == 'Current Location' || _pickup.isEmpty)
-                      Row(children: [
-                        SizedBox(
-                          width: 10, height: 10,
-                          child: CircularProgressIndicator(
-                              strokeWidth: 1.5,
-                              color: JT.primary.withValues(alpha: 0.5)),
-                        ),
-                        const SizedBox(width: 5),
-                        Text('Detecting location...',
-                            style: GoogleFonts.poppins(
-                                fontSize: 11, color: JT.textTertiary)),
-                      ])
-                    else
-                      Text(
-                        _pickup,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: GoogleFonts.poppins(
-                            fontSize: 11,
-                            color: _pickup.contains('retry') || _pickup.contains('Tap')
-                                ? JT.primaryDark
-                                : JT.textSecondary,
-                            fontWeight: FontWeight.w400),
-                      ),
-                  ])),
-              const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                decoration: BoxDecoration(
-                  color: JT.primary,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Text(
-                  'Go',
-                  style: GoogleFonts.poppins(
-                      color: Colors.white,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w400),
-                ),
-              ),
-            ]),
-          ),
-        ),
-      ]),
-    );
-  }
-
   // ── FEATURED SERVICES — RIDE + PARCEL (admin-controlled) ────────────────
   // Only shows cards for services that have active vehicle categories in DB.
-  Widget _buildFeaturedGrid(bool isDark) {
+  Widget buildFeaturedGrid(bool isDark) {
     if (_vehicleCategories.isEmpty) {
       return Padding(
         padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
@@ -2197,14 +1533,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final rideCats = _vehicleCategories.where((v) => v['type']?.toString() == 'ride').toList();
     final parcelCats = _vehicleCategories.where((v) => v['type']?.toString() == 'parcel' || v['type']?.toString() == 'cargo').toList();
     
-    final isRideActive = _runtimeServiceEnabled('ride', defaultValue: true) &&
-        rideCats.any((v) =>
-            v['isActive'] == true &&
-            _runtimeVehicleEnabled((v['key'] ?? v['vehicleKey'] ?? v['name'] ?? '').toString(), defaultValue: true));
-    final isParcelActive = _runtimeServiceEnabled('parcel', defaultValue: true) &&
-        parcelCats.any((v) =>
-            v['isActive'] == true &&
-            _runtimeVehicleEnabled((v['key'] ?? v['vehicleKey'] ?? v['name'] ?? '').toString(), defaultValue: true));
+    final isRideActive = rideCats.any((v) => v['isActive'] == true);
+    final isParcelActive = parcelCats.any((v) => v['isActive'] == true);
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
@@ -2220,7 +1550,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           if (rideCats.isNotEmpty)
             Expanded(
                 child: _buildServiceCard(
-              imageUrl: 'https://sea-lion-app-h5luj.ondigitalocean.app/static/vehicles/auto.png',
+              imageUrl: 'https://oyster-app-9e9cd.ondigitalocean.app/static/vehicles/auto.png',
               fallbackIcon: Icons.electric_rickshaw_rounded,
               title: 'Ride',
               subtitle: 'Bike · Auto · Car',
@@ -2245,7 +1575,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           if (parcelCats.isNotEmpty)
             Expanded(
                 child: _buildServiceCard(
-              imageUrl: 'https://sea-lion-app-h5luj.ondigitalocean.app/static/vehicles/parcel_bike.png',
+              imageUrl: 'https://oyster-app-9e9cd.ondigitalocean.app/static/vehicles/parcel_bike.png',
               fallbackIcon: Icons.local_shipping_rounded,
               title: 'Parcel',
               subtitle: 'Bike · Truck · Van',
@@ -2401,7 +1731,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
   }
 
-  void _onServiceTap(String serviceKey) {
+  void onServiceTap(String serviceKey) {
     if (serviceKey.contains('parcel')) {
       Navigator.push(
           context,
@@ -2421,7 +1751,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
-  Widget _dynamicServiceCard({
+  Widget dynamicServiceCard({
     required String title,
     required String emoji,
     required String subtitle,
@@ -2497,7 +1827,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
   }
 
-  Widget _featuredCard({
+  Widget featuredCard({
     required String subtitle,
     required String title,
     required String emoji,
@@ -2561,7 +1891,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   // ── QUICK ACCESS STRIP (Bike / Auto / Car / Parcel) ──────────────────────
-  Widget _buildExploreSection(bool isDark) {
+  Widget buildExploreSection(bool isDark) {
     // Static quick-access chips — always shown, fast tap to book
     final chips = <Map<String, dynamic>>[
       {
@@ -2679,7 +2009,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   // ── BANNER CAROUSEL ───────────────────────────────────────────────────────
-  Widget _buildBannerCarousel(bool isDark) {
+  Widget buildBannerCarousel(bool isDark) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
       child: _banners.isEmpty
@@ -2805,7 +2135,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   // ── SAVED PLACES ──────────────────────────────────────────────────────────
-  Widget _buildSavedPlaces(bool isDark) {
+  Widget buildSavedPlaces(bool isDark) {
     if (_savedPlaces.isEmpty) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
@@ -2875,7 +2205,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   // ── RECENT TRIPS ──────────────────────────────────────────────────────────
-  Widget _buildRecentTrips(bool isDark) {
+  Widget buildRecentTrips(bool isDark) {
     if (_recentTrips.isEmpty) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
@@ -3219,6 +2549,7 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
   final TextEditingController _ctrl = TextEditingController();
   List<Map<String, dynamic>> _results = [];
   List<Map<String, dynamic>> _nearby = [];
+  List<Map<String, dynamic>> _popular = [];
   bool _loading = false;
   Timer? _debounce;
 
@@ -3227,6 +2558,7 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
   @override
   void initState() {
     super.initState();
+    _fetchPopularLocations();
     _fetchNearby();
   }
 
@@ -3243,6 +2575,49 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
     );
     if (result != null) {
       widget.onPlaceSelected(result.address, result.lat, result.lng);
+    }
+  }
+
+  Future<void> _fetchPopularLocations() async {
+    try {
+      final r = await http.get(Uri.parse(
+          '${ApiConfig.baseUrl}/api/app/popular-locations?city=Vijayawada'));
+      if (r.statusCode == 200) {
+        final data = jsonDecode(r.body) as Map<String, dynamic>;
+        final list = (data['locations'] as List<dynamic>? ?? [])
+            .map((x) => Map<String, dynamic>.from(x as Map))
+            .map((x) => {
+                  'name': (x['name'] ?? '').toString(),
+                  'lat': double.tryParse(
+                          (x['lat'] ?? x['latitude'] ?? 0).toString()) ??
+                      0.0,
+                  'lng': double.tryParse(
+                          (x['lng'] ?? x['longitude'] ?? 0).toString()) ??
+                      0.0,
+                })
+            .where((x) => (x['name'] as String).isNotEmpty)
+            .toList();
+        if (mounted && list.isNotEmpty) {
+          setState(() => _popular = list);
+          return;
+        }
+      }
+    } catch (_) {}
+    if (mounted && _popular.isEmpty) {
+      setState(() => _popular = [
+            {'name': 'Benz Circle', 'lat': 16.5062, 'lng': 80.6480},
+            {
+              'name': 'Vijayawada Railway Station',
+              'lat': 16.5175,
+              'lng': 80.6400
+            },
+            {'name': 'Vijayawada Bus Stand', 'lat': 16.5179, 'lng': 80.6238},
+            {'name': 'Balaji Bus Stand', 'lat': 16.5106, 'lng': 80.6248},
+            {'name': 'Kanaka Durga Temple', 'lat': 16.5176, 'lng': 80.6121},
+            {'name': 'Gannavaram Airport', 'lat': 16.5304, 'lng': 80.7968},
+            {'name': 'Governorpet', 'lat': 16.5135, 'lng': 80.6346},
+            {'name': 'Patamata', 'lat': 16.4883, 'lng': 80.6681},
+          ]);
     }
   }
 
@@ -3276,41 +2651,6 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
     } catch (_) {}
   }
 
-  Future<List<Map<String, dynamic>>> _searchPlacesFallback(String query) async {
-    try {
-      final uri = Uri.https('nominatim.openstreetmap.org', '/search', {
-        'format': 'json',
-        'q': query,
-        'limit': '8',
-        'countrycodes': 'in',
-        'addressdetails': '1',
-      });
-      final res = await http.get(
-        uri,
-        headers: const {'User-Agent': 'JagoPro/1.0 (Android)'},
-      ).timeout(const Duration(seconds: 6));
-      if (res.statusCode != 200) return [];
-      final decoded = jsonDecode(res.body);
-      if (decoded is! List) return [];
-      return decoded
-          .map((item) {
-            final p = Map<String, dynamic>.from(item as Map);
-            final full = p['display_name']?.toString() ?? '';
-            return <String, dynamic>{
-              'name': full,
-              'placeId': 'nom:${p['place_id'] ?? ''}',
-              'lat': double.tryParse('${p['lat'] ?? 0}') ?? 0.0,
-              'lng': double.tryParse('${p['lon'] ?? 0}') ?? 0.0,
-            };
-          })
-          .where((r) => (r['name'] as String).isNotEmpty)
-          .cast<Map<String, dynamic>>()
-          .toList();
-    } catch (_) {
-      return [];
-    }
-  }
-
   Future<void> _search(String query) async {
     if (query.length < 3) {
       setState(() {
@@ -3333,33 +2673,20 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
       if (r.statusCode == 200) {
         final data = jsonDecode(r.body) as Map<String, dynamic>;
         final preds = (data['predictions'] as List<dynamic>?) ?? [];
-        var mapped = preds
-            .map((p) => <String, dynamic>{
-                  'name': p['fullDescription']?.toString() ?? p['mainText']?.toString() ?? '',
-                  'placeId': p['placeId']?.toString() ?? '',
-                  'lat': (p['lat'] as num?)?.toDouble() ?? 0.0,
-                  'lng': (p['lng'] as num?)?.toDouble() ?? 0.0,
-                })
-            .where((r) => (r['name'] as String).isNotEmpty)
-            .toList();
-        if (mapped.isEmpty) {
-          mapped = await _searchPlacesFallback(query);
-        }
         setState(() {
-          _results = mapped;
+          _results = preds
+              .map((p) => <String, dynamic>{
+                    'name': p['fullDescription']?.toString() ??
+                        p['mainText']?.toString() ?? '',
+                    'placeId': p['placeId']?.toString() ?? '',
+                    'lat': (p['lat'] as num?)?.toDouble() ?? 0.0,
+                    'lng': (p['lng'] as num?)?.toDouble() ?? 0.0,
+                  })
+              .where((r) => (r['name'] as String).isNotEmpty)
+              .toList();
         });
-      } else {
-        final fallback = await _searchPlacesFallback(query);
-        if (mounted) {
-          setState(() => _results = fallback);
-        }
       }
-    } catch (_) {
-      final fallback = await _searchPlacesFallback(query);
-      if (mounted) {
-        setState(() => _results = fallback);
-      }
-    }
+    } catch (_) {}
     if (mounted) setState(() => _loading = false);
   }
 
@@ -3370,8 +2697,7 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
     final placeId = p['placeId']?.toString() ?? '';
     if ((lat == 0.0 || lng == 0.0) &&
         placeId.isNotEmpty &&
-        !placeId.startsWith('local:') &&
-        !placeId.startsWith('nom:')) {
+        !placeId.startsWith('local:')) {
       try {
         final headers = await AuthService.getHeaders();
         final r = await http
@@ -3487,6 +2813,65 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
               ),
             ),
           ),
+          const SizedBox(height: 8),
+          if (_popular.isNotEmpty && query.length < 3)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 2, 16, 10),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Popular Locations',
+                      style: GoogleFonts.poppins(
+                          fontSize: 12,
+                          color: subColor,
+                          fontWeight: FontWeight.w400),
+                    ),
+                    const SizedBox(height: 8),
+                    SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: _popular.map((p) {
+                          return GestureDetector(
+                            onTap: () {
+                              Navigator.pop(context);
+                              widget.onPlaceSelected(
+                                p['name'] as String,
+                                (p['lat'] as num?)?.toDouble() ?? 0.0,
+                                (p['lng'] as num?)?.toDouble() ?? 0.0,
+                              );
+                            },
+                            child: Container(
+                              margin: const EdgeInsets.only(right: 8),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF0F7FF),
+                                borderRadius: BorderRadius.circular(20),
+                                border:
+                                    Border.all(color: const Color(0xFFDCE9FF)),
+                              ),
+                              child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(Icons.place_rounded,
+                                        color: _primary, size: 14),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      p['name'] as String,
+                                      style: GoogleFonts.poppins(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w400,
+                                          color: textColor),
+                                    ),
+                                  ]),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                  ]),
+            ),
           if (_loading)
             const Padding(
                 padding: EdgeInsets.all(16),
@@ -3538,7 +2923,7 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
 }
 
 // ── ALL SERVICES SHEET ────────────────────────────────────────────────────
-class _AllServicesSheet extends StatelessWidget {
+class AllServicesSheet extends StatelessWidget {
   final List<Map<String, dynamic>> vehicleCategories;
   final List<Map<String, dynamic>> activeServices;
   final String pickup;
@@ -3546,7 +2931,7 @@ class _AllServicesSheet extends StatelessWidget {
   final double pickupLng;
   final void Function(Map<String, dynamic> cat) onServiceTap;
 
-  const _AllServicesSheet({
+  const AllServicesSheet({
     required this.vehicleCategories,
     required this.activeServices,
     required this.pickup,
@@ -3707,14 +3092,11 @@ class _AllServicesSheet extends StatelessWidget {
       itemCount: items.length,
       itemBuilder: (_, i) {
         final s = items[i];
-        final imageUrl = _serviceImageUrl(s);
-        final accent = _serviceAccent(s);
-        final badge = _serviceBadge(s);
         return GestureDetector(
           onTap: () => onServiceTap(s),
           child: Container(
             decoration: BoxDecoration(
-              color: Colors.white,
+              color: const Color(0xFFF5F8FF),
               borderRadius: BorderRadius.circular(16),
               border: Border.all(color: const Color(0xFFDCE9FF)),
               boxShadow: [
@@ -3725,153 +3107,24 @@ class _AllServicesSheet extends StatelessWidget {
                 ),
               ],
             ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(16),
-              child: Stack(
-                children: [
-                  Positioned.fill(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [
-                            Colors.white,
-                            accent.withValues(alpha: 0.07),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                  if (imageUrl != null)
-                    Positioned(
-                      right: -4,
-                      top: 6,
-                      child: Opacity(
-                        opacity: 0.96,
-                        child: Image.network(
-                          imageUrl,
-                          width: 72,
-                          height: 72,
-                          fit: BoxFit.contain,
-                          errorBuilder: (_, __, ___) => Icon(
-                            _iconForCategory(s['name']?.toString() ?? ''),
-                            size: 44,
-                            color: accent.withValues(alpha: 0.45),
-                          ),
-                        ),
-                      ),
-                    ),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: accent.withValues(alpha: 0.12),
-                            borderRadius: BorderRadius.circular(999),
-                          ),
-                          child: Text(
-                            badge,
-                            style: GoogleFonts.poppins(
-                              fontSize: 9,
-                              fontWeight: FontWeight.w600,
-                              color: accent,
-                              letterSpacing: 0.4,
-                            ),
-                          ),
-                        ),
-                        const Spacer(),
-                        Text(
-                          s['name'] as String,
-                          style: GoogleFonts.poppins(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500,
-                            color: JT.textPrimary,
-                            height: 1.15,
-                          ),
-                          maxLines: 2,
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          _serviceSubtitle(s),
-                          style: GoogleFonts.poppins(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w400,
-                            color: JT.textSecondary,
-                            height: 1.2,
-                          ),
-                          maxLines: 2,
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
+            child:
+                Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+              Text(s['emoji'] as String, style: const TextStyle(fontSize: 36)),
+              const SizedBox(height: 8),
+              Text(
+                s['name'] as String,
+                style: GoogleFonts.poppins(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w400,
+                    color: JT.textPrimary),
+                textAlign: TextAlign.center,
+                maxLines: 2,
               ),
-            ),
+            ]),
           ),
         );
       },
     );
-  }
-
-  static String _serviceSubtitle(Map<String, dynamic> service) {
-    final name = service['name']?.toString().toLowerCase() ?? '';
-    final type = service['type']?.toString().toLowerCase() ?? '';
-    if (name.contains('outstation') && name.contains('pool')) return 'Intercity shared seats';
-    if (name.contains('pool') || name.contains('share') || type == 'pool') return 'Lower fare shared rides';
-    if (type == 'parcel' || type == 'cargo') return 'Delivery and logistics';
-    return 'On-demand daily travel';
-  }
-
-  static String _serviceBadge(Map<String, dynamic> service) {
-    final name = service['name']?.toString().toLowerCase() ?? '';
-    final type = service['type']?.toString().toLowerCase() ?? '';
-    if (name.contains('pool') || name.contains('share') || type == 'pool') return 'SHARED';
-    if (type == 'parcel' || type == 'cargo') return 'DELIVERY';
-    return 'RIDE';
-  }
-
-  static Color _serviceAccent(Map<String, dynamic> service) {
-    final name = service['name']?.toString().toLowerCase() ?? '';
-    final type = service['type']?.toString().toLowerCase() ?? '';
-    if (name.contains('pool') || name.contains('share') || type == 'pool') {
-      return const Color(0xFF2563EB);
-    }
-    if (type == 'parcel' || type == 'cargo') {
-      return const Color(0xFF059669);
-    }
-    return JT.primary;
-  }
-
-  static String? _serviceImageUrl(Map<String, dynamic> service) {
-    final name = service['name']?.toString().toLowerCase() ?? '';
-    final type = service['type']?.toString().toLowerCase() ?? '';
-    if (name.contains('outstation') && name.contains('pool')) {
-      return 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_31_05_AM_kavp5e';
-    }
-    if (name.contains('pool') || name.contains('share') || type == 'pool') {
-      return 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_27_28_AM_w0rcnh';
-    }
-    if (type == 'parcel' || type == 'cargo') {
-      return 'https://sea-lion-app-h5luj.ondigitalocean.app/static/vehicles/parcel_bike.png';
-    }
-    if (name.contains('auto')) {
-      return 'https://sea-lion-app-h5luj.ondigitalocean.app/static/vehicles/auto.png';
-    }
-    return 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_27_28_AM_w0rcnh';
-  }
-
-  static IconData _iconForCategory(String name) {
-    final lower = name.toLowerCase();
-    if (lower.contains('outstation') && lower.contains('pool')) return Icons.route_rounded;
-    if (lower.contains('pool') || lower.contains('share')) return Icons.groups_rounded;
-    if (lower.contains('parcel') || lower.contains('cargo')) return Icons.local_shipping_rounded;
-    if (lower.contains('bike')) return Icons.electric_bike_rounded;
-    if (lower.contains('auto')) return Icons.electric_rickshaw_rounded;
-    return Icons.directions_car_filled_rounded;
   }
 
   static String _emojiForCategory(String name) {

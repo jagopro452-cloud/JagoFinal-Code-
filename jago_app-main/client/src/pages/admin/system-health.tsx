@@ -128,16 +128,16 @@ export default function SystemHealthPage() {
     refetch: refetchVehicles,
   } = useQuery<{ vehicles: VehicleStatus[] }>({
     queryKey: ["/api/admin/vehicle-status"],
-    queryFn: () => fetch("/api/admin/vehicle-status").then(r => {
+    queryFn: (): Promise<{ vehicles: VehicleStatus[] }> => fetch("/api/admin/vehicle-status").then(r => {
       if (!r.ok) throw new Error("Vehicle status unavailable");
       return r.json();
     }),
     refetchInterval: 5000,
   });
+  const vehicles = vehicleData?.vehicles ?? [];
 
   const [toggling, setToggling] = useState<string | null>(null);
   const [vehicleToggling, setVehicleToggling] = useState<string | null>(null);
-  const vehicles: VehicleStatus[] = vehicleData?.vehicles ?? [];
 
   const toggleService = async (serviceKey: string, currentStatus: string) => {
     const newStatus = currentStatus === "active" ? "inactive" : "active";
@@ -309,7 +309,7 @@ export default function SystemHealthPage() {
                       Loading vehicle controls...
                     </div>
                   ) : (
-                    vehicles.map((vehicle) => {
+                    vehicles.map(vehicle => {
                       const accent = VEHICLE_COLORS[vehicle.key] || "#2563EB";
                       const updated = vehicle.updatedAt
                         ? new Date(vehicle.updatedAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })

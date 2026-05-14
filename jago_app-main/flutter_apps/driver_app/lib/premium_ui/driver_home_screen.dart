@@ -17,13 +17,9 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
   LatLng? _currentLatLng;
   StreamSubscription<Position>? _positionStream;
   Marker? _userMarker;
-  late AnimationController _pulseController;
-  bool _locationLoading = true;
-  String _locationStatus = 'Detecting location...';
   double _mapPadding = 0;
   bool _isFollowing = true;
   bool _isOnline = false;
-  bool _hasLocationPermission = false;
 
   @override
   void initState() {
@@ -38,20 +34,12 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
     }
     if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) {
       setState(() {
-        _locationStatus = 'Location permission denied';
-        _locationLoading = false;
-        _hasLocationPermission = false;
       });
       return;
-    }
-    if (mounted) {
-      setState(() => _hasLocationPermission = true);
     }
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
       setState(() {
-        _locationStatus = 'GPS is OFF. Enable location.';
-        _locationLoading = false;
       });
       return;
     }
@@ -69,7 +57,6 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
         if (mounted) _updateLocation(position);
       });
     } catch (_) {}
-    if (mounted) setState(() { _locationLoading = false; });
   }
 
   void _updateLocation(Position pos) {
@@ -83,7 +70,6 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
         position: latLng,
         icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
       );
-      _locationStatus = 'You are here';
     });
     if (_mapController != null && _isFollowing) {
       _mapController!.animateCamera(CameraUpdate.newLatLngZoom(latLng, 15));
@@ -110,8 +96,8 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
                 target: _currentLatLng ?? const LatLng(20.5937, 78.9629),
                 zoom: 15,
               ),
-              myLocationEnabled: _hasLocationPermission,
-              myLocationButtonEnabled: _hasLocationPermission,
+              myLocationEnabled: true,
+              myLocationButtonEnabled: false,
               padding: EdgeInsets.only(bottom: _mapPadding + 40, top: 100),
               onCameraMoveStarted: () {
                 if (mounted) setState(() => _isFollowing = false);
@@ -180,7 +166,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
               child: GlassCard(
                 padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 30),
                 borderRadius: 40,
-                color: _isOnline ? JagoTheme.success.withOpacity(0.2) : null,
+                color: _isOnline ? JagoTheme.success.withValues(alpha: 0.2) : null,
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [

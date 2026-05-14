@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 /// Wraps Firebase Phone Authentication.
@@ -13,10 +14,6 @@ class FirebaseOtpService {
   // Set by [sendOtp], used by [verifyOtp].
   static String? _verificationId;
   static int? _resendToken;
-  static Future<String>? _ongoingVerification;
-  static String? _ongoingVerificationKey;
-  static String? _lastVerifiedKey;
-  static String? _lastVerifiedToken;
 
   static String _mapAuthError(FirebaseAuthException e) {
     switch (e.code) {
@@ -30,44 +27,27 @@ class FirebaseOtpService {
         return 'ERROR: Phone Auth is disabled in Firebase OR Identity Toolkit API is restricted in Google Cloud Console. Please check your API Key settings.';
       case 'app-not-authorized':
         return 'Firebase phone auth is not authorized for this app build.';
-      case 'invalid-app-credential':
-        return 'This app build is not authorized for Firebase phone auth.';
-      case 'captcha-check-failed':
-        return 'Firebase phone verification was blocked on this device. Please retry or use SMS fallback.';
       case 'session-expired':
         return 'This OTP session expired. Please resend OTP and try again.';
       case 'invalid-verification-code':
         return 'Incorrect OTP. Please check the code and try again.';
       case 'network-request-failed':
         return 'Network issue while contacting Firebase. Check your connection and try again.';
+      case 'internal-error':
+        return 'Firebase phone auth internal error. This usually means the app build is not fully configured in Firebase Console (SHA keys / Play Integrity / Phone Auth).';
       default:
         return e.message ?? 'Failed to process OTP. Please try again.';
     }
   }
 
-  static bool shouldPreferServerFallback(String? error) {
-    final lower = (error ?? '').toLowerCase();
-    return lower.contains('not authorized') ||
-        lower.contains('operation not allowed') ||
-        lower.contains('operation-not-allowed') ||
-        lower.contains('identity toolkit') ||
-        lower.contains('api key') ||
-        lower.contains('invalid app credential') ||
-        lower.contains('invalid-app-credential') ||
-        lower.contains('captcha') ||
-        lower.contains('quota exceeded') ||
-        lower.contains('too many') ||
-        lower.contains('timed out') ||
-        lower.contains('network issue');
+  static Future<void> _ensureFirebaseReady() async {
+    if (Firebase.apps.isNotEmpty) return;
+    await Firebase.initializeApp();
   }
 
   static Future<void> resetVerification() async {
     _verificationId = null;
     _resendToken = null;
-    _ongoingVerification = null;
-    _ongoingVerificationKey = null;
-    _lastVerifiedKey = null;
-    _lastVerifiedToken = null;
     try {
       await _auth.signOut();
     } catch (_) {}
@@ -95,6 +75,7 @@ class FirebaseOtpService {
     }
 
     try {
+      await _ensureFirebaseReady();
       if (!forceResend) {
         _verificationId = null;
       }
@@ -145,45 +126,25 @@ class FirebaseOtpService {
     required String smsCode,
     String? verificationId,
   }) async {
+    await _ensureFirebaseReady();
     final vId = verificationId ?? _verificationId;
     if (vId == null) throw Exception('Verification ID missing. Please resend OTP.');
-    final verificationKey = '$vId:$smsCode';
 
-    if (_lastVerifiedKey == verificationKey && _lastVerifiedToken != null) {
-      return _lastVerifiedToken!;
+    // Sign out any stale session before creating a new one — prevents "session expired"
+    try { await _auth.signOut(); } catch (_) {}
+
+    final credential = PhoneAuthProvider.credential(
+      verificationId: vId,
+      smsCode: smsCode,
+    );
+    try {
+      final userCred = await _auth.signInWithCredential(credential);
+      final idToken = await userCred.user?.getIdToken(true);
+      if (idToken == null) throw Exception('Could not get Firebase token. Please try again.');
+      return idToken;
+    } on FirebaseAuthException catch (e) {
+      throw Exception(_mapAuthError(e));
     }
-    if (_ongoingVerificationKey == verificationKey && _ongoingVerification != null) {
-      return _ongoingVerification!;
-    }
-
-    final verificationFuture = () async {
-      // Sign out any stale session before creating a new one — prevents "session expired"
-      try { await _auth.signOut(); } catch (_) {}
-
-      final credential = PhoneAuthProvider.credential(
-        verificationId: vId,
-        smsCode: smsCode,
-      );
-      try {
-        final userCred = await _auth.signInWithCredential(credential);
-        final idToken = await userCred.user?.getIdToken(true);
-        if (idToken == null) throw Exception('Could not get Firebase token. Please try again.');
-        _lastVerifiedKey = verificationKey;
-        _lastVerifiedToken = idToken;
-        return idToken;
-      } on FirebaseAuthException catch (e) {
-        throw Exception(_mapAuthError(e));
-      } finally {
-        if (_ongoingVerificationKey == verificationKey) {
-          _ongoingVerification = null;
-          _ongoingVerificationKey = null;
-        }
-      }
-    }();
-
-    _ongoingVerificationKey = verificationKey;
-    _ongoingVerification = verificationFuture;
-    return verificationFuture;
   }
 
   /// Sign out from Firebase (call on app logout).

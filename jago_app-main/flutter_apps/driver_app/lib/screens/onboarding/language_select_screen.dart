@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../../config/jago_theme.dart';
 import '../../services/localization_service.dart';
 import '../auth/login_screen.dart';
 
@@ -19,7 +18,6 @@ class _LanguageSelectScreenState extends State<LanguageSelectScreen>
 
   static const _primary = Color(0xFF2F7BFF);
   static const _navy = Color(0xFF0F1829);
-  static const _surface = Color(0xFFFFFFFF);
 
   @override
   void initState() {

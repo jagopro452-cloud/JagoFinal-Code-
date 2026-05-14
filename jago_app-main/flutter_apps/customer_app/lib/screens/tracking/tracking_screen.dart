@@ -5,7 +5,6 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
-import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
@@ -20,7 +19,6 @@ import '../call/call_screen.dart';
 import '../chat/trip_chat_sheet.dart';
 
 import '../main_screen.dart';
-import '../booking/booking_screen.dart';
 import 'trip_completion_screen.dart';
 
 class TrackingScreen extends StatefulWidget {
@@ -32,9 +30,17 @@ class TrackingScreen extends StatefulWidget {
 
 class _TrackingScreenState extends State<TrackingScreen>
     with TickerProviderStateMixin, WidgetsBindingObserver {
-  static const Duration _defaultPollInterval = Duration(seconds: 2);
-  static const Duration _networkBackoffPollInterval = Duration(seconds: 6);
-  static const Duration _driverLocationStaleAfter = Duration(seconds: 15);
+  static const Color _ridePrimary = Color(0xFF6366F1);
+  static const Color _ridePrimaryDark = Color(0xFF4F4ACF);
+  static const Color _rideSecondary = Color(0xFF8B5CF6);
+  static const Color _rideBg = Color(0xFFF5F3FF);
+  static const Color _rideSurfaceAlt = Color(0xFFF8F7FF);
+  static const LinearGradient _rideGradient = LinearGradient(
+    colors: [Color(0xFF4F4ACF), Color(0xFF6366F1)],
+    begin: Alignment.topLeft,
+    end: Alignment.bottomRight,
+  );
+
   final SocketService _socket = SocketService();
   GoogleMapController? _mapController;
   LatLng _center = const LatLng(17.3850, 78.4867);
@@ -58,17 +64,13 @@ class _TrackingScreenState extends State<TrackingScreen>
   final Map<String, BitmapDescriptor> _markerIconCache = {};
   List<Map<String, dynamic>> _nearbyDrivers = [];
 
-  bool _isConnected = true;
-  bool _trackingDelayed = false;
-  bool _hasMapLocationPermission = false;
-  StreamSubscription? _connSub;
   Timer? _pollTimer;
-  Timer? _driverLocationStaleTimer;
-  DateTime? _lastDriverLocationAt;
-  int _pollFailureCount = 0;
-  Duration _currentPollInterval = _defaultPollInterval;
 
   bool _isArriving = false; // "Pilot is about to arrive" flag
+  int? _lastLiveEtaMinutes;
+  int? _lastRemainingDistanceMeters;
+  DateTime? _routeRefreshUntil;
+  DateTime? _lastRouteRefreshBannerAt;
 
   // Custom Top Banner state
   String? _bannerMessage;
@@ -83,18 +85,11 @@ class _TrackingScreenState extends State<TrackingScreen>
     _pulseCtrl =
         AnimationController(vsync: this, duration: const Duration(seconds: 2))
           ..repeat(reverse: true);
-    _connSub = _socket.onConnectionChanged.listen((connected) {
+    _subs.add(_socket.onConnectionChanged.listen((connected) {
       if (mounted) {
-        setState(() {
-          _isConnected = connected;
-          _trackingDelayed = !connected;
-        });
         if (!connected) {
-          _startPolling(_networkBackoffPollInterval);
           _showStatusBanner('Waiting for connection...', Colors.orange);
         } else {
-          _pollFailureCount = 0;
-          _startPolling(_defaultPollInterval);
           _showStatusBanner('Reconnected!', const Color(0xFF10B981));
           // Re-join trip room on every reconnect
           _socket.trackTrip(widget.tripId);
@@ -104,7 +99,7 @@ class _TrackingScreenState extends State<TrackingScreen>
           Future.delayed(const Duration(milliseconds: 2500), _pollStatus);
         }
       }
-    });
+    }));
     _connectSocket();
     _pollStatus();
     _loadCancelReasons();
@@ -112,49 +107,10 @@ class _TrackingScreenState extends State<TrackingScreen>
     _listenForIncomingCalls();
     // HTTP polling as fallback — 2s for active states, 4s for in-progress
     // Socket handles real-time but poll catches missed events and reconciles data
-    _startPolling();
+    _pollTimer = Timer.periodic(const Duration(seconds: 2), (_) => _pollStatus());
     // Start 90-second timeout warning for searching state
     _startSearchTimeoutTimer();
     _startNearbyDriversPolling();
-    _ensureMapLocationPermission();
-  }
-
-  void _startPolling([Duration? interval]) {
-    final nextInterval = interval ?? _currentPollInterval;
-    _currentPollInterval = nextInterval;
-    _pollTimer?.cancel();
-    _pollTimer = Timer.periodic(nextInterval, (_) => _pollStatus());
-  }
-
-  Future<void> _ensureMapLocationPermission() async {
-    try {
-      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) {
-        if (mounted) {
-          setState(() => _hasMapLocationPermission = false);
-        }
-        debugPrint('[MAP] Location service disabled on tracking screen');
-        return;
-      }
-
-      var permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-      }
-
-      final allowed = permission == LocationPermission.always ||
-          permission == LocationPermission.whileInUse;
-      if (mounted) {
-        setState(() => _hasMapLocationPermission = allowed);
-      }
-      debugPrint(
-          '[MAP] Tracking screen location permission=$permission allowed=$allowed');
-    } catch (e) {
-      debugPrint('[MAP] Tracking screen permission check failed: $e');
-      if (mounted) {
-        setState(() => _hasMapLocationPermission = false);
-      }
-    }
   }
 
   void _connectSocket() {
@@ -167,11 +123,28 @@ class _TrackingScreenState extends State<TrackingScreen>
       final lat = double.tryParse(data['lat']?.toString() ?? '');
       final lng = double.tryParse(data['lng']?.toString() ?? '');
       if (lat != null && lng != null) {
-        final nextLocation = _smoothDriverLocation(lat, lng);
-        _markDriverLocationFresh();
-        _checkArrivingStatus(nextLocation.latitude, nextLocation.longitude);
+        _checkArrivingStatus(lat, lng);
+        final etaSeconds = int.tryParse(data['etaSeconds']?.toString() ?? '');
+        final remainingDistanceMeters =
+            int.tryParse(data['remainingDistanceMeters']?.toString() ?? '');
+        _updateRouteRefreshState(
+          etaSeconds: etaSeconds,
+          remainingDistanceMeters: remainingDistanceMeters,
+        );
         setState(() {
-          _driverLatLng = nextLocation;
+          _driverLatLng = LatLng(lat, lng);
+          final updates = <String, dynamic>{
+            'driverLat': lat,
+            'driverLng': lng,
+          };
+          if (etaSeconds != null) {
+            updates['etaSeconds'] = etaSeconds;
+            updates['etaMinutes'] = (etaSeconds / 60).ceil();
+          }
+          if (remainingDistanceMeters != null) {
+            updates['remainingDistanceMeters'] = remainingDistanceMeters;
+          }
+          _trip = _trip != null ? {..._trip!, ...updates} : updates;
           _updateMapMarkers();
           _fetchRouteForStatus(); // Keep route updated as driver moves
         });
@@ -179,7 +152,6 @@ class _TrackingScreenState extends State<TrackingScreen>
     }));
 
     _subs.add(_socket.onTripStatus.listen((data) {
-      if (data == null) return;
       try {
         final newStatus = data['status']?.toString();
         if (newStatus == null) return;
@@ -350,7 +322,7 @@ class _TrackingScreenState extends State<TrackingScreen>
         _updateMapMarkers();
       }
 
-      _showStatusBanner('Pilot accepted your ride', JT.primary);
+      _showStatusBanner('Your pilot is on the way', JT.primary);
       AlarmService().playChime();
       HapticFeedback.heavyImpact();
       _announceStatus('accepted');
@@ -399,41 +371,6 @@ class _TrackingScreenState extends State<TrackingScreen>
   }
 
   // Retry booking using the same trip's original params
-  void _retryBooking() {
-    final t = _trip;
-    if (t == null) {
-      Navigator.pushAndRemoveUntil(context,
-          MaterialPageRoute(builder: (_) => const MainScreen()), (_) => false);
-      return;
-    }
-    Navigator.pushAndRemoveUntil(
-      context,
-      MaterialPageRoute(
-        builder: (_) => BookingScreen(
-          pickup: t['pickupAddress']?.toString() ??
-              t['pickup_address']?.toString() ??
-              'Pickup',
-          destination: t['destinationAddress']?.toString() ??
-              t['destination_address']?.toString() ??
-              'Destination',
-          pickupLat: double.tryParse(t['pickupLat']?.toString() ?? '') ?? 0.0,
-          pickupLng: double.tryParse(t['pickupLng']?.toString() ?? '') ?? 0.0,
-          destLat:
-              double.tryParse(t['destinationLat']?.toString() ?? '') ?? 0.0,
-          destLng:
-              double.tryParse(t['destinationLng']?.toString() ?? '') ?? 0.0,
-          vehicleCategoryId: t['vehicleCategoryId']?.toString(),
-          vehicleCategoryName: t['vehicleName']?.toString(),
-          category: (t['tripType']?.toString() == 'parcel' ||
-                  t['trip_type']?.toString() == 'parcel')
-              ? 'parcel'
-              : 'ride',
-        ),
-      ),
-      (_) => false,
-    );
-  }
-
   Future<void> _startNearbyDriversPolling() async {
     _nearbyDriversTimer?.cancel();
     if (!mounted || _status != 'searching') return;
@@ -455,14 +392,10 @@ class _TrackingScreenState extends State<TrackingScreen>
       if (pLat == null || pLng == null) return;
 
       final headers = await AuthService.getHeaders();
-      final vehicleCategoryId = _trip?['vehicleCategoryId']?.toString() ??
-          _trip?['vehicle_category_id']?.toString();
       final uri = Uri.parse(ApiConfig.nearbyDrivers).replace(queryParameters: {
         'lat': pLat.toString(),
         'lng': pLng.toString(),
-        'radius': '10',
-        if (vehicleCategoryId != null && vehicleCategoryId.isNotEmpty)
-          'vehicleCategoryId': vehicleCategoryId,
+        'radius': '3',
       });
       final r = await http
           .get(uri, headers: headers)
@@ -473,8 +406,6 @@ class _TrackingScreenState extends State<TrackingScreen>
       final drivers =
           (data['drivers'] as List<dynamic>?)?.cast<Map<String, dynamic>>() ??
               [];
-      debugPrint(
-          '[NEARBY_DRIVERS][TRACKING] status=${r.statusCode} trip=${widget.tripId} radiusKm=10 count=${drivers.length} vehicleCategoryId=${vehicleCategoryId ?? 'any'}');
       setState(() => _nearbyDrivers = drivers);
       _updateMapMarkers();
     } catch (_) {}
@@ -502,7 +433,7 @@ class _TrackingScreenState extends State<TrackingScreen>
         const Offset(size / 2, size / 2 + 3), size / 2 - 10, shadowPaint);
 
     final bgPaint = Paint()
-      ..color = isSearching ? const Color(0xFF2F7BFF) : const Color(0xFF1E40AF);
+      ..color = isSearching ? _ridePrimary : _ridePrimaryDark;
     canvas.drawCircle(const Offset(size / 2, size / 2), size / 2 - 12, bgPaint);
 
     final borderPaint = Paint()
@@ -530,7 +461,7 @@ class _TrackingScreenState extends State<TrackingScreen>
     const double size = 100.0;
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder, const Rect.fromLTWH(0, 0, size, size));
-    final paint = Paint()..color = const Color(0xFF2F7BFF);
+    final paint = Paint()..color = _ridePrimary;
     canvas.drawCircle(const Offset(size / 2, size / 2), size / 2 - 10,
         paint..style = PaintingStyle.fill);
     canvas.drawCircle(
@@ -553,7 +484,7 @@ class _TrackingScreenState extends State<TrackingScreen>
 
   void _handleStatusTransition(String newStatus) {
     if (newStatus == 'accepted' || newStatus == 'driver_assigned') {
-      _showStatusBanner('Pilot accepted your ride', JT.primary);
+      _showStatusBanner('Your pilot is on the way', JT.primary);
       _announceStatus('accepted');
       _updateMapMarkers();
     } else if (newStatus == 'arrived') {
@@ -562,11 +493,11 @@ class _TrackingScreenState extends State<TrackingScreen>
       _updateMapMarkers();
     } else if (newStatus == 'in_progress' || newStatus == 'on_the_way') {
       _animateToDestination();
-      _showStatusBanner('Ride started • Have a safe journey!', JT.primary);
+      _showStatusBanner('Ride in progress • Have a safe journey!', JT.primary);
       _fetchRouteForStatus();
       _updateMapMarkers();
     } else if (newStatus == 'completed') {
-      _showStatusBanner('Trip Completed • Thank you!', const Color(0xFF10B981));
+      _showStatusBanner('Trip complete • Thank you!', const Color(0xFF10B981));
       setState(() => _polylines.clear());
       _updateMapMarkers();
       
@@ -859,7 +790,6 @@ class _TrackingScreenState extends State<TrackingScreen>
     for (final s in _subs) s.cancel();
     _incomingCallSub?.cancel();
     _pollTimer?.cancel();
-    _driverLocationStaleTimer?.cancel();
     _searchTimeoutTimer?.cancel();
     _pulseCtrl.dispose();
     _tts.stop();
@@ -870,56 +800,12 @@ class _TrackingScreenState extends State<TrackingScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      _ensureMapLocationPermission();
       if (!_socket.isConnected) {
         _socket.connect(ApiConfig.socketUrl);
       }
       _socket.trackTrip(widget.tripId);
-      _markDriverLocationFresh(resetOnly: true);
       _pollStatus();
     }
-  }
-
-  void _markDriverLocationFresh({bool resetOnly = false}) {
-    _lastDriverLocationAt = DateTime.now();
-    _driverLocationStaleTimer?.cancel();
-    _driverLocationStaleTimer = Timer(_driverLocationStaleAfter, () {
-      if (!mounted) return;
-      setState(() => _trackingDelayed = true);
-      _showStatusBanner('Tracking delayed. Reconnecting live location…',
-          const Color(0xFFF59E0B));
-    });
-    if (!resetOnly && mounted && _trackingDelayed) {
-      setState(() => _trackingDelayed = false);
-    }
-  }
-
-  LatLng _smoothDriverLocation(double lat, double lng) {
-    final current = _driverLatLng;
-    if (current == null) return LatLng(lat, lng);
-
-    final distanceMeters = Geolocator.distanceBetween(
-      current.latitude,
-      current.longitude,
-      lat,
-      lng,
-    );
-
-    // Ignore tiny GPS jitter.
-    if (distanceMeters < 4) {
-      return current;
-    }
-
-    // Large jumps should snap immediately to avoid stale ghost movement.
-    if (distanceMeters > 250) {
-      return LatLng(lat, lng);
-    }
-
-    // Smooth ordinary movement to reduce marker jitter.
-    return LatLng(
-      current.latitude + ((lat - current.latitude) * 0.45),
-      current.longitude + ((lng - current.longitude) * 0.45),
-    );
   }
 
   void _listenForIncomingCalls() {
@@ -1051,7 +937,7 @@ class _TrackingScreenState extends State<TrackingScreen>
                 style: GoogleFonts.poppins(
                     fontWeight: FontWeight.w500, fontSize: 13)),
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF2F7BFF),
+              backgroundColor: _ridePrimary,
               foregroundColor: Colors.white,
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12)),
@@ -1087,7 +973,7 @@ class _TrackingScreenState extends State<TrackingScreen>
                     fontWeight: FontWeight.w400,
                     fontSize: 13)),
           ]),
-          backgroundColor: const Color(0xFF2F7BFF),
+          backgroundColor: _ridePrimary,
           behavior: SnackBarBehavior.floating,
           margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
           shape:
@@ -1154,11 +1040,11 @@ class _TrackingScreenState extends State<TrackingScreen>
               width: 48,
               height: 48,
               decoration: BoxDecoration(
-                color: const Color(0xFF2F7BFF).withValues(alpha: 0.1),
+                color: _ridePrimary.withValues(alpha: 0.1),
                 shape: BoxShape.circle,
               ),
               child: const Icon(Icons.bolt_rounded,
-                  color: Color(0xFF2F7BFF), size: 24),
+                  color: _ridePrimary, size: 24),
             ),
             const SizedBox(width: 14),
             Expanded(
@@ -1205,15 +1091,11 @@ class _TrackingScreenState extends State<TrackingScreen>
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 18),
           decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: [const Color(0xFF2F7BFF), const Color(0xFF1A5FCC)],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
+            gradient: _rideGradient,
             borderRadius: BorderRadius.circular(16),
             boxShadow: [
               BoxShadow(
-                  color: const Color(0xFF2F7BFF).withValues(alpha: 0.3),
+                  color: _ridePrimaryDark.withValues(alpha: 0.3),
                   blurRadius: 12,
                   offset: const Offset(0, 4))
             ],
@@ -1265,10 +1147,6 @@ class _TrackingScreenState extends State<TrackingScreen>
       if (!mounted) return;
 
       if (res.statusCode == 200) {
-        _pollFailureCount = 0;
-        if (_currentPollInterval != _defaultPollInterval) {
-          _startPolling(_defaultPollInterval);
-        }
         final data = jsonDecode(res.body);
         final trip = data['trip'];
         if (trip != null) {
@@ -1360,18 +1238,6 @@ class _TrackingScreenState extends State<TrackingScreen>
         // The socket will likely still keep them updated.
       }
     } catch (e) {
-      _pollFailureCount++;
-      if (_pollFailureCount >= 3 &&
-          _currentPollInterval != _networkBackoffPollInterval) {
-        if (mounted) {
-          setState(() => _trackingDelayed = true);
-        }
-        _startPolling(_networkBackoffPollInterval);
-        _showStatusBanner(
-          'Network is unstable. Retrying ride updates...',
-          Colors.orange,
-        );
-      }
       debugPrint('[POLL] Network error in status sync: $e');
     }
   }
@@ -1479,9 +1345,6 @@ class _TrackingScreenState extends State<TrackingScreen>
     final driverRating = trip?['driverRating'] ?? trip?['driver_rating'];
     final driverPhoto =
         trip?['driverPhoto']?.toString() ?? trip?['driver_photo']?.toString();
-    final vehicleName = trip?['vehicleName']?.toString() ?? trip?['vehicle_name']?.toString() ?? '';
-    final vehicleNum = trip?['driverVehicleNumber']?.toString() ?? trip?['driver_vehicle_number']?.toString() ?? '';
-    final vehicleModel = trip?['driverVehicleModel']?.toString() ?? trip?['driver_vehicle_model']?.toString() ?? '';
     final actualFare = trip?['actualFare'] ?? trip?['actual_fare'];
     final estimatedFare = trip?['estimatedFare'] ?? trip?['estimated_fare'];
 
@@ -1501,7 +1364,7 @@ class _TrackingScreenState extends State<TrackingScreen>
         }
       },
       child: Scaffold(
-        backgroundColor: const Color(0xFFF5F3FF),
+        backgroundColor: _rideBg,
         body: Column(
           children: [
             // Global Header
@@ -1540,40 +1403,39 @@ class _TrackingScreenState extends State<TrackingScreen>
                   color: Colors.white,
                   borderRadius: BorderRadius.vertical(top: Radius.circular(32)),
                 ),
-                child: Stack(children: [
-                  GoogleMap(
-                    initialCameraPosition: CameraPosition(target: _center, zoom: 15),
-                    onMapCreated: (c) {
-                      _mapController = c;
-                      debugPrint(
-                          '[MAP] Tracking map created center=${_center.latitude},${_center.longitude} status=$_status');
-                      if (_driverLatLng != null) {
-                        _updateMapMarkers();
-                        _fetchRouteForStatus();
-                      }
-                    },
-                    markers: _markers,
-                    polylines: _polylines,
-                    circles: {
-                      if (_status == 'searching' && _trip != null)
-                        Circle(
-                          circleId: const CircleId('search_radius'),
-                          center: LatLng(
-                              double.tryParse(_trip?['pickupLat']?.toString() ?? '0') ??
-                                  0,
-                              double.tryParse(_trip?['pickupLng']?.toString() ?? '0') ??
-                                  0),
-                          radius: 10000,
-                          fillColor: const Color(0xFF2F7BFF).withValues(alpha: 0.05),
-                          strokeColor: const Color(0xFF2F7BFF).withValues(alpha: 0.3),
-                          strokeWidth: 2,
-                        ),
-                    },
-                    myLocationEnabled: _hasMapLocationPermission,
-                    myLocationButtonEnabled: _hasMapLocationPermission,
-                    zoomControlsEnabled: false,
-                    mapToolbarEnabled: false,
-                  ),
+                child: ClipRRect(
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(32)),
+                  child: Stack(children: [
+                    GoogleMap(
+                      initialCameraPosition: CameraPosition(target: _center, zoom: 15),
+                      onMapCreated: (c) {
+                        _mapController = c;
+                        if (_driverLatLng != null) {
+                          _updateMapMarkers();
+                          _fetchRouteForStatus();
+                        }
+                      },
+                      markers: _markers,
+                      polylines: _polylines,
+                      circles: {
+                        if (_status == 'searching' && _trip != null)
+                          Circle(
+                            circleId: const CircleId('search_radius'),
+                            center: LatLng(
+                                double.tryParse(_trip?['pickupLat']?.toString() ?? '0') ??
+                                    0,
+                                double.tryParse(_trip?['pickupLng']?.toString() ?? '0') ??
+                                    0),
+                            radius: 400,
+                            fillColor: _ridePrimary.withValues(alpha: 0.05),
+                            strokeColor: _ridePrimary.withValues(alpha: 0.3),
+                            strokeWidth: 2,
+                          ),
+                      },
+                      myLocationEnabled: true,
+                      zoomControlsEnabled: false,
+                      mapToolbarEnabled: false,
+                    ),
                     Positioned(
                       bottom: 0,
                       left: 0,
@@ -1613,9 +1475,8 @@ class _TrackingScreenState extends State<TrackingScreen>
                                           name: driverName,
                                           rating: driverRating,
                                           photo: driverPhoto,
-                                          vehicleName: vehicleName,
-                                          vehicleNum: vehicleNum,
-                                          vehicleModel: vehicleModel,
+                                          vehicleNum: trip?['driverVehicleNumber'] ?? '',
+                                          vehicleModel: trip?['driverVehicleModel'] ?? '',
                                           phone: driverPhone,
                                         )
                                       else
@@ -1644,14 +1505,17 @@ class _TrackingScreenState extends State<TrackingScreen>
                                       ],
                                     ],
                                     if (_status == 'completed') ...[
-                                      const SizedBox(height: 40),
-                                      const Center(child: CircularProgressIndicator(strokeWidth: 2)),
                                       const SizedBox(height: 20),
-                                      Center(child: Text('Ending your trip...', style: GoogleFonts.poppins(color: JT.textSecondary))),
+                                      _buildCompletedSummaryCard(
+                                        trip!,
+                                        actualFare,
+                                        estimatedFare,
+                                      ),
                                     ] else if (_status == 'cancelled') ...[
                                       const SizedBox(height: 16),
                                       _buildCancelledCard(),
-                                    ] else if (_status != 'in_progress' && 
+                                    ] else if (_status != 'arrived' && 
+                                               _status != 'in_progress' && 
                                                _status != 'on_the_way') ...[
                                       const SizedBox(height: 20),
                                       Center(
@@ -1685,6 +1549,7 @@ class _TrackingScreenState extends State<TrackingScreen>
                         child: _buildTopBannerWidget(),
                       ),
                   ]),
+                ),
               ),
             ),
           ],
@@ -1723,18 +1588,126 @@ class _TrackingScreenState extends State<TrackingScreen>
     );
   }
 
-  Future<String> _getSupportPhone() async {
-    try {
-      final r = await http.get(Uri.parse(ApiConfig.configs));
-      if (r.statusCode == 200) {
-        final data = jsonDecode(r.body);
-        return data['configs']?['support_phone'] ?? '+916303000000';
-      }
-    } catch (_) {}
-    return '+916303000000';
+  // ── Premium UI Components ──────────────────────────────────────────────────
+
+  int _trackingEtaMinutes() {
+    final etaSeconds = int.tryParse(_trip?['etaSeconds']?.toString() ?? '');
+    if (etaSeconds != null && etaSeconds > 0) return (etaSeconds / 60).ceil();
+    final etaMinutes = int.tryParse(_trip?['etaMinutes']?.toString() ?? '');
+    if (etaMinutes != null && etaMinutes > 0) return etaMinutes;
+    return 5;
   }
 
-  // ── Premium UI Components ──────────────────────────────────────────────────
+  void _updateRouteRefreshState({
+    int? etaSeconds,
+    int? remainingDistanceMeters,
+  }) {
+    final etaMinutes = etaSeconds != null && etaSeconds > 0
+        ? (etaSeconds / 60).ceil()
+        : null;
+    final isTrackingActive = _status == 'driver_assigned' ||
+        _status == 'accepted' ||
+        _status == 'arrived' ||
+        _status == 'in_progress' ||
+        _status == 'on_the_way';
+
+    if (isTrackingActive && !_isArriving) {
+      final etaJump = etaMinutes != null &&
+          _lastLiveEtaMinutes != null &&
+          etaMinutes - _lastLiveEtaMinutes! >= 3;
+      final distanceJump = remainingDistanceMeters != null &&
+          _lastRemainingDistanceMeters != null &&
+          remainingDistanceMeters - _lastRemainingDistanceMeters! >= 400;
+
+      if (etaJump || distanceJump) {
+        final now = DateTime.now();
+        _routeRefreshUntil = now.add(const Duration(seconds: 45));
+        if (_lastRouteRefreshBannerAt == null ||
+            now.difference(_lastRouteRefreshBannerAt!) >
+                const Duration(seconds: 45)) {
+          _lastRouteRefreshBannerAt = now;
+          _showStatusBanner(
+            'Driver is taking a new route',
+            const Color(0xFFF59E0B),
+          );
+        }
+      }
+    }
+
+    if (etaMinutes != null && etaMinutes > 0) {
+      _lastLiveEtaMinutes = etaMinutes;
+    }
+    if (remainingDistanceMeters != null && remainingDistanceMeters > 0) {
+      _lastRemainingDistanceMeters = remainingDistanceMeters;
+    }
+  }
+
+  String _trackingDistanceLabel() {
+    final remainingDistanceMeters =
+        int.tryParse(_trip?['remainingDistanceMeters']?.toString() ?? '');
+    if (remainingDistanceMeters == null || remainingDistanceMeters <= 0) {
+      return 'Live route';
+    }
+    if (remainingDistanceMeters < 1000) {
+      return '$remainingDistanceMeters m away';
+    }
+    return '${(remainingDistanceMeters / 1000).toStringAsFixed(1)} km away';
+  }
+
+  Widget _trackingMetricCard({
+    required IconData icon,
+    required Color accent,
+    required String label,
+    required String value,
+  }) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              Colors.white,
+              accent.withValues(alpha: 0.06),
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: accent.withValues(alpha: 0.14)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: accent.withValues(alpha: 0.10),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(icon, color: accent, size: 18),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label,
+                      style: GoogleFonts.poppins(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: const Color(0xFF94A3B8))),
+                  Text(value,
+                      style: GoogleFonts.poppins(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
+                          color: const Color(0xFF0F172A))),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   Widget _buildPremiumHeader(Map<String, dynamic> statusInfo, String? otp) {
     final color = statusInfo['color'] as Color;
@@ -1743,7 +1716,26 @@ class _TrackingScreenState extends State<TrackingScreen>
         (_status == 'driver_assigned' ||
             _status == 'accepted' ||
             _status == 'arrived');
-    final eta = _trip?['etaMinutes']?.toString() ?? '5';
+    final eta = _trackingEtaMinutes().toString();
+    final distanceLabel = _trackingDistanceLabel();
+    final showTrackingMetrics = _status != 'searching' &&
+        _status != 'completed' &&
+        _status != 'cancelled';
+    final isRideLive = _status == 'in_progress' || _status == 'on_the_way';
+    final routeRefreshActive = _routeRefreshUntil != null &&
+        DateTime.now().isBefore(_routeRefreshUntil!);
+    final liveAccent =
+        routeRefreshActive ? const Color(0xFFF59E0B) : color;
+    final liveTitle = routeRefreshActive
+        ? 'Driver is taking a new route'
+        : isRideLive
+            ? 'You are on the way'
+            : 'Driver arriving live';
+    final liveSubtitle = routeRefreshActive
+        ? 'Live ETA has been refreshed and we are tracking the updated path.'
+        : _isArriving
+            ? 'Your pilot is almost there. Stay ready.'
+            : 'ETA updates are streaming from the live route.';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1763,9 +1755,7 @@ class _TrackingScreenState extends State<TrackingScreen>
                       color: const Color(0xFF0F172A),
                     ),
                   ),
-                  if (_status != 'completed' &&
-                      _status != 'cancelled' &&
-                      _status != 'searching')
+                  if (showTrackingMetrics)
                     Text(
                       'Live tracking active • SECURE PIN',
                       style: GoogleFonts.poppins(
@@ -1777,9 +1767,7 @@ class _TrackingScreenState extends State<TrackingScreen>
                 ],
               ),
             ),
-            if (_status != 'searching' &&
-                _status != 'completed' &&
-                _status != 'cancelled')
+            if (showTrackingMetrics)
               IconButton(
                 onPressed: _shareRide,
                 icon: Container(
@@ -1794,6 +1782,131 @@ class _TrackingScreenState extends State<TrackingScreen>
               ),
           ],
         ),
+        if (showTrackingMetrics) ...[
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  liveAccent.withValues(alpha: 0.10),
+                  Colors.white,
+                ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(22),
+              border: Border.all(color: liveAccent.withValues(alpha: 0.14)),
+              boxShadow: [
+                BoxShadow(
+                  color: liveAccent.withValues(alpha: 0.08),
+                  blurRadius: 24,
+                  offset: const Offset(0, 12),
+                ),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: liveAccent.withValues(alpha: 0.12),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        routeRefreshActive
+                            ? Icons.route_rounded
+                            : isRideLive
+                                ? Icons.alt_route_rounded
+                                : Icons.my_location_rounded,
+                        color: liveAccent,
+                        size: 18,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            liveTitle,
+                            style: GoogleFonts.poppins(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w700,
+                              color: const Color(0xFF0F172A),
+                            ),
+                          ),
+                          Text(
+                            liveSubtitle,
+                            style: GoogleFonts.poppins(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                              color: const Color(0xFF64748B),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                if (_isArriving && !routeRefreshActive) ...[
+                  const SizedBox(height: 12),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF10B981).withValues(alpha: 0.10),
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(
+                        color: const Color(0xFF10B981).withValues(alpha: 0.18),
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.bolt_rounded,
+                          size: 16,
+                          color: Color(0xFF10B981),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Almost there',
+                          style: GoogleFonts.poppins(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: const Color(0xFF047857),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    _trackingMetricCard(
+                      icon: Icons.timer_rounded,
+                      accent: const Color(0xFF10B981),
+                      label: 'ARRIVAL',
+                      value: '$eta MIN',
+                    ),
+                    const SizedBox(width: 12),
+                    _trackingMetricCard(
+                      icon: Icons.near_me_rounded,
+                      accent: liveAccent,
+                      label: 'DISTANCE',
+                      value: distanceLabel,
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
         if (showOtp) ...[
           const SizedBox(height: 16),
           Row(
@@ -1813,11 +1926,11 @@ class _TrackingScreenState extends State<TrackingScreen>
                       Container(
                         padding: const EdgeInsets.all(8),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF6366F1).withValues(alpha: 0.1),
+                          color: _rideSecondary.withValues(alpha: 0.1),
                           shape: BoxShape.circle,
                         ),
                         child: const Icon(Icons.stars_rounded,
-                            color: Color(0xFF6366F1), size: 18),
+                            color: _rideSecondary, size: 18),
                       ),
                       const SizedBox(width: 12),
                       Column(
@@ -1841,7 +1954,7 @@ class _TrackingScreenState extends State<TrackingScreen>
                 ),
               ),
               const SizedBox(width: 12),
-              // Wait Time Card
+              // Live ETA Card
               Expanded(
                 child: Container(
                   padding:
@@ -1866,7 +1979,7 @@ class _TrackingScreenState extends State<TrackingScreen>
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('WAIT TIME',
+                          Text('LIVE ETA',
                               style: GoogleFonts.poppins(
                                   fontSize: 11,
                                   fontWeight: FontWeight.w600,
@@ -1893,7 +2006,6 @@ class _TrackingScreenState extends State<TrackingScreen>
     required String name,
     required dynamic rating,
     required String? photo,
-    required String vehicleName,
     required String vehicleNum,
     required String vehicleModel,
     required String? phone,
@@ -1901,7 +2013,7 @@ class _TrackingScreenState extends State<TrackingScreen>
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: const Color(0xFFF8FAFF),
+        color: _rideSurfaceAlt,
         borderRadius: BorderRadius.circular(18),
         border: Border.all(color: JT.primary.withValues(alpha: 0.08), width: 1),
       ),
@@ -1970,7 +2082,7 @@ class _TrackingScreenState extends State<TrackingScreen>
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  '${vehicleName.isNotEmpty ? vehicleName : "Jago Pilot"} ${vehicleModel.isNotEmpty ? "• $vehicleModel" : ""}',
+                  vehicleModel.isNotEmpty ? vehicleModel : 'Jago Pilot',
                   style: GoogleFonts.poppins(
                       fontSize: 12, color: JT.textSecondary),
                   maxLines: 1,
@@ -2202,7 +2314,7 @@ class _TrackingScreenState extends State<TrackingScreen>
     if (confirm != true) return;
     final sosHeaders = await AuthService.getHeaders();
     try {
-      final response = await http.post(Uri.parse(ApiConfig.sos),
+      await http.post(Uri.parse(ApiConfig.sos),
           headers: {...sosHeaders, 'Content-Type': 'application/json'},
           body: jsonEncode({
             'tripId': widget.tripId,
@@ -2210,9 +2322,6 @@ class _TrackingScreenState extends State<TrackingScreen>
             'lng': _center.longitude,
             'message': 'Customer SOS alert during trip',
           }));
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw Exception('SOS request failed');
-      }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('🚨 SOS Alert sent! Help is on the way.',
@@ -2233,27 +2342,15 @@ class _TrackingScreenState extends State<TrackingScreen>
 
   Widget _buildFareRow(
       Map<String, dynamic> trip, dynamic actualFare, dynamic estimatedFare) {
-    final fareValRaw = actualFare ?? estimatedFare;
-    String fareLabel = '';
-    if (fareValRaw != null) {
-      final f = double.tryParse(fareValRaw.toString()) ?? 0.0;
-      fareLabel = '₹${f % 1 == 0 ? f.toInt() : f.toStringAsFixed(2)}';
-    }
-
-    final distRaw = trip['estimatedDistance'] ?? trip['estimated_distance'];
-    String distLabel = '';
-    if (distRaw != null) {
-      final d = double.tryParse(distRaw.toString()) ?? 0.0;
-      distLabel = '${d.toStringAsFixed(2)} km';
-    }
-
+    final fareVal = actualFare ?? estimatedFare;
+    final dist = trip['estimatedDistance'] ?? trip['estimated_distance'];
     final vehicle = trip['vehicleName'] ?? trip['vehicle_name'];
-
     return Wrap(spacing: 8, children: [
-      if (fareLabel.isNotEmpty)
-        _chip(Icons.currency_rupee_rounded, fareLabel, const Color(0xFF10B981)),
-      if (distLabel.isNotEmpty)
-        _chip(Icons.route_rounded, distLabel, const Color(0xFF6B7280)),
+      if (fareVal != null)
+        _chip(
+            Icons.currency_rupee_rounded, '₹$fareVal', const Color(0xFF10B981)),
+      if (dist != null)
+        _chip(Icons.route_rounded, '$dist km', const Color(0xFF6B7280)),
       if (vehicle != null)
         _chip(Icons.electric_bike, vehicle.toString(), const Color(0xFF6B7280)),
     ]);
@@ -2278,6 +2375,211 @@ class _TrackingScreenState extends State<TrackingScreen>
     );
   }
 
+  Widget _summaryStatTile({
+    required IconData icon,
+    required Color accent,
+    required String label,
+    required String value,
+  }) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.88),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: accent.withValues(alpha: 0.14)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: accent.withValues(alpha: 0.10),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(icon, size: 16, color: accent),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: GoogleFonts.poppins(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      color: const Color(0xFF94A3B8),
+                    ),
+                  ),
+                  Text(
+                    value,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: GoogleFonts.poppins(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                      color: const Color(0xFF0F172A),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCompletedSummaryCard(
+      Map<String, dynamic> trip, dynamic actualFare, dynamic estimatedFare) {
+    final fareVal = (actualFare ?? estimatedFare)?.toString() ?? '--';
+    final dist =
+        (trip['estimatedDistance'] ?? trip['estimated_distance'])?.toString() ??
+            '--';
+    final destination = (trip['destinationShortName'] ??
+            trip['destinationAddress'] ??
+            'Destination')
+        .toString();
+    final paymentMethod = (trip['paymentMethod'] ??
+            trip['payment_method'] ??
+            'Payment')
+        .toString();
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [
+            Color(0xFFF5FBF8),
+            Color(0xFFFFFFFF),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.16)),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF10B981).withValues(alpha: 0.08),
+            blurRadius: 28,
+            offset: const Offset(0, 12),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF10B981).withValues(alpha: 0.10),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.check_circle_rounded,
+                  size: 20,
+                  color: Color(0xFF10B981),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Trip wrapped up beautifully',
+                      style: GoogleFonts.poppins(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        color: const Color(0xFF0F172A),
+                      ),
+                    ),
+                    Text(
+                      'We are preparing your final trip details.',
+                      style: GoogleFonts.poppins(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                        color: const Color(0xFF64748B),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              _summaryStatTile(
+                icon: Icons.currency_rupee_rounded,
+                accent: const Color(0xFF10B981),
+                label: 'FINAL FARE',
+                value: '₹$fareVal',
+              ),
+              const SizedBox(width: 12),
+              _summaryStatTile(
+                icon: Icons.route_rounded,
+                accent: JT.primary,
+                label: 'DISTANCE',
+                value: '$dist km',
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8FAFC),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
+            ),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.flag_rounded,
+                  size: 18,
+                  color: Color(0xFF475569),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    destination,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: GoogleFonts.poppins(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: const Color(0xFF0F172A),
+                    ),
+                  ),
+                ),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: JT.primary.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    paymentMethod,
+                    style: GoogleFonts.poppins(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: JT.primary,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
 
   Widget _buildCancelledCard() {
     return Container(
@@ -2296,7 +2598,7 @@ class _TrackingScreenState extends State<TrackingScreen>
                 fontWeight: FontWeight.w600,
                 color: Colors.red[900])),
         const SizedBox(height: 16),
-        JT.gradientButton(
+        _rideGradientButton(
             label: 'Try Again', onTap: () => Navigator.pop(context)),
       ]),
     );
@@ -2308,42 +2610,42 @@ class _TrackingScreenState extends State<TrackingScreen>
         return {
           'label': 'Finding the best Pilot for you...',
           'icon': Icons.radar_rounded,
-          'color': const Color(0xFF2D8CFF)
+          'color': _ridePrimary
         };
       case 'driver_assigned':
       case 'accepted':
         return {
           'label': _isArriving
               ? 'Your pilot is about to arrive'
-              : 'Pilot accepted your ride',
+              : 'Your pilot is on the way',
           'icon':
               _isArriving ? Icons.bolt_rounded : Icons.electric_bike_rounded,
-          'color': const Color(0xFF2D8CFF)
+          'color': _ridePrimary
         };
       case 'arrived':
         return {
-          'label': 'Your pilot is arrived',
+          'label': 'Your pilot has arrived',
           'icon': Icons.location_on_rounded,
           'color': const Color(0xFF10B981)
         };
       case 'in_progress':
       case 'on_the_way':
         return {
-          'label': 'Your ride is started',
+          'label': 'Your ride is in progress',
           'icon': Icons.auto_awesome_rounded,
-          'color': const Color(0xFF2D8CFF)
+          'color': _ridePrimary
         };
       case 'completed':
         return {
-          'label': 'Your ride is ended',
+          'label': 'Your ride is complete',
           'icon': Icons.check_circle_rounded,
-          'color': JT.primary
+          'color': _ridePrimary
         };
       case 'cancelled':
         return {
           'label': 'Trip Cancelled',
           'icon': Icons.cancel_rounded,
-          'color': JT.primaryDark
+          'color': _ridePrimaryDark
         };
       default:
         return {
@@ -2409,8 +2711,16 @@ class _TrackingScreenState extends State<TrackingScreen>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
       decoration: BoxDecoration(
-        color: _bannerColor,
+        gradient: LinearGradient(
+          colors: [
+            _bannerColor,
+            _bannerColor.withValues(alpha: 0.84),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
         borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
         boxShadow: [
           BoxShadow(
             color: _bannerColor.withValues(alpha: 0.3),
@@ -2436,7 +2746,7 @@ class _TrackingScreenState extends State<TrackingScreen>
               _bannerMessage!,
               style: GoogleFonts.poppins(
                 color: Colors.white,
-                fontWeight: FontWeight.w600,
+                fontWeight: FontWeight.w700,
                 fontSize: 14,
                 letterSpacing: 0.2,
               ),
@@ -2452,10 +2762,6 @@ class _TrackingScreenState extends State<TrackingScreen>
     );
   }
 
-  void _showArrivalBanner() {
-    _showStatusBanner('Your pilot is arrived', const Color(0xFF10B981));
-  }
-
   Widget _buildInProgressPanel(Map<String, dynamic> trip) {
     final dest = trip['destinationShortName'] ??
         trip['destinationAddress'] ??
@@ -2465,9 +2771,9 @@ class _TrackingScreenState extends State<TrackingScreen>
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFFF8FAFF),
+        color: _rideSurfaceAlt,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.blue.withValues(alpha: 0.1)),
+        border: Border.all(color: _ridePrimary.withValues(alpha: 0.1)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2477,10 +2783,10 @@ class _TrackingScreenState extends State<TrackingScreen>
               Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                    color: Colors.blue.withValues(alpha: 0.12),
+                    color: _ridePrimary.withValues(alpha: 0.12),
                     shape: BoxShape.circle),
-                child: const Icon(Icons.navigation_rounded,
-                    color: Colors.blue, size: 20),
+                child: Icon(Icons.navigation_rounded,
+                    color: _ridePrimary, size: 20),
               ),
               const SizedBox(width: 14),
               Expanded(
@@ -2508,12 +2814,11 @@ class _TrackingScreenState extends State<TrackingScreen>
                       color: Colors.white,
                       borderRadius: BorderRadius.circular(10),
                       border: Border.all(color: JT.border)),
-                  child: Text(
-                      '${(double.tryParse(dist.toString()) ?? 0.0).toStringAsFixed(2)} km',
+                  child: Text('$dist km',
                       style: GoogleFonts.poppins(
                           fontSize: 13,
                           fontWeight: FontWeight.w700,
-                          color: JT.primary)),
+                          color: _ridePrimary)),
                 ),
             ],
           ),
@@ -2530,11 +2835,11 @@ class _TrackingScreenState extends State<TrackingScreen>
                   Text('Trip is in progress',
                       style: GoogleFonts.poppins(
                           fontSize: 12,
-                          color: Colors.green,
+                          color: JT.success,
                           fontWeight: FontWeight.w600)),
                 ],
               ),
-              const Icon(Icons.security_rounded, color: Colors.blue, size: 18),
+              Icon(Icons.security_rounded, color: _ridePrimary, size: 18),
             ],
           ),
         ],
@@ -2559,7 +2864,7 @@ class _TrackingScreenState extends State<TrackingScreen>
               MaterialPageRoute(builder: (_) => const MainScreen()),
               (_) => false);
         } else {
-          _showStatusBanner('Active trip in progress', JT.primary);
+          _showStatusBanner('Active trip in progress', _ridePrimary);
         }
       },
       child: Container(
@@ -2610,7 +2915,7 @@ class _TrackingScreenState extends State<TrackingScreen>
               MaterialPageRoute(builder: (_) => const MainScreen()),
               (_) => false);
         } else {
-          _showStatusBanner('Active trip in progress', JT.primary);
+          _showStatusBanner('Active trip in progress', _ridePrimary);
         }
       },
       child: AnimatedContainer(
@@ -2618,14 +2923,14 @@ class _TrackingScreenState extends State<TrackingScreen>
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         decoration: isSelected
             ? BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF7C3AED), Color(0xFF6366F1)], 
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
+                gradient: _rideGradient,
                 borderRadius: BorderRadius.circular(20),
                 boxShadow: [
-                  BoxShadow(color: const Color(0xFF7C3AED).withValues(alpha: 0.3), blurRadius: 10, offset: const Offset(0, 4)),
+                  BoxShadow(
+                    color: _ridePrimaryDark.withValues(alpha: 0.3),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
+                  ),
                 ],
               )
             : null,
@@ -2645,6 +2950,39 @@ class _TrackingScreenState extends State<TrackingScreen>
               ),
             ]
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _rideGradientButton({
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        height: 54,
+        decoration: BoxDecoration(
+          gradient: _rideGradient,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: _ridePrimaryDark.withValues(alpha: 0.28),
+              blurRadius: 14,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Center(
+          child: Text(
+            label,
+            style: GoogleFonts.poppins(
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+              color: Colors.white,
+            ),
+          ),
         ),
       ),
     );

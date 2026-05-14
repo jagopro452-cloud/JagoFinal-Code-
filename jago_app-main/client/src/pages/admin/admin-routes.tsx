@@ -1,70 +1,70 @@
+import { lazy } from "react";
 import { Switch, Route, Redirect } from "wouter";
 import AdminLayout from "@/pages/admin/layout";
-import Dashboard from "@/pages/admin/dashboard";
-import Trips from "@/pages/admin/trips";
-import Customers from "@/pages/admin/customers";
-import Drivers from "@/pages/admin/drivers";
-import VehicleCategories from "@/pages/admin/vehicle-categories";
-import Zones from "@/pages/admin/zones";
-import Fares from "@/pages/admin/fares";
-import Transactions from "@/pages/admin/transactions";
-import Coupons from "@/pages/admin/coupons";
-import Reviews from "@/pages/admin/reviews";
-import Settings from "@/pages/admin/settings";
-import BlogsPage from "@/pages/admin/blogs";
-import Withdrawals from "@/pages/admin/withdrawals";
-import CancellationReasonsPage from "@/pages/admin/cancellation-reasons";
-import HeatMap from "@/pages/admin/heat-map";
-import FleetView from "@/pages/admin/fleet-view";
-import CarSharing from "@/pages/admin/car-sharing";
-import IntercityCarSharing from "@/pages/admin/intercity-carsharing";
-import ParcelRefunds from "@/pages/admin/parcel-refunds";
-import SafetyAlerts from "@/pages/admin/safety-alerts";
-import Banners from "@/pages/admin/banners";
-import Discounts from "@/pages/admin/discounts";
-import SpinWheel from "@/pages/admin/spin-wheel";
-import Notifications from "@/pages/admin/notifications";
-import DriverLevels from "@/pages/admin/driver-levels";
-import CustomerLevels from "@/pages/admin/customer-levels";
-import CustomerWallet from "@/pages/admin/customer-wallet";
-import WalletBonus from "@/pages/admin/wallet-bonus";
-import Employees from "@/pages/admin/employees";
-import Newsletter from "@/pages/admin/newsletter";
-import Subscriptions from "@/pages/admin/subscriptions";
-import RevenueModel from "@/pages/admin/revenue-model";
-import DriverWalletPage from "@/pages/admin/driver-wallet";
-import RefundRequestsPage from "@/pages/admin/refund-requests";
-import ApiDocsPage from "@/pages/admin/api-docs";
-import AppDesignPage from "@/pages/admin/app-design";
-import LanguagesPage from "@/pages/admin/languages";
-import ServiceManagement from "@/pages/admin/service-management";
-import ParcelAttributes from "@/pages/admin/parcel-attributes";
-import VehicleAttributes from "@/pages/admin/vehicle-attributes";
-import VehicleRequests from "@/pages/admin/vehicle-requests";
-import ParcelFares from "@/pages/admin/parcel-fares";
-import SurgePricing from "@/pages/admin/surge-pricing";
-import Reports from "@/pages/admin/reports";
-import Chatting from "@/pages/admin/chatting";
-import CallLogs from "@/pages/admin/call-logs";
-import BusinessSetup from "@/pages/admin/business-setup";
-import PagesMedia from "@/pages/admin/pages-media";
-import Configurations from "@/pages/admin/configurations";
-import B2BCompanies from "@/pages/admin/b2b-companies";
-import IntercityRoutes from "@/pages/admin/intercity-routes";
-import Insurance from "@/pages/admin/insurance";
-import DriverEarnings from "@/pages/admin/driver-earnings";
-import Referrals from "@/pages/admin/referrals";
-import DriverVerificationPage from "@/pages/admin/driver-verification";
-import OutstationPool from "@/pages/admin/outstation-pool";
-import LocalPool from "@/pages/admin/local-pool";
-import ParcelOrders from "@/pages/admin/parcel-orders";
-import SystemHealth from "@/pages/admin/system-health";
-import VoiceCommandsPage from "@/pages/admin/voice-commands";
-import PopularLocationsAdmin from "@/pages/admin/popular-locations";
-import CityServices from "@/pages/admin/city-services";
-import ParcelVehiclesAdmin from "@/pages/admin/parcel-vehicles";
-import AIBrainDashboard from "@/pages/admin/ai-brain-dashboard";
-import AlertEnginePage from "@/pages/admin/alert-engine";
+
+const Dashboard = lazy(() => import("@/pages/admin/dashboard"));
+const Trips = lazy(() => import("@/pages/admin/trips"));
+const Customers = lazy(() => import("@/pages/admin/customers"));
+const Drivers = lazy(() => import("@/pages/admin/drivers"));
+const VehicleCategories = lazy(() => import("@/pages/admin/vehicle-categories"));
+const Zones = lazy(() => import("@/pages/admin/zones"));
+const Fares = lazy(() => import("@/pages/admin/fares"));
+const Transactions = lazy(() => import("@/pages/admin/transactions"));
+const Coupons = lazy(() => import("@/pages/admin/coupons"));
+const Reviews = lazy(() => import("@/pages/admin/reviews"));
+const Settings = lazy(() => import("@/pages/admin/settings"));
+const BlogsPage = lazy(() => import("@/pages/admin/blogs"));
+const Withdrawals = lazy(() => import("@/pages/admin/withdrawals"));
+const CancellationReasonsPage = lazy(() => import("@/pages/admin/cancellation-reasons"));
+const HeatMap = lazy(() => import("@/pages/admin/heat-map"));
+const FleetView = lazy(() => import("@/pages/admin/fleet-view"));
+const CarSharing = lazy(() => import("@/pages/admin/car-sharing"));
+const IntercityCarSharing = lazy(() => import("@/pages/admin/intercity-carsharing"));
+const ParcelRefunds = lazy(() => import("@/pages/admin/parcel-refunds"));
+const SafetyAlerts = lazy(() => import("@/pages/admin/safety-alerts"));
+const Banners = lazy(() => import("@/pages/admin/banners"));
+const Discounts = lazy(() => import("@/pages/admin/discounts"));
+const SpinWheel = lazy(() => import("@/pages/admin/spin-wheel"));
+const Notifications = lazy(() => import("@/pages/admin/notifications"));
+const DriverLevels = lazy(() => import("@/pages/admin/driver-levels"));
+const CustomerLevels = lazy(() => import("@/pages/admin/customer-levels"));
+const CustomerWallet = lazy(() => import("@/pages/admin/customer-wallet"));
+const WalletBonus = lazy(() => import("@/pages/admin/wallet-bonus"));
+const Employees = lazy(() => import("@/pages/admin/employees"));
+const Newsletter = lazy(() => import("@/pages/admin/newsletter"));
+const Subscriptions = lazy(() => import("@/pages/admin/subscriptions"));
+const RevenueModel = lazy(() => import("@/pages/admin/revenue-model"));
+const DriverWalletPage = lazy(() => import("@/pages/admin/driver-wallet"));
+const RefundRequestsPage = lazy(() => import("@/pages/admin/refund-requests"));
+const ApiDocsPage = lazy(() => import("@/pages/admin/api-docs"));
+const AppDesignPage = lazy(() => import("@/pages/admin/app-design"));
+const LanguagesPage = lazy(() => import("@/pages/admin/languages"));
+const ServiceManagement = lazy(() => import("@/pages/admin/service-management"));
+const ParcelAttributes = lazy(() => import("@/pages/admin/parcel-attributes"));
+const VehicleAttributes = lazy(() => import("@/pages/admin/vehicle-attributes"));
+const VehicleRequests = lazy(() => import("@/pages/admin/vehicle-requests"));
+const ParcelFares = lazy(() => import("@/pages/admin/parcel-fares"));
+const SurgePricing = lazy(() => import("@/pages/admin/surge-pricing"));
+const Reports = lazy(() => import("@/pages/admin/reports"));
+const Chatting = lazy(() => import("@/pages/admin/chatting"));
+const CallLogs = lazy(() => import("@/pages/admin/call-logs"));
+const BusinessSetup = lazy(() => import("@/pages/admin/business-setup"));
+const PagesMedia = lazy(() => import("@/pages/admin/pages-media"));
+const Configurations = lazy(() => import("@/pages/admin/configurations"));
+const B2BCompanies = lazy(() => import("@/pages/admin/b2b-companies"));
+const IntercityRoutes = lazy(() => import("@/pages/admin/intercity-routes"));
+const Insurance = lazy(() => import("@/pages/admin/insurance"));
+const DriverEarnings = lazy(() => import("@/pages/admin/driver-earnings"));
+const Referrals = lazy(() => import("@/pages/admin/referrals"));
+const DriverVerificationPage = lazy(() => import("@/pages/admin/driver-verification"));
+const OutstationPool = lazy(() => import("@/pages/admin/outstation-pool"));
+const ParcelOrders = lazy(() => import("@/pages/admin/parcel-orders"));
+const SystemHealth = lazy(() => import("@/pages/admin/system-health"));
+const VoiceCommandsPage = lazy(() => import("@/pages/admin/voice-commands"));
+const PopularLocationsAdmin = lazy(() => import("@/pages/admin/popular-locations"));
+const CityServices = lazy(() => import("@/pages/admin/city-services"));
+const ParcelVehiclesAdmin = lazy(() => import("@/pages/admin/parcel-vehicles"));
+const AIBrainDashboard = lazy(() => import("@/pages/admin/ai-brain-dashboard"));
 
 export default function AdminRoutes() {
   return (
@@ -78,7 +78,6 @@ export default function AdminRoutes() {
         <Route path="/admin/car-sharing" component={CarSharing} />
         <Route path="/admin/intercity-carsharing" component={IntercityCarSharing} />
         <Route path="/admin/outstation-pool" component={OutstationPool} />
-        <Route path="/admin/local-pool" component={LocalPool} />
         <Route path="/admin/parcel-refunds" component={ParcelRefunds} />
         <Route path="/admin/safety-alerts" component={SafetyAlerts} />
         <Route path="/admin/banners" component={Banners} />
@@ -134,7 +133,6 @@ export default function AdminRoutes() {
         <Route path="/admin/city-services" component={CityServices} />
         <Route path="/admin/parcel-vehicle-types" component={ParcelVehiclesAdmin} />
         <Route path="/admin/ai-brain" component={AIBrainDashboard} />
-        <Route path="/admin/alert-engine" component={AlertEnginePage} />
         <Route><Redirect to="/admin/dashboard" /></Route>
       </Switch>
     </AdminLayout>

@@ -23,49 +23,23 @@ class TripCompletionScreen extends StatefulWidget {
 }
 
 class _TripCompletionScreenState extends State<TripCompletionScreen> {
-  late Map<String, dynamic> _trip;
-  bool _isFetchingDetails = false;
+  static const Color _ridePrimary = Color(0xFF6366F1);
+  static const Color _ridePrimaryDark = Color(0xFF4F4ACF);
+  static const Color _rideSecondary = Color(0xFF8B5CF6);
+  static const Color _rideBg = Color(0xFFF5F3FF);
+  static const LinearGradient _rideGradient = LinearGradient(
+    colors: [Color(0xFF4F4ACF), Color(0xFF6366F1)],
+    begin: Alignment.topLeft,
+    end: Alignment.bottomRight,
+  );
+
   int _rated = 0;
   bool _isRatingSubmitted = false;
   int _currentIndex = 0; // For bottom nav mock consistency
 
   @override
-  void initState() {
-    super.initState();
-    _trip = widget.trip;
-    _fetchFullTripDetails();
-  }
-
-  Future<void> _fetchFullTripDetails() async {
-    final tripId = _trip['id']?.toString() ?? _trip['tripId']?.toString();
-    if (tripId == null) return;
-
-    setState(() => _isFetchingDetails = true);
-    try {
-      final headers = await AuthService.getHeaders();
-      final response = await http.get(
-        Uri.parse('${ApiConfig.trackTrip}/$tripId'),
-        headers: headers,
-      ).timeout(const Duration(seconds: 10));
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        if (data['trip'] != null && mounted) {
-          setState(() {
-            _trip = data['trip'];
-          });
-        }
-      }
-    } catch (e) {
-      debugPrint('Error fetching final trip details: $e');
-    } finally {
-      if (mounted) setState(() => _isFetchingDetails = false);
-    }
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final trip = _trip;
+    final trip = widget.trip;
     final driverName = trip['driverName']?.toString() ?? 
                        trip['driver_name']?.toString() ?? 
                        trip['pilot_name']?.toString() ?? 'Pilot';
@@ -74,27 +48,24 @@ class _TripCompletionScreenState extends State<TripCompletionScreen> {
     final driverRating = trip['driverRating'] ?? trip['driver_rating'] ?? '5.00';
     
     final from = trip['pickupShortName'] ?? trip['pickup_short_name'] ?? 
-                 trip['pickupAddress'] ?? trip['pickup_address'] ?? 
-                 trip['pickup'] ?? 'Location not available';
+                 trip['pickupAddress'] ?? trip['pickup_address'] ?? 'Pickup';
     final to = trip['destinationShortName'] ?? trip['dest_short_name'] ?? 
-               trip['destinationAddress'] ?? trip['destination_address'] ?? 
-               trip['destination'] ?? 'Location not available';
+               trip['destinationAddress'] ?? trip['destination_address'] ?? 'Destination';
     
     // Detailed fare extraction logic
     final fare = trip['actualFare'] ?? trip['actual_fare'] ?? 
                  trip['totalFare'] ?? trip['total_fare'] ??
                  trip['payableAmount'] ?? trip['payable_amount'] ??
                  trip['estimatedFare'] ?? trip['estimated_fare'] ?? 
-                 trip['fare'] ?? 0;
+                 trip['fare'] ?? '0.00';
     
     final actualFare = fare.toString();
     final distance = trip['estimatedDistance'] ?? trip['estimated_distance'] ?? 
-                     trip['distanceKm'] ?? trip['distance_km'] ?? 
-                     trip['distance'] ?? '';
+                     trip['distanceKm'] ?? trip['distance_km'] ?? '';
     final pendingAmount = widget.walletPendingAmount;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F3FF),
+      backgroundColor: _rideBg,
       body: Column(
         children: [
           // Global Header (Matching MainScreen)
@@ -144,13 +115,21 @@ class _TripCompletionScreenState extends State<TripCompletionScreen> {
                     width: double.infinity,
                     padding: const EdgeInsets.all(24),
                     decoration: BoxDecoration(
-                      color: Colors.white,
+                      gradient: const LinearGradient(
+                        colors: [
+                          Color(0xFFFFFFFF),
+                          Color(0xFFF8FBFF),
+                        ],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
                       borderRadius: BorderRadius.circular(32),
+                      border: Border.all(color: JT.border),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.05),
-                          blurRadius: 20,
-                          offset: const Offset(0, 10),
+                          color: JT.textPrimary.withValues(alpha: 0.06),
+                          blurRadius: 28,
+                          offset: const Offset(0, 12),
                         ),
                       ],
                     ),
@@ -183,20 +162,20 @@ class _TripCompletionScreenState extends State<TripCompletionScreen> {
                                 Container(
                                   padding: const EdgeInsets.all(6),
                                   decoration: const BoxDecoration(
-                                    color: Color(0xFF10B981),
+                                    color: JT.success,
                                     shape: BoxShape.circle,
                                   ),
                                   child: const Icon(Icons.check, color: Colors.white, size: 16),
                                 ),
                                 const SizedBox(width: 12),
-                                  Text(
-                                    _isFetchingDetails ? 'Finalizing details...' : 'Your ride is ended',
-                                    style: GoogleFonts.poppins(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.w700,
-                                      color: const Color(0xFF1E293B),
-                                    ),
+                                Text(
+                                  'Your ride is complete',
+                                  style: GoogleFonts.poppins(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w700,
+                                    color: JT.textPrimary,
                                   ),
+                                ),
                               ],
                             ),
                             const SizedBox(height: 24),
@@ -209,15 +188,7 @@ class _TripCompletionScreenState extends State<TripCompletionScreen> {
                             _buildActionRow(driverName),
                             const SizedBox(height: 16),
 
-                            // Vehicle Icon Chip
-                            Container(
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFFF1F5F9),
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: const Icon(Icons.electric_bike_rounded, size: 20, color: Color(0xFF64748B)),
-                            ),
+                            _buildTripHighlights(actualFare, distance),
                             const SizedBox(height: 20),
 
                             // Route Details
@@ -241,7 +212,7 @@ class _TripCompletionScreenState extends State<TripCompletionScreen> {
                                     style: GoogleFonts.poppins(
                                       fontSize: 14,
                                       fontWeight: FontWeight.w500,
-                                      color: const Color(0xFF64748B),
+                                      color: JT.textSecondary,
                                     ),
                                   ),
                                   const SizedBox(height: 12),
@@ -252,7 +223,7 @@ class _TripCompletionScreenState extends State<TripCompletionScreen> {
                             const SizedBox(height: 24),
 
                             // Finished Button
-                            JT.gradientButton(
+                            _rideGradientButton(
                               label: 'Finished',
                               onTap: () {
                                 Navigator.pushAndRemoveUntil(
@@ -278,7 +249,7 @@ class _TripCompletionScreenState extends State<TripCompletionScreen> {
     );
   }
 
-  Widget _headerAction(IconData icon, {int? targetIndex}) {
+  Widget _headerAction(IconData icon) {
     return GestureDetector(
       onTap: () {
         Navigator.pushAndRemoveUntil(
@@ -294,10 +265,14 @@ class _TripCompletionScreenState extends State<TripCompletionScreen> {
           color: Colors.white,
           borderRadius: BorderRadius.circular(16),
           boxShadow: [
-            BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 10, offset: const Offset(0, 4)),
+            BoxShadow(
+              color: JT.textPrimary.withValues(alpha: 0.04),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            ),
           ],
         ),
-        child: Icon(icon, color: const Color(0xFF64748B), size: 24),
+        child: Icon(icon, color: JT.textSecondary, size: 24),
       ),
     );
   }
@@ -307,15 +282,11 @@ class _TripCompletionScreenState extends State<TripCompletionScreen> {
       width: double.infinity,
       padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 20),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFF5B4DFF), Color(0xFF8B5CF6)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
+        gradient: _rideGradient,
         borderRadius: BorderRadius.circular(24),
         boxShadow: [
           BoxShadow(
-            color: const Color(0xFF5B4DFF).withValues(alpha: 0.2),
+            color: _ridePrimaryDark.withValues(alpha: 0.22),
             blurRadius: 15,
             offset: const Offset(0, 8),
           ),
@@ -360,59 +331,192 @@ class _TripCompletionScreenState extends State<TripCompletionScreen> {
   }
 
   Widget _buildPilotCard(String name, String? photo, dynamic rating) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: JT.border),
+        boxShadow: [
+          BoxShadow(
+            color: JT.textPrimary.withValues(alpha: 0.04),
+            blurRadius: 18,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 64,
+            height: 64,
+            decoration: BoxDecoration(
+              color: JT.border,
+              shape: BoxShape.circle,
+              image: photo != null
+                  ? DecorationImage(image: NetworkImage(photo), fit: BoxFit.cover)
+                  : null,
+            ),
+            child: photo == null
+                ? const Icon(Icons.person, color: Colors.white, size: 30)
+                : null,
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        name,
+                        style: GoogleFonts.poppins(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                            color: JT.textPrimary),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    const Icon(Icons.verified, color: JT.primary, size: 16),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Container(
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFFBEB),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.star_rounded,
+                              color: Color(0xFFFFB800), size: 16),
+                          const SizedBox(width: 4),
+                          Text(
+                            rating.toString(),
+                            style: GoogleFonts.poppins(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                                color: const Color(0xFF92400E)),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF1F5F9),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        'Pilot',
+                        style: GoogleFonts.poppins(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: JT.textSecondary),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTripHighlights(dynamic actualFare, dynamic distance) {
     return Row(
       children: [
-        Container(
-          width: 60,
-          height: 60,
-          decoration: BoxDecoration(
-            color: const Color(0xFFE2E8F0),
-            shape: BoxShape.circle,
-            image: photo != null ? DecorationImage(image: NetworkImage(photo), fit: BoxFit.cover) : null,
-          ),
-          child: photo == null ? const Icon(Icons.person, color: Colors.white, size: 30) : null,
+        _highlightChip(
+          icon: Icons.electric_bike_rounded,
+          label: 'RIDE',
+          value: 'Completed',
+          accent: _ridePrimary,
         ),
-        const SizedBox(width: 16),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Text(
-                    name,
-                    style: GoogleFonts.poppins(fontSize: 16, fontWeight: FontWeight.w700, color: const Color(0xFF1E293B)),
-                  ),
-                  const SizedBox(width: 6),
-                  const Icon(Icons.verified, color: Color(0xFF2D8CFF), size: 16),
-                ],
-              ),
-              const SizedBox(height: 4),
-              Row(
-                children: [
-                  const Icon(Icons.star_rounded, color: Color(0xFFFFB800), size: 16),
-                  const SizedBox(width: 4),
-                  Text(
-                    rating.toString(),
-                    style: GoogleFonts.poppins(fontSize: 13, fontWeight: FontWeight.w600, color: const Color(0xFF64748B)),
-                  ),
-                ],
-              ),
-            ],
-          ),
+        const SizedBox(width: 12),
+        _highlightChip(
+          icon: Icons.currency_rupee_rounded,
+          label: 'FARE',
+          value: '₹${actualFare.toString()}',
+          accent: JT.success,
         ),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-          decoration: BoxDecoration(
-            color: const Color(0xFFF1F5F9),
-            borderRadius: BorderRadius.circular(8),
+        if (distance.toString().isNotEmpty) ...[
+          const SizedBox(width: 12),
+          _highlightChip(
+            icon: Icons.route_rounded,
+            label: 'DISTANCE',
+            value: '${distance.toString()} km',
+            accent: _rideSecondary,
           ),
-          child: Text(
-            'Pilot',
-            style: GoogleFonts.poppins(fontSize: 11, fontWeight: FontWeight.w600, color: const Color(0xFF64748B)),
-          ),
-        ),
+        ],
       ],
+    );
+  }
+
+  Widget _highlightChip({
+    required IconData icon,
+    required String label,
+    required String value,
+    required Color accent,
+  }) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              Colors.white,
+              accent.withValues(alpha: 0.06),
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: accent.withValues(alpha: 0.14)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: accent.withValues(alpha: 0.10),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(icon, size: 16, color: accent),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              label,
+              style: GoogleFonts.poppins(
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                color: const Color(0xFF94A3B8),
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              value,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: GoogleFonts.poppins(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: const Color(0xFF0F172A),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -521,36 +625,19 @@ class _TripCompletionScreenState extends State<TripCompletionScreen> {
   }
 
   Widget _buildFareDisplay(dynamic actualFare, dynamic distance) {
-    String fareLabel = '0';
-    try {
-      final f = double.parse(actualFare.toString());
-      if (f > 0) {
-        fareLabel = f % 1 == 0 ? f.toInt().toString() : f.toStringAsFixed(2);
-      } else {
-        // Fallback if fare is 0 but might be in other keys (already handled in extraction but double check)
-        fareLabel = '0';
-      }
-    } catch (_) {
-      fareLabel = actualFare.toString();
-    }
-
-    String? distLabel;
-    if (distance != null && distance.toString().isNotEmpty) {
-      try {
-        final d = double.parse(distance.toString());
-        if (d > 0) {
-          distLabel = d.toStringAsFixed(2);
-        }
-      } catch (_) {
-        distLabel = distance.toString();
-      }
-    }
-
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 20),
       decoration: BoxDecoration(
-        color: const Color(0xFFF8FAFF),
+        gradient: const LinearGradient(
+          colors: [
+            Color(0xFFF8FBFF),
+            Color(0xFFFFFFFF),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
         borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: JT.border),
       ),
       child: Column(
         children: [
@@ -562,20 +649,20 @@ class _TripCompletionScreenState extends State<TripCompletionScreen> {
                 style: GoogleFonts.poppins(
                   fontSize: 15,
                   fontWeight: FontWeight.w500,
-                  color: const Color(0xFF64748B),
+                  color: JT.textSecondary,
                 ),
               ),
               Text(
-                '₹${fareLabel == '0' ? ' --' : fareLabel}',
+                '₹${actualFare.toString()}',
                 style: GoogleFonts.outfit(
                   fontSize: 24,
                   fontWeight: FontWeight.w800,
-                  color: const Color(0xFF2D8CFF),
+                  color: _ridePrimary,
                 ),
               ),
             ],
           ),
-          if (distLabel != null) ...[
+          if (distance.toString().isNotEmpty) ...[
             const Divider(height: 24, color: Color(0xFFE2E8F0)),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -584,15 +671,15 @@ class _TripCompletionScreenState extends State<TripCompletionScreen> {
                   'Distance Traveled',
                   style: GoogleFonts.poppins(
                     fontSize: 13,
-                    color: const Color(0xFF94A3B8),
+                    color: JT.textTertiary,
                   ),
                 ),
                 Text(
-                  '$distLabel km',
+                  '${distance.toString()} km',
                   style: GoogleFonts.poppins(
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
-                    color: const Color(0xFF64748B),
+                    color: JT.textSecondary,
                   ),
                 ),
               ],
@@ -605,10 +692,17 @@ class _TripCompletionScreenState extends State<TripCompletionScreen> {
 
   Widget _buildPendingPayment(double amount) {
     return Container(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: const Color(0xFFFFF7ED),
-        borderRadius: BorderRadius.circular(12),
+        gradient: const LinearGradient(
+          colors: [
+            Color(0xFFFFF7ED),
+            Color(0xFFFFFFFF),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: const Color(0xFFFED7AA)),
       ),
       child: Row(children: [
@@ -653,23 +747,32 @@ class _TripCompletionScreenState extends State<TripCompletionScreen> {
   }
 
   Widget _buildStarRating() {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: List.generate(5, (index) {
-        final starIndex = index + 1;
-        final isFilled = starIndex <= _rated;
-        return GestureDetector(
-          onTap: () => _rateDriver(starIndex),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            child: Icon(
-              isFilled ? Icons.star_rounded : Icons.star_outline_rounded,
-              size: 40,
-              color: isFilled ? const Color(0xFFFFB800) : const Color(0xFFE2E8F0),
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFCFCFF),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: List.generate(5, (index) {
+          final starIndex = index + 1;
+          final isFilled = starIndex <= _rated;
+          return GestureDetector(
+            onTap: () => _rateDriver(starIndex),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Icon(
+                isFilled ? Icons.star_rounded : Icons.star_outline_rounded,
+                size: 40,
+                color:
+                    isFilled ? const Color(0xFFFFB800) : const Color(0xFFE2E8F0),
+              ),
             ),
-          ),
-        );
-      }),
+          );
+        }),
+      ),
     );
   }
 
@@ -714,14 +817,14 @@ class _TripCompletionScreenState extends State<TripCompletionScreen> {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         decoration: isSelected
             ? BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF7C3AED), Color(0xFF6366F1)], 
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
+                gradient: _rideGradient,
                 borderRadius: BorderRadius.circular(20),
                 boxShadow: [
-                  BoxShadow(color: const Color(0xFF7C3AED).withValues(alpha: 0.3), blurRadius: 10, offset: const Offset(0, 4)),
+                  BoxShadow(
+                    color: _ridePrimaryDark.withValues(alpha: 0.3),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
+                  ),
                 ],
               )
             : null,
@@ -753,6 +856,39 @@ class _TripCompletionScreenState extends State<TripCompletionScreen> {
       decoration: BoxDecoration(
         color: color,
         shape: BoxShape.circle,
+      ),
+    );
+  }
+
+  Widget _rideGradientButton({
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        height: 54,
+        decoration: BoxDecoration(
+          gradient: _rideGradient,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: _ridePrimaryDark.withValues(alpha: 0.28),
+              blurRadius: 14,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Center(
+          child: Text(
+            label,
+            style: GoogleFonts.poppins(
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+              color: Colors.white,
+            ),
+          ),
+        ),
       ),
     );
   }

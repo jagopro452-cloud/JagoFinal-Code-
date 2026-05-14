@@ -7,7 +7,6 @@
 export 'app_theme.dart' show AppColors, AppText, AppCard, AppGlow, AppButton, AppInputs, AppSpacing, AppAnimation;
 
 import 'package:flutter/material.dart';
-import 'package:flutter_svg/flutter_svg.dart';
 import 'app_theme.dart';
 
 // ── Legacy JT class (compatibility wrapper around modern AppColors) ────────

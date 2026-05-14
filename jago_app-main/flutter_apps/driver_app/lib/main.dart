@@ -1,20 +1,13 @@
-import 'dart:async';
-import 'dart:io' show Platform;
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:google_maps_flutter_android/google_maps_flutter_android.dart';
-import 'package:google_maps_flutter_platform_interface/google_maps_flutter_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'screens/splash_screen.dart';
 import 'services/fcm_service.dart';
 import 'services/localization_service.dart';
-import 'services/socket_service.dart';
-import 'services/runtime_config_service.dart';
-import 'config/api_config.dart';
 
 // Global navigator key — used by FCM service to navigate after notification tap
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -32,25 +25,8 @@ Future<void> saveThemePreference(String pref) async {
   themeNotifier.value = ThemeMode.light;
 }
 
-Future<void> configureAndroidGoogleMaps() async {
-  if (!Platform.isAndroid) return;
-  final mapsImplementation = GoogleMapsFlutterPlatform.instance;
-  if (mapsImplementation is GoogleMapsFlutterAndroid) {
-    mapsImplementation.useAndroidViewSurface = true;
-    try {
-      final renderer =
-          await mapsImplementation.initializeWithRenderer(AndroidMapRenderer.platformDefault);
-      debugPrint('[MAP] Driver Android renderer initialized: $renderer useAndroidViewSurface=${mapsImplementation.useAndroidViewSurface}');
-      await mapsImplementation.warmup();
-    } catch (e, st) {
-      debugPrint('[MAP] Driver Android renderer init failed: $e\n$st');
-    }
-  }
-}
-
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await configureAndroidGoogleMaps();
   await loadThemePreference();
   await L.init();
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
@@ -58,9 +34,7 @@ void main() async {
     await Firebase.initializeApp();
     await FcmService().init();
     await FirebaseCrashlytics.instance.setCrashlyticsCollectionEnabled(true);
-  } catch (e, st) {
-    debugPrint('[Firebase init] FAILED: $e\n$st');
-  }
+  } catch (_) {}
   // Forward Flutter framework errors to Crashlytics
   FlutterError.onError = (details) {
     FlutterError.presentError(details);
@@ -97,11 +71,8 @@ void main() async {
   runApp(const JagoPilotApp());
 }
 
-class JagoPilotApp extends StatefulWidget {
+class JagoPilotApp extends StatelessWidget {
   const JagoPilotApp({super.key});
-
-  @override
-  State<JagoPilotApp> createState() => _JagoPilotAppState();
 
   static ThemeData _lightTheme() {
     const primary = Color(0xFF1677FF);
@@ -114,7 +85,6 @@ class JagoPilotApp extends StatefulWidget {
         primary: primary,
         secondary: Color(0xFF5B9DFF),
         surface: card,
-        background: bg,
         onPrimary: Colors.white,
         onSurface: Color(0xFF111827),
         outline: Color(0xFFD9E4F5),
@@ -206,49 +176,6 @@ class JagoPilotApp extends StatefulWidget {
     );
   }
 
-  static ThemeData _darkTheme() {
-    return _lightTheme();
-  }
-
-}
-
-class _JagoPilotAppState extends State<JagoPilotApp> with WidgetsBindingObserver {
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    unawaited(_ensureSocketAlive());
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    super.dispose();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Force the socket back up when the app returns to foreground. Android may
-    // have suspended the websocket while the app was minimized; without this
-    // the driver could miss trip events until something triggers a manual
-    // reconnect.
-    if (state == AppLifecycleState.resumed) {
-      _ensureSocketAlive();
-    }
-  }
-
-  Future<void> _ensureSocketAlive() async {
-    try {
-      final socket = SocketService();
-      final config = RuntimeConfigService();
-      if (!socket.isConnected) {
-        await socket.connect(ApiConfig.socketUrl);
-      }
-      await config.initialize();
-      await config.refresh();
-    } catch (_) {}
-  }
-
   @override
   Widget build(BuildContext context) {
     return ValueListenableBuilder<String>(
@@ -261,8 +188,8 @@ class _JagoPilotAppState extends State<JagoPilotApp> with WidgetsBindingObserver
             title: 'JAGO Pro Pilot',
             debugShowCheckedModeBanner: false,
             themeMode: ThemeMode.light,
-            theme: JagoPilotApp._lightTheme(),
-            darkTheme: JagoPilotApp._lightTheme(),
+            theme: _lightTheme(),
+            darkTheme: _lightTheme(),
             home: const SplashScreen(),
           ),
         );

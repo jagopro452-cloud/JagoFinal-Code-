@@ -98,18 +98,17 @@ class _VoiceBookingScreenState extends State<VoiceBookingScreen>
         perm = await Geolocator.requestPermission();
       }
       if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) return;
-      var pos = await Geolocator.getLastKnownPosition();
-      pos ??= await Geolocator.getCurrentPosition(
-
-        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
-      ).timeout(const Duration(seconds: 8));
+      final pos = await Geolocator.getLastKnownPosition() ??
+          await Geolocator.getCurrentPosition(
+            locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+          ).timeout(const Duration(seconds: 8));
       if (!mounted) return;
-      setState(() { _currentLat = pos!.latitude; _currentLng = pos!.longitude; });
+      setState(() { _currentLat = pos.latitude; _currentLng = pos.longitude; });
       // Try server proxy
       try {
         final headers = await AuthService.getHeaders();
         final r = await http.get(
-          Uri.parse('${ApiConfig.reverseGeocode}?lat=${pos!.latitude}&lng=${pos!.longitude}'),
+          Uri.parse('${ApiConfig.reverseGeocode}?lat=${pos.latitude}&lng=${pos.longitude}'),
           headers: headers,
         ).timeout(const Duration(seconds: 6));
         if (r.statusCode == 200) {
@@ -125,7 +124,7 @@ class _VoiceBookingScreenState extends State<VoiceBookingScreen>
       try {
         final r = await http.get(
           Uri.parse(
-              'https://nominatim.openstreetmap.org/reverse?format=json&lat=${pos!.latitude}&lon=${pos!.longitude}'),
+              'https://nominatim.openstreetmap.org/reverse?format=json&lat=${pos.latitude}&lon=${pos.longitude}'),
           headers: const {'User-Agent': 'JagoPro/1.0'},
         ).timeout(const Duration(seconds: 5));
         if (r.statusCode == 200) {
@@ -690,11 +689,10 @@ class _VoiceBookingScreenState extends State<VoiceBookingScreen>
 
   @override
   Widget build(BuildContext context) {
-    const isDark = false;
     return Scaffold(
-      backgroundColor: isDark ? const Color(0xFF0F1724) : JT.bg,
+      backgroundColor: JT.bg,
       appBar: AppBar(
-        backgroundColor: isDark ? const Color(0xFF162030) : JT.bg,
+        backgroundColor: JT.bg,
         elevation: 0,
         leading: IconButton(
           icon: Icon(Icons.arrow_back_ios_new_rounded, color: JT.textPrimary, size: 18),

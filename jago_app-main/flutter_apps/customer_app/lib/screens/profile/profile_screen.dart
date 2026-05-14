@@ -15,7 +15,6 @@ import '../lost_found/lost_found_screen.dart';
 import '../safety/emergency_contacts_screen.dart';
 import '../referral/referral_screen.dart';
 import './support_chat_screen.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 class ProfileScreen extends StatefulWidget {
@@ -648,59 +647,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     ]);
   }
 
-  Widget _statCard(String label, String value, IconData icon, Color color) {
-    return Expanded(
-      child: Column(children: [
-        Container(
-          width: 38,
-          height: 38,
-          decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(10)),
-          child: Icon(icon, color: color, size: 18),
-        ),
-        const SizedBox(height: 6),
-        Text(value,
-            style: const TextStyle(
-                fontWeight: FontWeight.w400,
-                fontSize: 13,
-                color: Color(0xFF111827))),
-        Text(label,
-            style: TextStyle(fontSize: 10, color: Colors.grey.shade500)),
-      ]),
-    );
-  }
-
-  Widget _buildLanguageTile(Color cardBg, Color textColor, Color subColor) {
-    final currentLang = L.supportedLanguages.firstWhere(
-      (l) => l['code'] == L.lang,
-      orElse: () => L.supportedLanguages.first,
-    );
-    return ListTile(
-      leading: Container(
-        width: 36,
-        height: 36,
-        decoration: BoxDecoration(
-          color: JT.primary.withValues(alpha: 0.1),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: const Icon(Icons.translate_rounded, color: JT.primary, size: 20),
-      ),
-      title: Text(L.tr('language_settings'),
-        style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500, color: textColor)),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text('${currentLang['flag']} ${currentLang['nativeName']}',
-            style: TextStyle(fontSize: 12, color: subColor, fontWeight: FontWeight.w500)),
-          const SizedBox(width: 4),
-          Icon(Icons.chevron_right, color: subColor, size: 20),
-        ],
-      ),
-      onTap: () => _showProfileLanguageSheet(cardBg, textColor, subColor),
-    );
-  }
-
   void _showProfileLanguageSheet(Color cardBg, Color textColor, Color subColor) {
     showModalBottomSheet(
       context: context,
@@ -790,14 +736,4 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  Future<String> _getSupportPhone() async {
-    try {
-      final r = await http.get(Uri.parse(ApiConfig.configs));
-      if (r.statusCode == 200) {
-        final data = jsonDecode(r.body);
-        return data['configs']?['support_phone'] ?? '+916303000000';
-      }
-    } catch (_) {}
-    return '+916303000000';
-  }
 }

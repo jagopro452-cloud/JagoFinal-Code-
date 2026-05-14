@@ -1,17 +1,12 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../../config/jago_theme.dart';
-import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:shimmer/shimmer.dart';
 import '../../config/api_config.dart';
 import '../../services/auth_service.dart';
 import '../booking/booking_screen.dart';
-import '../home/home_screen.dart';
-import '../wallet/wallet_screen.dart';
-import '../profile/profile_screen.dart';
-import '../notifications/notifications_screen.dart';
 import '../main_screen.dart';
 
 class TripsHistoryScreen extends StatefulWidget {
@@ -27,18 +22,22 @@ class _TripsHistoryScreenState extends State<TripsHistoryScreen>
   String _filter = 'all'; // all | completed | cancelled
 
   late AnimationController _headerCtrl;
-  late Animation<double> _headerAnim;
 
   static const Color _blue = Color(0xFF6366F1);
   static const Color _navy = Color(0xFF1E293B);
   static const Color _purple = Color(0xFF7C3AED);
+  static const Color _ridePrimaryDark = Color(0xFF4F4ACF);
+  static const LinearGradient _rideGradient = LinearGradient(
+    colors: [Color(0xFF4F4ACF), Color(0xFF6366F1)],
+    begin: Alignment.topLeft,
+    end: Alignment.bottomRight,
+  );
 
   @override
   void initState() {
     super.initState();
     _headerCtrl = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 600));
-    _headerAnim = CurvedAnimation(parent: _headerCtrl, curve: Curves.easeOut);
     _fetchTrips();
   }
 
@@ -454,7 +453,7 @@ class _TripsHistoryScreenState extends State<TripsHistoryScreen>
             child: Container(
               height: 250,
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.15),
+                color: Colors.white.withValues(alpha: 0.15),
                 borderRadius: const BorderRadius.all(Radius.elliptical(400, 200)),
               ),
             ),
@@ -466,7 +465,7 @@ class _TripsHistoryScreenState extends State<TripsHistoryScreen>
             child: Container(
               height: 300,
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.35),
+                color: Colors.white.withValues(alpha: 0.35),
                 borderRadius: const BorderRadius.all(Radius.elliptical(500, 250)),
               ),
             ),
@@ -714,7 +713,7 @@ class _TripsHistoryScreenState extends State<TripsHistoryScreen>
             const SizedBox(height: 18),
             SizedBox(
               width: 190,
-              child: JT.gradientButton(
+              child: _rideGradientButton(
                 label: 'Book a Ride',
                 onTap: () => Navigator.pushAndRemoveUntil(
                   context,
@@ -997,5 +996,38 @@ class _TripsHistoryScreenState extends State<TripsHistoryScreen>
     } catch (_) {
       return raw.length > 10 ? raw.substring(0, 10) : raw;
     }
+  }
+
+  Widget _rideGradientButton({
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        height: 54,
+        decoration: BoxDecoration(
+          gradient: _rideGradient,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: _ridePrimaryDark.withValues(alpha: 0.28),
+              blurRadius: 14,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Center(
+          child: Text(
+            label,
+            style: GoogleFonts.poppins(
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+              color: Colors.white,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }

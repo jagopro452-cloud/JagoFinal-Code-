@@ -4,13 +4,45 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
-import 'package:url_launcher/url_launcher.dart';
 import '../../config/api_config.dart';
 import '../../config/jago_theme.dart';
 import '../../services/auth_service.dart';
+import '../../services/navigation_service.dart';
 import '../../services/socket_service.dart';
 import '../home/home_screen.dart';
+
+List<LatLng> _decodePolyline(String encoded) {
+  final points = <LatLng>[];
+  int index = 0;
+  int lat = 0;
+  int lng = 0;
+
+  while (index < encoded.length) {
+    int shift = 0;
+    int result = 0;
+    int byte;
+    do {
+      byte = encoded.codeUnitAt(index++) - 63;
+      result |= (byte & 0x1f) << shift;
+      shift += 5;
+    } while (byte >= 0x20);
+    lat += (result & 1) != 0 ? ~(result >> 1) : (result >> 1);
+
+    shift = 0;
+    result = 0;
+    do {
+      byte = encoded.codeUnitAt(index++) - 63;
+      result |= (byte & 0x1f) << shift;
+      shift += 5;
+    } while (byte >= 0x20);
+    lng += (result & 1) != 0 ? ~(result >> 1) : (result >> 1);
+
+    points.add(LatLng(lat / 1e5, lng / 1e5));
+  }
+  return points;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // JAGO Driver — Parcel Delivery Screen
@@ -38,9 +70,26 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
     with SingleTickerProviderStateMixin {
 
   final SocketService _socket = SocketService();
+  final NavigationService _navigation = NavigationService.instance;
   final _otpCtrl = TextEditingController();
   late AnimationController _pulseCtrl;
   Timer? _locationTimer;
+  GoogleMapController? _mapController;
+  Position? _lastPosition;
+  LatLng _mapCenter = const LatLng(17.3850, 78.4867);
+  final Set<Marker> _markers = {};
+  final Set<Polyline> _polylines = {};
+  double _distanceToTargetM = 0;
+  int _etaSec = 0;
+  List<NavigationStepModel> _navSteps = const [];
+  int _navStepIndex = 0;
+  String _navInstruction = 'Follow the highlighted route';
+  String _navSecondaryInstruction = 'Navigation guidance will appear here';
+  bool _navMuted = false;
+  bool _isRerouting = false;
+  bool _isOffRoute = false;
+  int _offRouteHits = 0;
+  DateTime? _lastRerouteAt;
 
   _ParcelStage _stage = _ParcelStage.navigatingToPickup;
   bool _loading = false;
@@ -78,11 +127,10 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
       duration: const Duration(seconds: 2),
     )..repeat(reverse: true);
 
+    _navigation.init();
     _socket.connect(ApiConfig.socketUrl);
     _startLocationUpdates();
-
-    // Auto-navigate to pickup on open
-    WidgetsBinding.instance.addPostFrameCallback((_) => _openNavigation());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncMapForStage());
   }
 
   @override
@@ -96,46 +144,300 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
 
   String get _orderId => _order['id']?.toString() ?? '';
 
-  void _startLocationUpdates() {
+  Future<void> _startLocationUpdates() async {
+    await _refreshDriverPosition(fetchRoute: true);
     _locationTimer = Timer.periodic(const Duration(seconds: 8), (_) async {
-      try {
-        final pos = await Geolocator.getCurrentPosition(
-          locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
-        );
-        if (_socket.isConnected) {
-          _socket.sendParcelLocation(
-            orderId: _orderId,
-            lat: pos.latitude,
-            lng: pos.longitude,
-          );
-        }
-      } catch (_) {}
+      await _refreshDriverPosition(fetchRoute: true);
     });
   }
 
-  void _openNavigation() {
-    double lat, lng;
-    String label;
+  Future<void> _refreshDriverPosition({bool fetchRoute = false}) async {
+    try {
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings:
+            const LocationSettings(accuracy: LocationAccuracy.high),
+      );
+      _lastPosition = pos;
+      if (!mounted) return;
+      setState(() {
+        _mapCenter = LatLng(pos.latitude, pos.longitude);
+      });
+      _socket.sendLocation(
+        lat: pos.latitude,
+        lng: pos.longitude,
+        remainingDistanceMeters: _distanceToTargetM.round(),
+        etaSeconds: _etaSec,
+      );
+      await _syncMapForStage(fetchRoute: fetchRoute);
+      await _updateNavigationProgress();
+      await _maybeHandleOffRoute(pos.latitude, pos.longitude);
+    } catch (_) {}
+  }
+
+  LatLng? _targetLatLng() {
     if (_stage == _ParcelStage.navigatingToPickup ||
         _stage == _ParcelStage.atPickup) {
-      lat = double.tryParse(_order['pickup_lat']?.toString() ?? '0') ?? 0;
-      lng = double.tryParse(_order['pickup_lng']?.toString() ?? '0') ?? 0;
-      label = Uri.encodeComponent(_order['pickup_address'] ?? 'Pickup');
-    } else {
-      final drop = _drops.isNotEmpty ? _drops[_dropIdx] : null;
-      lat = double.tryParse(drop?['lat']?.toString() ?? '0') ?? 0;
-      lng = double.tryParse(drop?['lng']?.toString() ?? '0') ?? 0;
-      label = Uri.encodeComponent(drop?['address'] ?? 'Drop');
+      final lat = double.tryParse(_order['pickup_lat']?.toString() ?? '0') ?? 0;
+      final lng = double.tryParse(_order['pickup_lng']?.toString() ?? '0') ?? 0;
+      if (lat == 0 || lng == 0) return null;
+      return LatLng(lat, lng);
     }
-    if (lat == 0 && lng == 0) return;
-    launchUrl(
-      Uri.parse('google.navigation:q=$lat,$lng&mode=d'),
-      mode: LaunchMode.externalApplication,
-    ).catchError((_) => launchUrl(
-      Uri.parse('https://maps.google.com/?daddr=$lat,$lng'),
-      mode: LaunchMode.externalApplication,
-    ));
-    debugPrint('navigate to $label');
+
+    final drop = _dropIdx < _drops.length ? _drops[_dropIdx] : null;
+    final lat = double.tryParse(drop?['lat']?.toString() ?? '0') ?? 0;
+    final lng = double.tryParse(drop?['lng']?.toString() ?? '0') ?? 0;
+    if (lat == 0 || lng == 0) return null;
+    return LatLng(lat, lng);
+  }
+
+  String _targetLabel() {
+    if (_stage == _ParcelStage.navigatingToPickup ||
+        _stage == _ParcelStage.atPickup) {
+      return (_order['pickup_address']?.toString() ?? 'Pickup').trim();
+    }
+    final drop = _dropIdx < _drops.length ? _drops[_dropIdx] : null;
+    return (drop?['address']?.toString() ?? 'Drop').trim();
+  }
+
+  Future<void> _syncMapForStage({bool fetchRoute = true}) async {
+    final target = _targetLatLng();
+    if (!mounted) return;
+    setState(() {
+      _markers.clear();
+      if (_lastPosition != null) {
+        _markers.add(Marker(
+          markerId: const MarkerId('driver'),
+          position: LatLng(_lastPosition!.latitude, _lastPosition!.longitude),
+          icon:
+              BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+          infoWindow: const InfoWindow(title: 'You'),
+        ));
+      }
+      if (target != null) {
+        _markers.add(Marker(
+          markerId: const MarkerId('target'),
+          position: target,
+          icon: BitmapDescriptor.defaultMarkerWithHue(
+            _stage == _ParcelStage.navigatingToPickup ||
+                    _stage == _ParcelStage.atPickup
+                ? BitmapDescriptor.hueGreen
+                : BitmapDescriptor.hueRed,
+          ),
+          infoWindow: InfoWindow(title: _targetLabel()),
+        ));
+      }
+    });
+
+    if (fetchRoute && _lastPosition != null && target != null) {
+      await _fetchRoute(
+        _lastPosition!.latitude,
+        _lastPosition!.longitude,
+        target.latitude,
+        target.longitude,
+      );
+    } else {
+      await _focusMap();
+    }
+  }
+
+  Future<void> _updateNavigationProgress() async {
+    final pos = _lastPosition;
+    if (pos == null) return;
+    final progress = _navigation.computeProgress(
+      steps: _navSteps,
+      currentLat: pos.latitude,
+      currentLng: pos.longitude,
+      fallbackRemainingDistanceMeters: _distanceToTargetM.round(),
+      fallbackRemainingDurationSeconds: _etaSec,
+    );
+    if (!mounted) return;
+    setState(() {
+      _navStepIndex = progress.stepIndex;
+      _distanceToTargetM = progress.remainingDistanceMeters.toDouble();
+      _etaSec = progress.remainingDurationSeconds;
+      _navInstruction = progress.activeStep?.instruction.isNotEmpty == true
+          ? progress.activeStep!.instruction
+          : (_stage == _ParcelStage.navigatingToPickup ||
+                  _stage == _ParcelStage.atPickup
+              ? 'Head to pickup'
+              : 'Head to drop');
+      _navSecondaryInstruction =
+          progress.activeStep?.roadName.isNotEmpty == true
+              ? progress.activeStep!.roadName
+              : 'Stay on the highlighted route';
+    });
+    await _navigation.announceStep(progress, muted: _navMuted);
+  }
+
+  double _distanceFromRouteMeters(double lat, double lng) {
+    final routePoints = _polylines
+        .where((line) => line.polylineId.value == 'parcel_route')
+        .expand((line) => line.points)
+        .toList();
+    if (routePoints.isEmpty) return 0;
+
+    double minDistance = double.infinity;
+    for (final point in routePoints) {
+      final distance = Geolocator.distanceBetween(
+        lat,
+        lng,
+        point.latitude,
+        point.longitude,
+      );
+      if (distance < minDistance) minDistance = distance;
+    }
+    return minDistance == double.infinity ? 0 : minDistance;
+  }
+
+  Future<void> _maybeHandleOffRoute(double lat, double lng) async {
+    if (_isRerouting) return;
+    final routeDistance = _distanceFromRouteMeters(lat, lng);
+    if (routeDistance <= 0) return;
+    final now = DateTime.now();
+    if (routeDistance > 120) {
+      _offRouteHits += 1;
+      if (mounted && !_isOffRoute) {
+        setState(() {
+          _isOffRoute = true;
+          _navSecondaryInstruction = 'Off route by ${routeDistance.round()} m';
+        });
+      }
+      final coolingDown = _lastRerouteAt != null &&
+          now.difference(_lastRerouteAt!) < const Duration(seconds: 12);
+      if (_offRouteHits >= 2 && !coolingDown) {
+        _lastRerouteAt = now;
+        if (mounted) {
+          setState(() {
+            _isRerouting = true;
+            _navInstruction = 'Finding a better route';
+            _navSecondaryInstruction = 'Rerouting from your live position';
+          });
+        }
+        await _syncMapForStage(fetchRoute: true);
+        if (!mounted) return;
+        setState(() {
+          _isRerouting = false;
+          _isOffRoute = false;
+          _offRouteHits = 0;
+        });
+      }
+      return;
+    }
+
+    if (_offRouteHits != 0 || _isOffRoute) {
+      if (mounted) {
+        setState(() {
+          _offRouteHits = 0;
+          _isOffRoute = false;
+        });
+      } else {
+        _offRouteHits = 0;
+        _isOffRoute = false;
+      }
+    }
+  }
+
+  Future<void> _fetchRoute(
+      double fromLat, double fromLng, double toLat, double toLng) async {
+    try {
+      final headers = await AuthService.getHeaders();
+      final res = await http.post(
+        Uri.parse(ApiConfig.routeMultiWaypoint),
+        headers: {...headers, 'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'origin': {'lat': fromLat, 'lng': fromLng},
+          'destination': {'lat': toLat, 'lng': toLng},
+          'waypoints': [],
+          'optimize': false,
+        }),
+      );
+      if (res.statusCode != 200 || !mounted) return;
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      final encoded = data['overviewPolyline']?.toString();
+      if (encoded == null || encoded.isEmpty) return;
+      final points = _decodePolyline(encoded);
+      final distKm = (data['totalDistanceKm'] as num?)?.toDouble() ?? 0;
+      final durMin = (data['totalDurationMinutes'] as num?)?.toDouble() ?? 0;
+      final navSteps = _navigation.parseSteps(data['steps']);
+      setState(() {
+        _polylines
+          ..clear()
+          ..add(Polyline(
+            polylineId: const PolylineId('parcel_route'),
+            points: points,
+            color: JT.primary,
+            width: 5,
+          ));
+        _distanceToTargetM = distKm * 1000;
+        _etaSec = (durMin * 60).round();
+        _navSteps = navSteps;
+        _navStepIndex = 0;
+        _isRerouting = false;
+        _isOffRoute = false;
+        _offRouteHits = 0;
+        if (navSteps.isNotEmpty) {
+          _navInstruction = navSteps.first.instruction;
+          _navSecondaryInstruction = navSteps.first.roadName.isNotEmpty
+              ? navSteps.first.roadName
+              : 'Stay on the highlighted route';
+        } else {
+          _navInstruction =
+              _stage == _ParcelStage.navigatingToPickup || _stage == _ParcelStage.atPickup
+                  ? 'Head to pickup'
+                  : 'Head to drop';
+          _navSecondaryInstruction = 'Stay on the highlighted route';
+        }
+      });
+      await _updateNavigationProgress();
+      await _focusMap();
+    } catch (_) {}
+  }
+
+  Future<void> _focusMap() async {
+    if (_mapController == null) return;
+    final points = <LatLng>[
+      ..._markers.map((marker) => marker.position),
+      ..._polylines.expand((line) => line.points),
+    ];
+    if (points.isEmpty) return;
+    if (points.length == 1) {
+      await _mapController!.animateCamera(
+        CameraUpdate.newCameraPosition(
+          CameraPosition(target: points.first, zoom: 16),
+        ),
+      );
+      return;
+    }
+
+    double minLat = points.first.latitude;
+    double maxLat = points.first.latitude;
+    double minLng = points.first.longitude;
+    double maxLng = points.first.longitude;
+    for (final point in points.skip(1)) {
+      if (point.latitude < minLat) minLat = point.latitude;
+      if (point.latitude > maxLat) maxLat = point.latitude;
+      if (point.longitude < minLng) minLng = point.longitude;
+      if (point.longitude > maxLng) maxLng = point.longitude;
+    }
+    await _mapController!.animateCamera(
+      CameraUpdate.newLatLngBounds(
+        LatLngBounds(
+          southwest: LatLng(minLat, minLng),
+          northeast: LatLng(maxLat, maxLng),
+        ),
+        64,
+      ),
+    );
+  }
+
+  Future<void> _openNavigation() async {
+    final target = _targetLatLng();
+    if (target == null) {
+      _showSnack('Route coordinates are not available yet.', error: true);
+      return;
+    }
+    await _syncMapForStage(fetchRoute: true);
+    _showSnack('Showing in-app route to ${_targetLabel()}');
   }
 
   Future<void> _verifyPickupOtp() async {
@@ -159,7 +461,7 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
               : _ParcelStage.completed;
         });
         if (_stage == _ParcelStage.navigatingToDrop) {
-          _openNavigation();
+          _syncMapForStage();
         }
       } else {
         final e = jsonDecode(r.body);
@@ -189,17 +491,18 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
         _otpCtrl.clear();
         final allDelivered = data['allDelivered'] == true;
         if (allDelivered) {
-          final driverEarnings = double.tryParse(data['driverEarnings']?.toString() ?? '0') ?? 0;
+          final fare = double.tryParse(_order['total_fare']?.toString() ?? '0') ?? 0;
           setState(() {
             _stage = _ParcelStage.completed;
-            _driverEarnings = driverEarnings;
+            _driverEarnings = fare * 0.85; // 15% commission
           });
+          _syncMapForStage(fetchRoute: false);
         } else {
           setState(() {
             _dropIdx++;
             _stage = _ParcelStage.navigatingToDrop;
           });
-          _openNavigation();
+          _syncMapForStage();
         }
       } else {
         final e = jsonDecode(r.body);
@@ -288,6 +591,8 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
                 padding: const EdgeInsets.all(16),
                 child: Column(children: [
                   _buildPackageSummary(),
+                  const SizedBox(height: 16),
+                  _buildInAppMapCard(),
                   const SizedBox(height: 16),
                   if (_stage == _ParcelStage.navigatingToPickup) _buildNavigatingToPickup(),
                   if (_stage == _ParcelStage.atPickup) _buildAtPickup(),
@@ -386,6 +691,254 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
     );
   }
 
+  Widget _buildInAppMapCard() {
+    final heading = _isRerouting
+        ? 'Rerouting'
+        : (_stage == _ParcelStage.navigatingToDrop ||
+                _stage == _ParcelStage.atDrop
+            ? 'In-app route to drop'
+            : 'In-app route to pickup');
+    final accent = _isRerouting
+        ? JT.warning
+        : _isOffRoute
+            ? JT.error
+            : JT.primary;
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            Colors.white,
+            JT.bgSoft,
+            accent.withValues(alpha: 0.08),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: accent.withValues(alpha: 0.16), width: 1.2),
+        boxShadow: [
+          ...JT.cardShadow,
+          BoxShadow(
+            color: accent.withValues(alpha: 0.10),
+            blurRadius: 22,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          ClipRRect(
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+            child: SizedBox(
+              height: 220,
+              child: GoogleMap(
+                initialCameraPosition:
+                    CameraPosition(target: _mapCenter, zoom: 14),
+                onMapCreated: (controller) {
+                  _mapController = controller;
+                  _syncMapForStage(fetchRoute: false);
+                },
+                markers: _markers,
+                polylines: _polylines,
+                myLocationEnabled: true,
+                myLocationButtonEnabled: false,
+                zoomControlsEnabled: false,
+                mapToolbarEnabled: false,
+                compassEnabled: false,
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 42,
+                      height: 42,
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [
+                            accent.withValues(alpha: 0.18),
+                            accent.withValues(alpha: 0.08),
+                          ],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Icon(
+                        _isRerouting
+                            ? Icons.sync_rounded
+                            : Icons.alt_route_rounded,
+                        color: accent,
+                        size: 20,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            heading,
+                            style: GoogleFonts.poppins(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: JT.textPrimary,
+                            ),
+                          ),
+                          Text(
+                            _stage == _ParcelStage.navigatingToPickup ||
+                                    _stage == _ParcelStage.atPickup
+                                ? 'Pickup leg active'
+                                : 'Delivery leg active',
+                            style: GoogleFonts.poppins(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w500,
+                              color: accent,
+                              letterSpacing: 0.4,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: JT.border),
+                      ),
+                      child: IconButton(
+                        onPressed: () {
+                          setState(() => _navMuted = !_navMuted);
+                        },
+                        icon: Icon(
+                          _navMuted
+                              ? Icons.volume_off_rounded
+                              : Icons.volume_up_rounded,
+                          size: 18,
+                          color: accent,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: accent.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: accent.withValues(alpha: 0.12)),
+                      ),
+                      child: TextButton.icon(
+                        onPressed: _openNavigation,
+                        icon: const Icon(Icons.alt_route_rounded, size: 18),
+                        label: const Text('Refresh'),
+                        style: TextButton.styleFrom(
+                          foregroundColor: accent,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Container(
+                  width: double.infinity,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.72),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: JT.border),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _navInstruction,
+                        style: GoogleFonts.poppins(
+                          fontSize: 13,
+                          color: JT.textPrimary,
+                          fontWeight: FontWeight.w600,
+                          height: 1.2,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        _isOffRoute
+                            ? 'Off route detected'
+                            : _navSecondaryInstruction.isNotEmpty
+                                ? _navSecondaryInstruction
+                                : _targetLabel(),
+                        style: GoogleFonts.poppins(
+                          fontSize: 11,
+                          color: _isOffRoute ? JT.error : JT.textSecondary,
+                          fontWeight: _isOffRoute
+                              ? FontWeight.w600
+                              : FontWeight.w400,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                Text(
+                  _targetLabel(),
+                  style: GoogleFonts.poppins(
+                    fontSize: 11,
+                    color: JT.textSecondary,
+                    fontWeight: FontWeight.w400,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                if (_navSteps.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: accent.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: Text(
+                      'Step ${_navStepIndex + 1} of ${_navSteps.length}',
+                      style: GoogleFonts.poppins(
+                        fontSize: 10,
+                        color: accent,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    _mapStat(
+                      Icons.near_me_rounded,
+                      _distanceToTargetM > 0
+                          ? '${(_distanceToTargetM / 1000).toStringAsFixed(1)} km'
+                          : '--',
+                    ),
+                    const SizedBox(width: 10),
+                    _mapStat(
+                      Icons.access_time_rounded,
+                      _etaSec > 0 ? '${(_etaSec / 60).ceil()} min' : '--',
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   // ── Stage: Navigating to Pickup ───────────────────────────────────────────
   Widget _buildNavigatingToPickup() {
     return Column(children: [
@@ -404,7 +957,10 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
       SizedBox(
         width: double.infinity,
         child: ElevatedButton.icon(
-          onPressed: () => setState(() => _stage = _ParcelStage.atPickup),
+          onPressed: () {
+            setState(() => _stage = _ParcelStage.atPickup);
+            _syncMapForStage();
+          },
           icon: const Icon(Icons.check_circle_rounded),
           label: Text('Arrived at Pickup', style: GoogleFonts.poppins(fontWeight: FontWeight.w400, fontSize: 15)),
           style: ElevatedButton.styleFrom(
@@ -431,27 +987,49 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
       Container(
         padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
-          color: JT.surface,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: JT.primary.withValues(alpha: 0.3)),
-          boxShadow: JT.cardShadow,
+          gradient: LinearGradient(
+            colors: [
+              Colors.white,
+              JT.primary.withValues(alpha: 0.05),
+              JT.bgSoft,
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: JT.primary.withValues(alpha: 0.22)),
+          boxShadow: [
+            ...JT.cardShadow,
+            BoxShadow(
+              color: JT.primary.withValues(alpha: 0.08),
+              blurRadius: 18,
+              offset: const Offset(0, 8),
+            ),
+          ],
         ),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
             Container(
-              padding: const EdgeInsets.all(8),
+              padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: JT.primary.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(10),
+                gradient: LinearGradient(
+                  colors: [
+                    JT.primary.withValues(alpha: 0.18),
+                    JT.primary.withValues(alpha: 0.08),
+                  ],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(12),
               ),
               child: const Icon(Icons.lock_open_rounded, color: JT.primary, size: 20),
             ),
             const SizedBox(width: 12),
             Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text('Enter Pickup OTP', style: GoogleFonts.poppins(
-                fontWeight: FontWeight.w400, fontSize: 15, color: JT.textPrimary)),
+                fontWeight: FontWeight.w600, fontSize: 15, color: JT.textPrimary)),
               Text('Get OTP from sender', style: GoogleFonts.poppins(
-                fontSize: 12, color: JT.textSecondary)),
+                fontSize: 12, color: JT.textSecondary, fontWeight: FontWeight.w500)),
             ]),
           ]),
           const SizedBox(height: 16),
@@ -484,10 +1062,11 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
               onPressed: _loading ? null : _verifyPickupOtp,
               style: ElevatedButton.styleFrom(
                 backgroundColor: JT.primary,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-              ),
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 15),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              elevation: 0,
+            ),
               child: _loading
                 ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
                 : Text('Verify & Pickup Parcel', style: GoogleFonts.poppins(fontWeight: FontWeight.w400, fontSize: 15)),
@@ -533,7 +1112,10 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
       SizedBox(
         width: double.infinity,
         child: ElevatedButton.icon(
-          onPressed: () => setState(() => _stage = _ParcelStage.atDrop),
+          onPressed: () {
+            setState(() => _stage = _ParcelStage.atDrop);
+            _syncMapForStage();
+          },
           icon: const Icon(Icons.check_circle_rounded),
           label: Text('Arrived at Drop', style: GoogleFonts.poppins(fontWeight: FontWeight.w400, fontSize: 15)),
           style: ElevatedButton.styleFrom(
@@ -565,27 +1147,49 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
       Container(
         padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
-          color: JT.surface,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: JT.warning.withValues(alpha: 0.4)),
-          boxShadow: JT.cardShadow,
+          gradient: LinearGradient(
+            colors: [
+              Colors.white,
+              JT.warning.withValues(alpha: 0.05),
+              JT.bgSoft,
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: JT.warning.withValues(alpha: 0.24)),
+          boxShadow: [
+            ...JT.cardShadow,
+            BoxShadow(
+              color: JT.warning.withValues(alpha: 0.08),
+              blurRadius: 18,
+              offset: const Offset(0, 8),
+            ),
+          ],
         ),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
             Container(
-              padding: const EdgeInsets.all(8),
+              padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: JT.warning.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(10),
+                gradient: LinearGradient(
+                  colors: [
+                    JT.warning.withValues(alpha: 0.18),
+                    JT.warning.withValues(alpha: 0.08),
+                  ],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(12),
               ),
               child: Icon(Icons.lock_open_rounded, color: JT.warning, size: 20),
             ),
             const SizedBox(width: 12),
             Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text('Enter Delivery OTP', style: GoogleFonts.poppins(
-                fontWeight: FontWeight.w400, fontSize: 15, color: JT.textPrimary)),
+                fontWeight: FontWeight.w600, fontSize: 15, color: JT.textPrimary)),
               Text('Get OTP from receiver', style: GoogleFonts.poppins(
-                fontSize: 12, color: JT.textSecondary)),
+                fontSize: 12, color: JT.textSecondary, fontWeight: FontWeight.w500)),
             ]),
           ]),
           const SizedBox(height: 16),
@@ -618,10 +1222,11 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
               onPressed: _loading ? null : _verifyDropOtp,
               style: ElevatedButton.styleFrom(
                 backgroundColor: JT.warning,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-              ),
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 15),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              elevation: 0,
+            ),
               child: _loading
                 ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
                 : Text(
@@ -637,7 +1242,7 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
   // ── Stage: Completed ──────────────────────────────────────────────────────
   Widget _buildCompletedView() {
     final fare = double.tryParse(_order['total_fare']?.toString() ?? '0') ?? 0;
-    final earnings = _driverEarnings > 0 ? _driverEarnings : fare;
+    final earnings = _driverEarnings > 0 ? _driverEarnings : fare * 0.85;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -745,13 +1350,64 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
       child: OutlinedButton.icon(
         onPressed: _openNavigation,
         icon: const Icon(Icons.navigation_rounded),
-        label: Text('Navigate with Google Maps',
+        label: Text('Show in-app route',
           style: GoogleFonts.poppins(fontWeight: FontWeight.w500, fontSize: 14)),
         style: OutlinedButton.styleFrom(
           foregroundColor: JT.primary,
           side: const BorderSide(color: JT.primary, width: 1.5),
           padding: const EdgeInsets.symmetric(vertical: 13),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        ),
+      ),
+    );
+  }
+
+  Widget _mapStat(IconData icon, String value) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              Colors.white,
+              JT.bgSoft,
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: JT.border),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.03),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 28,
+              height: 28,
+              decoration: BoxDecoration(
+                color: JT.primary.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(9),
+              ),
+              child: Icon(icon, size: 15, color: JT.primary),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                value,
+                style: GoogleFonts.poppins(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: JT.textPrimary,
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );

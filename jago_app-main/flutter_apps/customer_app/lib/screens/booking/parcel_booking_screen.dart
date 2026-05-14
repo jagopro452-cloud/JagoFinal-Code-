@@ -717,7 +717,9 @@ class _ParcelBookingScreenState extends State<ParcelBookingScreen>
         return;
       }
 
-      final pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+      );
       final addr = await _reverseGeocode(pos.latitude, pos.longitude);
       if (mounted) {
         setState(() {
@@ -810,7 +812,6 @@ class _ParcelBookingScreenState extends State<ParcelBookingScreen>
 
   // Local theme colors for Logistics (Earthy Gold-focused)
   static const Color logisticsOrange = Color(0xFFC29763);
-  static const Color logisticsOrangeLight = Color(0xFFF7F1EA);
 
   @override
   Widget build(BuildContext context) {
@@ -1703,11 +1704,18 @@ class _ParcelBookingScreenState extends State<ParcelBookingScreen>
           duration: const Duration(milliseconds: 200),
           height: 60,
           decoration: BoxDecoration(
-            color: canGoNext ? logisticsOrange : const Color(0xFFE5E7EB),
+            gradient: canGoNext
+                ? const LinearGradient(
+                    colors: [logisticsOrange, Color(0xFFD6B58F)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  )
+                : null,
+            color: canGoNext ? null : const Color(0xFFE5E7EB),
             borderRadius: BorderRadius.circular(16),
             boxShadow: canGoNext ? [
               BoxShadow(
-                color: logisticsOrange.withValues(alpha: 0.3),
+                color: logisticsOrange.withValues(alpha: 0.28),
                 blurRadius: 12,
                 offset: const Offset(0, 4),
               )

@@ -27,7 +27,7 @@ Future<void> loadThemePreference() async {
   themeNotifier.value = ThemeMode.light;
 }
 
-Future<void> saveThemePreference(String pref) async {
+Future<void> saveThemePreference(String _) async {
   final prefs = await SharedPreferences.getInstance();
   await prefs.setString('theme_pref', 'light');
   await prefs.setString('theme_mode', 'light');
@@ -208,7 +208,6 @@ class _JagoCustomerAppState extends State<JagoCustomerApp> with WidgetsBindingOb
         primary: primary,
         secondary: Color(0xFF5B9DFF),
         surface: card,
-        background: bg,
         onPrimary: Colors.white,
         onSecondary: Colors.white,
         onSurface: Color(0xFF111827),
@@ -315,10 +314,6 @@ class _JagoCustomerAppState extends State<JagoCustomerApp> with WidgetsBindingOb
     );
   }
 
-  static ThemeData _darkTheme() {
-    return _lightTheme();
-  }
-
   @override
   Widget build(BuildContext context) {
     return ValueListenableBuilder<String>(
@@ -327,11 +322,9 @@ class _JagoCustomerAppState extends State<JagoCustomerApp> with WidgetsBindingOb
         return ValueListenableBuilder<ThemeMode>(
           valueListenable: themeNotifier,
           builder: (_, mode, __) {
-            const isDark = false;
             SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle(
               statusBarColor: Colors.transparent,
-              statusBarIconBrightness:
-                  isDark ? Brightness.light : Brightness.dark,
+              statusBarIconBrightness: Brightness.dark,
               systemNavigationBarColor: Colors.white,
               systemNavigationBarIconBrightness: Brightness.dark,
             ));

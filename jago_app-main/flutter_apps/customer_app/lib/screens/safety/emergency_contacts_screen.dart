@@ -47,7 +47,7 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen> {
             TextField(controller: phoneCtrl, keyboardType: TextInputType.phone, inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(10)], decoration: const InputDecoration(labelText: 'Phone', border: OutlineInputBorder(), prefixIcon: Icon(Icons.phone), prefixText: '+91 ')),
             const SizedBox(height: 10),
             DropdownButtonFormField<String>(
-              value: relation,
+              initialValue: relation,
               items: ['Family', 'Friend', 'Spouse', 'Parent', 'Sibling', 'Other'].map((r) => DropdownMenuItem(value: r, child: Text(r))).toList(),
               onChanged: (v) => setS(() => relation = v!),
               decoration: const InputDecoration(labelText: 'Relation', border: OutlineInputBorder()),

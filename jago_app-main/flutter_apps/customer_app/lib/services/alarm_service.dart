@@ -62,7 +62,6 @@ class AlarmService {
     const note1Ms = 250; // ding
     const gapMs = 80;
     const note2Ms = 350; // dong
-    const totalMs = note1Ms + gapMs + note2Ms;
     final n1 = sr * note1Ms ~/ 1000;
     final nGap = sr * gapMs ~/ 1000;
     final n2 = sr * note2Ms ~/ 1000;

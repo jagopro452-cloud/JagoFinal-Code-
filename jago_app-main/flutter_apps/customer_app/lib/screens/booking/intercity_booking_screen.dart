@@ -258,7 +258,7 @@ class _IntercityBookingScreenState extends State<IntercityBookingScreen> {
       Container(
         decoration: _boxDecor(),
         child: DropdownButtonFormField<String>(
-          value: _fromCity,
+          initialValue: _fromCity,
           decoration: const InputDecoration(contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12), border: InputBorder.none),
           hint: const Text('City select cheyyandi'),
           items: _fromCities.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
@@ -273,7 +273,7 @@ class _IntercityBookingScreenState extends State<IntercityBookingScreen> {
         Container(
           decoration: _boxDecor(),
           child: DropdownButtonFormField<Map<String, dynamic>>(
-            value: _selectedRoute,
+            initialValue: _selectedRoute,
             decoration: const InputDecoration(contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12), border: InputBorder.none),
             hint: const Text('Destination select cheyyandi'),
             items: _toRoutes.map((r) {

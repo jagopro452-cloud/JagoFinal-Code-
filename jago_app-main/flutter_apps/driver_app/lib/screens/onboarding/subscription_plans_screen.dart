@@ -31,7 +31,6 @@ class _SubscriptionPlansScreenState extends State<SubscriptionPlansScreen> {
   dynamic _selectedInsurancePlan;
 
   // Pending payment context (set before opening Razorpay)
-  Map<String, dynamic>? _pendingBreakdown;
   String? _pendingInsurancePlanId;
 
   static const Color _bg = Color(0xFFFFFFFF);
@@ -144,7 +143,6 @@ class _SubscriptionPlansScreenState extends State<SubscriptionPlansScreen> {
         final keyId = data['keyId'] as String? ?? '';
 
         // Store context for verify step
-        _pendingBreakdown = breakdown;
         _pendingInsurancePlanId = _selectedInsurancePlanId;
 
         // Show confirmation bottom sheet before opening Razorpay

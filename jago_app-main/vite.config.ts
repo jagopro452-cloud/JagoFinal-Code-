@@ -33,7 +33,6 @@ export default defineConfig({
             "@radix-ui/react-toast",
             "@radix-ui/react-tooltip",
           ],
-          "vendor-charts": ["recharts"],
           "vendor-motion": ["framer-motion"],
         },
       },

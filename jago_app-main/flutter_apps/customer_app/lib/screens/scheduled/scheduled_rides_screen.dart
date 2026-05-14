@@ -163,9 +163,13 @@ class _ScheduleSheetState extends State<_ScheduleSheet> {
         }
         if (perm != LocationPermission.denied && perm != LocationPermission.deniedForever) {
           var pos = await Geolocator.getLastKnownPosition();
-          pos ??= await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high).timeout(const Duration(seconds: 5));
-          pickupLat = pos!.latitude;
-          pickupLng = pos!.longitude;
+          pos ??= await Geolocator.getCurrentPosition(
+            locationSettings: const LocationSettings(
+              accuracy: LocationAccuracy.high,
+            ),
+          ).timeout(const Duration(seconds: 5));
+          pickupLat = pos.latitude;
+          pickupLng = pos.longitude;
         }
       } catch (_) {}
       final headers = await AuthService.getHeaders();

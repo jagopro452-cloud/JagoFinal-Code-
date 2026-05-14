@@ -15,11 +15,8 @@
 import { db as rawDb } from "./db";
 import { sql as rawSql } from "drizzle-orm";
 import { io } from "./socket";
-import { notifyUser } from "./notification-service";
-import { applyWalletChange } from "./revenue-engine";
-import { restartDispatchForTrip } from "./dispatch";
-import { resetRideForRedispatch } from "./ride-state";
-import { sendAlert as observabilitySendAlert } from "./observability";
+import { sendFcmNotification } from "./fcm";
+import { sendAlert as sendObservabilityAlert } from "./observability";
 // Removed legacy SMS notification logic. Only FCM and socket notifications are supported.
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -117,22 +114,27 @@ export async function logCritical(tag: string, message: string, data?: any) {
 }
 
 /**
- * Send critical alert via observability webhook (ALERT_WEBHOOK_URL env var) + console fallback.
+ * Send critical alert to monitoring system (Slack, email, DataDog, etc.)
  */
 export async function sendAlert(opts: { severity: string; title: string; body: string }) {
   console.warn(`[ALERT-${opts.severity.toUpperCase()}] ${opts.title}: ${opts.body}`);
-  await observabilitySendAlert({
+  await sendObservabilityAlert({
     level: opts.severity === "critical" ? "critical" : "error",
-    source: opts.title,
-    message: opts.body,
-  }).catch(() => {});
+    source: "hardening",
+    message: opts.title,
+    details: opts.body,
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ✅ FIX #1: DRIVER ACCEPT VALIDATION (Ping Verification)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const driverPingTracker = new Map<string, { tripId: string; timer: NodeJS.Timeout }>();
+const driverPingTracker = new Map<string, {
+  tripId: string;
+  timer: NodeJS.Timeout;
+  resolve: (result: boolean) => void;
+}>();
 
 /**
  * After driver accepts a trip, verify they're still active within 5 seconds.
@@ -151,10 +153,16 @@ export async function verifyDriverAfterAccept(
     
     if (io) {
       io.to(`driver:${driverId}`).emit('system:ping_request', requireResponse);
+      io.to(`user:${driverId}`).emit('system:ping_request', requireResponse);
     }
     
     // Set timeout for ping response
     const timer = setTimeout(async () => {
+      const tracked = driverPingTracker.get(driverId);
+      if (!tracked || tracked.tripId !== tripId) {
+        resolve(false);
+        return;
+      }
       driverPingTracker.delete(driverId);
       
       await logWarn('DRIVER-VERIFY', 'Driver ping timeout - ghost acceptance', {
@@ -168,7 +176,7 @@ export async function verifyDriverAfterAccept(
       resolve(false);
     }, timeoutMs);
     
-    driverPingTracker.set(driverId, { tripId, timer });
+    driverPingTracker.set(driverId, { tripId, timer, resolve });
     
     // Driver responds within timeout → clear timer and resolve true
     // (Response handled in socket handler below)
@@ -183,6 +191,7 @@ export function handleDriverPingResponse(driverId: string) {
   if (entry) {
     clearTimeout(entry.timer);
     driverPingTracker.delete(driverId);
+    entry.resolve(true);
     
     logInfo('DRIVER-VERIFY', 'Driver ping OK', { driverId, tripId: entry.tripId }).catch(() => {});
     return true;
@@ -200,66 +209,84 @@ async function reassignTripToNextDriver(
 ) {
   await logCritical('DISPATCH-REASSIGN', `Trip ${tripId} reassigning due to ${reason}`, { failedDriverId });
   
+  await rawDb.execute(rawSql`
+    UPDATE users
+    SET current_trip_id = NULL
+    WHERE id=${failedDriverId}::uuid
+      AND current_trip_id=${tripId}::uuid
+  `).catch(() => {});
+
+  // Reset trip back to searching and remember the failed driver so dispatch skips them.
+  await rawDb.execute(rawSql`
+    UPDATE trip_requests
+    SET current_status='searching',
+        driver_id=NULL,
+        driver_accepted_at=NULL,
+        driver_arriving_at=NULL,
+        updated_at=NOW(),
+        rejected_driver_ids = CASE
+          WHEN ${failedDriverId}::uuid = ANY(COALESCE(rejected_driver_ids, '{}'::uuid[])) THEN COALESCE(rejected_driver_ids, '{}'::uuid[])
+          ELSE array_append(COALESCE(rejected_driver_ids, '{}'::uuid[]), ${failedDriverId}::uuid)
+        END
+    WHERE id=${tripId}::uuid
+  `).catch(() => {});
+
   // Get trip details
   const tripR = await rawDb.execute(rawSql`
-    SELECT customer_id, pickup_lat, pickup_lng, estimated_fare 
-    FROM trip_requests WHERE id=${tripId}::uuid LIMIT 1
+    SELECT
+      t.id,
+      t.customer_id,
+      t.pickup_lat,
+      t.pickup_lng,
+      t.pickup_address,
+      t.destination_address,
+      t.estimated_distance,
+      t.estimated_fare,
+      t.payment_method,
+      t.trip_type,
+      t.vehicle_category_id,
+      t.ref_id,
+      u.full_name AS customer_name,
+      vc.name AS vehicle_name
+    FROM trip_requests t
+    JOIN users u ON u.id = t.customer_id
+    LEFT JOIN vehicle_categories vc ON vc.id = t.vehicle_category_id
+    WHERE t.id=${tripId}::uuid
+    LIMIT 1
   `);
   
   if (!tripR.rows.length) return;
   
   const trip = tripR.rows[0] as any;
+  
+  const { startDispatch, resolveServiceType } = await import("./dispatch");
+  const serviceType = resolveServiceType(trip.trip_type || "ride", trip.vehicle_name || "");
 
-  try {
-    const currentTripR = await rawDb.execute(rawSql`
-      SELECT current_status, driver_id
-      FROM trip_requests
-      WHERE id=${tripId}::uuid
-      LIMIT 1
-    `);
-    const currentTrip = currentTripR.rows[0] as any;
-    const currentStatus = String(currentTrip?.current_status || "");
-    const assignedDriverId = currentTrip?.driver_id ? String(currentTrip.driver_id) : null;
+  await notifyCustomerTripStatus(String(trip.customer_id), tripId, "searching", {
+    reason,
+    message: "Reassigning you to the next available pilot",
+  });
 
-    if (
-      ["accepted", "driver_assigned", "searching"].includes(currentStatus) &&
-      (!assignedDriverId || assignedDriverId === failedDriverId)
-    ) {
-      await resetRideForRedispatch(tripId, {
-        actorType: "system",
-        reason,
-        rejectedDriverId: failedDriverId,
-        clearPickupOtp: true,
-      });
-      if (assignedDriverId) {
-        await rawDb.execute(rawSql`
-          UPDATE users
-          SET current_trip_id=NULL
-          WHERE id=${assignedDriverId}::uuid
-            AND current_trip_id=${tripId}::uuid
-        `).catch(() => {});
-      }
+  await startDispatch(
+    String(tripId),
+    String(trip.customer_id),
+    Number(trip.pickup_lat),
+    Number(trip.pickup_lng),
+    trip.vehicle_category_id ? String(trip.vehicle_category_id) : undefined,
+    serviceType,
+    {
+      refId: String(trip.ref_id || ""),
+      customerName: String(trip.customer_name || "Customer"),
+      pickupAddress: String(trip.pickup_address || ""),
+      destinationAddress: String(trip.destination_address || ""),
+      pickupLat: Number(trip.pickup_lat),
+      pickupLng: Number(trip.pickup_lng),
+      estimatedFare: Number(trip.estimated_fare || 0),
+      estimatedDistance: Number(trip.estimated_distance || 0),
+      paymentMethod: String(trip.payment_method || "cash"),
+      tripType: String(trip.trip_type || "ride"),
     }
-
-    await restartDispatchForTrip(tripId, {
-      additionalRejectedDriverIds: [failedDriverId],
-      preserveSessionRejections: true,
-    });
-    await logInfo('DISPATCH-REASSIGN', 'Redispatch restarted after driver verification failure', {
-      tripId,
-      failedDriverId,
-      reason,
-      customerId: trip.customer_id,
-      estimatedFare: trip.estimated_fare,
-    });
-  } catch (error: any) {
-    await logError('DISPATCH-REASSIGN', `Redispatch failed for trip ${tripId}`, {
-      failedDriverId,
-      reason,
-      customerId: trip.customer_id,
-      error: error?.message || String(error),
-    }).catch(() => {});
-  }
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -289,38 +316,37 @@ export async function sendNotificationWithFailsafe(opts: {
   // CHANNEL 1: FCM
   // ════════════════════════════════════════════════════════════════════════════
   
-  if (opts.recipientId) {
+  if (opts.fcmToken) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        await notifyUser(opts.recipientId, opts.type || "notification", {
-          ...(opts.data || {}),
-          tripId: opts.tripId || null,
-          message: opts.body,
-        }, {
+        const result = await sendFcmNotification({
+          fcmToken: opts.fcmToken,
           title: opts.title,
           body: opts.body,
+          data: opts.data,
         });
-
+        
+        // Log successful FCM send
         await rawDb.execute(rawSql`
           INSERT INTO notification_logs 
             (recipient_id, trip_id, notification_type, fcm_token, fcm_result, attempt_count, sent_at)
           VALUES 
             (${opts.recipientId}::uuid, ${opts.tripId}::uuid, ${opts.type || 'notification'}, 
-             ${opts.fcmToken || null}, 'sent', ${attempt}, NOW())
+             ${opts.fcmToken}, 'sent', ${attempt}, NOW())
         `).catch(() => {});
-
-        await logInfo('NOTIFICATION-FCM', 'Notification gateway sent successfully', {
+        
+        await logInfo('NOTIFICATION-FCM', 'FCM sent successfully', {
           recipientId: opts.recipientId,
           tripId: opts.tripId,
           attempt,
         });
-
-        return { success: true, channel: 'gateway' };
+        
+        return { success: true, channel: 'fcm' };
       } catch (e: any) {
         lastError = e;
-
+        
         if (attempt < maxRetries) {
-          const delay = backoffMs * Math.pow(2, attempt - 1);
+          const delay = backoffMs * Math.pow(2, attempt - 1); // Exponential backoff
           await new Promise(r => setTimeout(r, delay));
         }
       }
@@ -339,7 +365,7 @@ export async function sendNotificationWithFailsafe(opts: {
   
   if (io) {
     try {
-      io.to(`driver:${opts.recipientId}`).emit('notification', {
+      io.to(`user:${opts.recipientId}`).emit('notification', {
         title: opts.title,
         body: opts.body,
         data: opts.data,
@@ -453,13 +479,10 @@ async function autoTimeoutTrip(
   `).catch(() => {});
   
   // Refund customer
-  await applyWalletChange({
-    userId: customerId,
-    amount: fare,
-    type: "CREDIT",
-    reason: "trip_timeout_refund",
-    refId: tripId,
-  }).catch(() => {});
+  await rawDb.execute(rawSql`
+    UPDATE users SET wallet_balance = wallet_balance + ${fare}
+    WHERE id=${customerId}::uuid
+  `).catch(() => {});
   
   // Log event
   await logInfo('AUTO-TIMEOUT', `Trip ${reason}`, {
@@ -511,13 +534,11 @@ export async function recordNoShow(
   // DEDUCT PENALTY
   // ════════════════════════════════════════════════════════════════════════════
   
-  await applyWalletChange({
-    userId,
-    amount: penaltyAmount,
-    type: "DEBIT",
-    reason: isDriver ? "driver_no_show_penalty" : "customer_no_show_penalty",
-    refId: tripId,
-  }).catch(() => {});
+  await rawDb.execute(rawSql`
+    UPDATE users
+    SET wallet_balance = wallet_balance - ${penaltyAmount}
+    WHERE id=${userId}::uuid
+  `).catch(() => {});
   
   // ════════════════════════════════════════════════════════════════════════════
   // DEDUCT RATING
@@ -625,13 +646,10 @@ export async function cleanupStaleOutstationRides() {
       const totalFare = b.total_fare;
       
       // Refund wallet
-      await applyWalletChange({
-        userId: String(customerId),
-        amount: parseFloat(totalFare),
-        type: "CREDIT",
-        reason: "outstation_stale_refund",
-        refId: String(rideId),
-      }).catch(() => {});
+      await rawDb.execute(rawSql`
+        UPDATE users SET wallet_balance = wallet_balance + ${totalFare}
+        WHERE id=${customerId}::uuid
+      `).catch(() => {});
       
       // Update booking
       await rawDb.execute(rawSql`

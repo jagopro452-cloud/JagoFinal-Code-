@@ -37,8 +37,6 @@ class _TripChatSheetState extends State<TripChatSheet> {
       if (!mounted) return;
       final text = msg['message']?.toString() ?? '';
       final senderType = msg['senderType']?.toString() ?? '';
-      final senderId = (msg['from'] ?? msg['senderId'])?.toString() ?? '';
-
       // De-duplicate: if this is an echo of a message we sent locally, skip it
       if (senderType == 'customer' && _pendingLocalMessages.contains(text)) {
         _pendingLocalMessages.remove(text);

@@ -3,12 +3,12 @@ class ApiConfig {
   static const String compileTimeBaseUrl = String.fromEnvironment('API_BASE_URL', defaultValue: '');
 
   // Production server URL
-  static const String _prodUrl = 'https://sea-lion-app-h5luj.ondigitalocean.app';
+  static const String _prodUrl = 'https://oyster-app-9e9cd.ondigitalocean.app';
 
   // For Android Emulator use 10.0.2.2. For Physical Device use your PC's IP (e.g. 192.168.0.x)
-  static const String _lanDevUrl = 'http://192.168.1.89:5000'; // Target specific physical IP
+  static const String _lanDevUrl = 'http://192.168.1.6:5000'; // Target specific physical IP
 
-  static bool _isProd = true; // PRODUCTION BUILD
+  static bool _isProd = false; // Set to false to use local server (lanDevUrl)
 
   static String get baseUrl {
     if (compileTimeBaseUrl.isNotEmpty) {
@@ -23,7 +23,7 @@ class ApiConfig {
 
   // Set at build time: --dart-define=GOOGLE_MAPS_KEY=AIzaSy...
   // Never hardcode — key must be rotated in Google Cloud Console
-  static const String googleMapsApiKey = String.fromEnvironment('GOOGLE_MAPS_KEY');
+  static const String googleMapsApiKey = String.fromEnvironment('GOOGLE_MAPS_KEY', defaultValue: 'AIzaSyAiMVYA_ppxeT344tkcoSsjeGGMaPU26eI');
 
   // Socket.IO base URL (same server, no path)
   static String get socketUrl => baseUrl;
@@ -33,14 +33,12 @@ class ApiConfig {
   static String get verifyFirebaseToken => '$baseUrl/api/app/verify-firebase-token';
   static String get loginPassword => '$baseUrl/api/app/login-password';
   static String get registerAccount => '$baseUrl/api/app/register';
-  static String get refreshSession => '$baseUrl/api/app/auth/refresh';
   static String get forgotPassword => '$baseUrl/api/app/forgot-password';
   static String get resetPassword => '$baseUrl/api/app/reset-password';
   static String get resetPasswordFirebase => '$baseUrl/api/app/reset-password-firebase';
   static String get changePassword => '$baseUrl/api/app/change-password';
   static String get logout => '$baseUrl/api/app/logout';
   static String get configs => '$baseUrl/api/app/configs';
-  static String get runtimeConfig => '$baseUrl/api/app/runtime-config';
   static String get nearbyDrivers => '$baseUrl/api/app/nearby-drivers';
   static String get notifications => '$baseUrl/api/app/notifications';
   static String get notificationsReadAll => '$baseUrl/api/app/notifications/read-all';
@@ -53,7 +51,6 @@ class ApiConfig {
   static String get estimateFare => '$baseUrl/api/app/customer/estimate-fare';
   static String get bookRide => '$baseUrl/api/app/customer/book-ride';
   static String get activeTrip => '$baseUrl/api/app/customer/active-trip';
-  static String get activeBooking => '$baseUrl/api/app/customer/active-booking';
   static String get trackTrip => '$baseUrl/api/app/customer/track-trip';
   static String get cancelTrip => '$baseUrl/api/app/customer/cancel-trip';
   static String get rateDriver => '$baseUrl/api/app/customer/rate-driver';
@@ -107,7 +104,6 @@ class ApiConfig {
   static String get placesAutocomplete => '$baseUrl/api/app/places/autocomplete';
   static String get placeDetails => '$baseUrl/api/app/places/details';
   static String get placesNearby => '$baseUrl/api/app/places/nearby';
-  static String get route => '$baseUrl/api/app/route';
   static String get routeMultiWaypoint => '$baseUrl/api/app/route/multi-waypoint';
 
   // ── Parcel ───────────────────────────────────────────────────────────
@@ -128,13 +124,9 @@ class ApiConfig {
   static String get b2bDashboardById => '$baseUrl/api/app/b2b/dashboard-by-id';
 
   // ── Carpool / Outstation Pool ─────────────────────────────────────────
-  static String get outstationPoolSearch => '$baseUrl/api/app/customer/outstation-pool/v2/search';
-  static String get outstationPoolBook => '$baseUrl/api/app/customer/outstation-pool/v2/book';
-  static String get outstationPoolBookings => '$baseUrl/api/app/customer/outstation-pool/v2/bookings';
-  static String get localPoolBook => '$baseUrl/api/app/customer/pool/book';
-  static String localPoolStatus(String requestId) => '$baseUrl/api/app/customer/pool/status/$requestId';
-  static String localPoolCancel(String requestId) => '$baseUrl/api/app/customer/pool/cancel/$requestId';
-  static String get localPoolHistory => '$baseUrl/api/app/customer/pool/history';
+  static String get outstationPoolSearch => '$baseUrl/api/app/customer/outstation-pool/search';
+  static String get outstationPoolBook => '$baseUrl/api/app/customer/outstation-pool/book';
+  static String get outstationPoolBookings => '$baseUrl/api/app/customer/outstation-pool/bookings';
 
   // ── Voice Booking ────────────────────────────────────────────────────
   static String get voiceBookingParse => '$baseUrl/api/app/voice-booking/parse';

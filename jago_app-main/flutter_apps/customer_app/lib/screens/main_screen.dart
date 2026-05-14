@@ -22,7 +22,6 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen> {
   int _currentIndex = 0;
   int _unreadNotifCount = 0;
-  double _walletBalance = 0;
 
   final List<Widget> _pages = [
     const HomeScreen(),
@@ -35,7 +34,6 @@ class _MainScreenState extends State<MainScreen> {
   void initState() {
     super.initState();
     _fetchUnreadCount();
-    _fetchWalletBalance();
   }
 
   Future<void> _fetchUnreadCount() async {
@@ -48,20 +46,6 @@ class _MainScreenState extends State<MainScreen> {
       if (r.statusCode == 200 && mounted) {
         final data = jsonDecode(r.body);
         setState(() => _unreadNotifCount = (data['unreadCount'] as int?) ?? 0);
-      }
-    } catch (_) {}
-  }
-
-  Future<void> _fetchWalletBalance() async {
-    try {
-      final headers = await AuthService.getHeaders();
-      final r = await http
-          .get(Uri.parse(ApiConfig.wallet), headers: headers)
-          .timeout(const Duration(seconds: 8));
-      if (r.statusCode == 200 && mounted) {
-        final data = jsonDecode(r.body);
-        setState(() => _walletBalance =
-            double.tryParse(data['balance']?.toString() ?? '0') ?? 0.0);
       }
     } catch (_) {}
   }

@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'theme.dart';
 import 'driver_home_screen.dart';
-import 'ride_request_popup.dart';
 
 class JagoProDriverApp extends StatelessWidget {
   const JagoProDriverApp({super.key});

@@ -41,7 +41,17 @@ Do not make changes to the file `Y`.
 
 ## External Dependencies
 - **Payments**: Razorpay (for wallet recharge and ride payments).
-- **OTP Service**: Fast2SMS API (for sending one-time passwords).
+- **OTP / Push**: Firebase is used for push notifications and OTP-related mobile flows. Legacy SMS providers are no longer part of the active production path.
 - **Maps**: Google Maps API Key (for location services and navigation).
 - **Real-time Communication**: Socket.IO (for live updates and WebRTC signaling).
-- **Push Notifications**: Firebase (placeholder integrated; requires user's Firebase project for full functionality).
+- **Push Notifications**: Firebase Admin / FCM.
+- **Payments**: Razorpay.
+- **High Availability Socket Routing**: Redis via Socket.IO Redis adapter and presence cache.
+
+## Production Launch
+
+- Copy [.env.example](C:/Users/kiran/Downloads/jago-Updates-23-04-jago/jago-Updates-23-04-jago/jago-main-sync/jago_app-main/.env.example) to your deployment secret store and fill every real value.
+- Run on Node `20.x`.
+- Verify build health with `npm run check` and `npm run build`.
+- Verify runtime health with `npm run smoke:core`.
+- Verify production readiness with `npm run smoke:prod` and `OPS_API_KEY` set.

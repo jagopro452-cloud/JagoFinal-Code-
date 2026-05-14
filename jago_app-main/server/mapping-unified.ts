@@ -47,11 +47,25 @@ export interface MultiWaypointRoute {
     distanceKm: number;
     durationMinutes: number;
     polyline: string;
+    steps?: RouteStep[];
   }>;
   totalDistanceKm: number;
   totalDurationMinutes: number;
   overviewPolyline: string;
   waypointOrder: number[];
+  steps: RouteStep[];
+}
+
+export interface RouteStep {
+  instruction: string;
+  plainInstruction: string;
+  maneuver: string;
+  distanceMeters: number;
+  durationSeconds: number;
+  startLocation: { lat: number; lng: number };
+  endLocation: { lat: number; lng: number };
+  polyline: string;
+  roadName: string;
 }
 
 export interface ETAResult {
@@ -74,6 +88,35 @@ export interface NearbyPlace {
 
 let cachedApiKey: string | null = null;
 let apiKeyFetchedAt = 0;
+
+function stripHtml(input: string): string {
+  return input
+    .replace(/<div[^>]*>/gi, " ")
+    .replace(/<\/div>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function mapRouteStep(step: any): RouteStep {
+  return {
+    instruction: step?.html_instructions || "",
+    plainInstruction: stripHtml(step?.html_instructions || ""),
+    maneuver: step?.maneuver || "continue",
+    distanceMeters: Number(step?.distance?.value || 0),
+    durationSeconds: Number(step?.duration?.value || 0),
+    startLocation: {
+      lat: Number(step?.start_location?.lat || 0),
+      lng: Number(step?.start_location?.lng || 0),
+    },
+    endLocation: {
+      lat: Number(step?.end_location?.lat || 0),
+      lng: Number(step?.end_location?.lng || 0),
+    },
+    polyline: step?.polyline?.points || "",
+    roadName: stripHtml(step?.html_instructions || "").split(" onto ").pop()?.trim() || "",
+  };
+}
 
 async function getGoogleMapsKey(): Promise<string | null> {
   if (cachedApiKey && Date.now() - apiKeyFetchedAt < 5 * 60 * 1000) return cachedApiKey;
@@ -789,28 +832,38 @@ export async function getMultiWaypointRoute(
   waypoints: Array<{ lat: number; lng: number }>,
   optimize: boolean = true
 ): Promise<MultiWaypointRoute | null> {
-  // If no waypoints, use simple route
-  if (!waypoints.length) {
-    const route = await getRouteWithCache(origin.lat, origin.lng, destination.lat, destination.lng);
-    if (!route) return null;
-    return {
-      legs: [{
-        originAddress: "",
-        destAddress: "",
-        distanceKm: route.distanceKm,
-        durationMinutes: route.durationMinutes,
-        polyline: route.polyline,
-      }],
-      totalDistanceKm: route.distanceKm,
-      totalDurationMinutes: route.durationMinutes,
-      overviewPolyline: route.polyline,
-      waypointOrder: [],
-    };
-  }
-
   const apiKey = await getGoogleMapsKey();
   if (!apiKey) {
-    // Haversine fallback for multi-waypoint
+    if (!waypoints.length) {
+      const route = await getRouteWithCache(origin.lat, origin.lng, destination.lat, destination.lng);
+      if (!route) return null;
+      const fallbackStep: RouteStep = {
+        instruction: "Head to destination",
+        plainInstruction: "Head to destination",
+        maneuver: "continue",
+        distanceMeters: Math.round(route.distanceKm * 1000),
+        durationSeconds: Math.round(route.durationMinutes * 60),
+        startLocation: { lat: origin.lat, lng: origin.lng },
+        endLocation: { lat: destination.lat, lng: destination.lng },
+        polyline: route.polyline,
+        roadName: "",
+      };
+      return {
+        legs: [{
+          originAddress: "",
+          destAddress: "",
+          distanceKm: route.distanceKm,
+          durationMinutes: route.durationMinutes,
+          polyline: route.polyline,
+          steps: [fallbackStep],
+        }],
+        totalDistanceKm: route.distanceKm,
+        totalDurationMinutes: route.durationMinutes,
+        overviewPolyline: route.polyline,
+        waypointOrder: [],
+        steps: [fallbackStep],
+      };
+    }
     return haversineMultiRoute(origin, destination, waypoints);
   }
 
@@ -836,16 +889,21 @@ export async function getMultiWaypointRoute(
     }
 
     const route = data.routes[0];
-    const legs = (route.legs || []).map((leg: any) => ({
-      originAddress: leg.start_address || "",
-      destAddress: leg.end_address || "",
-      distanceKm: Math.round((leg.distance?.value || 0) / 1000 * 100) / 100,
-      durationMinutes: Math.round((leg.duration?.value || 0) / 60),
-      polyline: leg.steps?.map((s: any) => s.polyline?.points || "").join("") || "",
-    }));
+    const legs = (route.legs || []).map((leg: any) => {
+      const steps = (leg.steps || []).map((step: any) => mapRouteStep(step));
+      return {
+        originAddress: leg.start_address || "",
+        destAddress: leg.end_address || "",
+        distanceKm: Math.round((leg.distance?.value || 0) / 1000 * 100) / 100,
+        durationMinutes: Math.round((leg.duration?.value || 0) / 60),
+        polyline: leg.steps?.map((s: any) => s.polyline?.points || "").join("") || "",
+        steps,
+      };
+    });
 
     const totalDist = legs.reduce((sum: number, l: any) => sum + l.distanceKm, 0);
     const totalDur = legs.reduce((sum: number, l: any) => sum + l.durationMinutes, 0);
+    const steps = legs.flatMap((leg: any) => leg.steps || []);
 
     return {
       legs,
@@ -853,6 +911,7 @@ export async function getMultiWaypointRoute(
       totalDurationMinutes: totalDur,
       overviewPolyline: route.overview_polyline?.points || "",
       waypointOrder: route.waypoint_order || [],
+      steps,
     };
   } catch {
     return haversineMultiRoute(origin, destination, waypoints);
@@ -888,6 +947,17 @@ function haversineMultiRoute(
       distanceKm: Math.round(d * 100) / 100,
       durationMinutes: dur,
       polyline: "",
+      steps: [{
+        instruction: "Continue to next stop",
+        plainInstruction: "Continue to next stop",
+        maneuver: "continue",
+        distanceMeters: Math.round(d * 1000),
+        durationSeconds: dur * 60,
+        startLocation: { lat: allPoints[i].lat, lng: allPoints[i].lng },
+        endLocation: { lat: allPoints[i + 1].lat, lng: allPoints[i + 1].lng },
+        polyline: "",
+        roadName: "",
+      }],
     });
     totalDist += d;
     totalDur += dur;
@@ -899,6 +969,7 @@ function haversineMultiRoute(
     totalDurationMinutes: totalDur,
     overviewPolyline: "",
     waypointOrder: waypoints.map((_, i) => i),
+    steps: legs.flatMap((leg: any) => leg.steps || []),
   };
 }
 

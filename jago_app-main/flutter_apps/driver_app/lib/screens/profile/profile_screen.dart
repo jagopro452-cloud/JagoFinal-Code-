@@ -7,7 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../services/auth_service.dart';
 import '../../config/api_config.dart';
 import '../../config/jago_theme.dart';
-import '../../main.dart' show themeNotifier, saveThemePreference;
+import '../../main.dart' show saveThemePreference;
 import '../../services/localization_service.dart';
 import '../auth/login_screen.dart';
 import '../onboarding/language_select_screen.dart';

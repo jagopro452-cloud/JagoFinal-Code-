@@ -21,10 +21,10 @@ class JagoTheme {
     colorScheme: ColorScheme.light(
       primary: primaryBlue,
       secondary: darkBlue,
-      background: background,
+      surface: background,
       error: error,
       onPrimary: Colors.white,
-      onBackground: textDark,
+      onSurface: textDark,
       onError: Colors.white,
     ),
     textTheme: const TextTheme(

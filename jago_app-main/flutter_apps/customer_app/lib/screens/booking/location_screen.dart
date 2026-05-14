@@ -59,9 +59,6 @@ class _LocationScreenState extends State<LocationScreen>
   double _dropLng = 0.0;
 
   bool _showStop = false;
-  String _stop = '';
-  double _stopLat = 0.0;
-  double _stopLng = 0.0;
 
   bool _detectingLocation = false;
   List<Map<String, dynamic>> _searchResults = [];
@@ -164,7 +161,7 @@ class _LocationScreenState extends State<LocationScreen>
         return;
       }
       final pos = await Geolocator.getCurrentPosition(
-          desiredAccuracy: LocationAccuracy.high)
+          locationSettings: const LocationSettings(accuracy: LocationAccuracy.high))
           .timeout(const Duration(seconds: 8));
       final addr = await _reverseGeocode(pos.latitude, pos.longitude);
       if (!mounted) return;
@@ -712,9 +709,6 @@ class _LocationScreenState extends State<LocationScreen>
   void _selectStop(String name, double lat, double lng) {
     HapticFeedback.selectionClick();
     setState(() {
-      _stop = name;
-      _stopLat = lat;
-      _stopLng = lng;
       _stopCtrl.text = name;
       _searchResults = [];
     });
@@ -1173,7 +1167,6 @@ class _LocationScreenState extends State<LocationScreen>
                   onTap: () {
                     setState(() {
                       _showStop = false;
-                      _stop = '';
                       _stopCtrl.clear();
                     });
                   },

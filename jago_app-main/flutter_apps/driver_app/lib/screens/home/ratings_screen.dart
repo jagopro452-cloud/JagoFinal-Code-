@@ -85,7 +85,7 @@ class RatingsScreen extends StatelessWidget {
         children: [
           Text(
             'Overall Rating',
-            style: GoogleFonts.poppins(color: Colors.white.withOpacity(0.9), fontSize: 16, fontWeight: FontWeight.w500),
+            style: GoogleFonts.poppins(color: Colors.white.withValues(alpha: 0.9), fontSize: 16, fontWeight: FontWeight.w500),
           ),
           const SizedBox(height: 8),
           Row(
@@ -100,7 +100,7 @@ class RatingsScreen extends StatelessWidget {
                 padding: const EdgeInsets.only(bottom: 8.0, left: 4),
                 child: Text(
                   '/ 5.0',
-                  style: GoogleFonts.poppins(color: Colors.white.withOpacity(0.8), fontSize: 20, fontWeight: FontWeight.w600),
+                  style: GoogleFonts.poppins(color: Colors.white.withValues(alpha: 0.8), fontSize: 20, fontWeight: FontWeight.w600),
                 ),
               ),
             ],
@@ -123,7 +123,7 @@ class RatingsScreen extends StatelessWidget {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.2),
+              color: Colors.white.withValues(alpha: 0.2),
               borderRadius: BorderRadius.circular(20),
             ),
             child: Text(
@@ -145,7 +145,7 @@ class RatingsScreen extends StatelessWidget {
         color: JT.bg,
         borderRadius: BorderRadius.circular(16),
         boxShadow: JT.cardShadow,
-        border: Border.all(color: JT.border.withOpacity(0.5)),
+        border: Border.all(color: JT.border.withValues(alpha: 0.5)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
