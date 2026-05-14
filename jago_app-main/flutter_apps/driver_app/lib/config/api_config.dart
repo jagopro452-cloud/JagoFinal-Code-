@@ -3,12 +3,12 @@ class ApiConfig {
   static const String compileTimeBaseUrl = String.fromEnvironment('API_BASE_URL', defaultValue: '');
 
   // Production server URL
-  static const String _prodUrl = 'https://oyster-app-9e9cd.ondigitalocean.app';
+  static const String _prodUrl = 'https://sea-lion-app-h5luj.ondigitalocean.app';
 
   // For Android Emulator use 10.0.2.2. For Physical Device use your PC's IP (e.g. 192.168.0.x)
-  static const String _lanDevUrl = 'http://192.168.1.6:5000'; // Target specific physical IP
+  static const String _lanDevUrl = 'http://192.168.1.89:5000'; // Target specific physical IP
 
-  static bool _isProd = false; // Set to false to use local server (lanDevUrl)
+  static bool _isProd = true; // PRODUCTION BUILD
 
   static String get baseUrl {
     if (compileTimeBaseUrl.isNotEmpty) {
@@ -23,7 +23,7 @@ class ApiConfig {
 
   // Set at build time: --dart-define=GOOGLE_MAPS_KEY=AIzaSy...
   // Never hardcode — key must be rotated in Google Cloud Console
-  static const String googleMapsApiKey = String.fromEnvironment('GOOGLE_MAPS_KEY', defaultValue: 'AIzaSyAiMVYA_ppxeT344tkcoSsjeGGMaPU26eI');
+  static const String googleMapsApiKey = String.fromEnvironment('GOOGLE_MAPS_KEY');
 
   // Socket.IO base URL (same server, no path)
   static String get socketUrl => baseUrl;
@@ -33,12 +33,14 @@ class ApiConfig {
   static String get verifyFirebaseToken => '$baseUrl/api/app/verify-firebase-token';
   static String get loginPassword => '$baseUrl/api/app/login-password';
   static String get registerAccount => '$baseUrl/api/app/register';
+  static String get refreshSession => '$baseUrl/api/app/auth/refresh';
   static String get forgotPassword => '$baseUrl/api/app/forgot-password';
   static String get resetPassword => '$baseUrl/api/app/reset-password';
   static String get resetPasswordFirebase => '$baseUrl/api/app/reset-password-firebase';
   static String get logout => '$baseUrl/api/app/logout';
   static String get fcmToken => '$baseUrl/api/app/fcm-token';
   static String get configs => '$baseUrl/api/app/configs';
+  static String get runtimeConfig => '$baseUrl/api/app/runtime-config';
   static String get sos => '$baseUrl/api/app/sos';
   static String get notifications => '$baseUrl/api/app/notifications';
   static String get notificationsReadAll => '$baseUrl/api/app/notifications/read-all';
@@ -50,6 +52,8 @@ class ApiConfig {
   static String get driverOnlineStatus => '$baseUrl/api/app/driver/online-status';
   static String get driverActiveTrip => '$baseUrl/api/app/driver/active-trip';
   static String get driverIncomingTrip => '$baseUrl/api/app/driver/incoming-trip';
+  static String get driverPendingOffer => '$baseUrl/api/app/driver/pending-offer';
+  static String get driverOfferAck => '$baseUrl/api/app/driver/offer-ack';
   static String get driverAcceptTrip => '$baseUrl/api/app/driver/accept-trip';
   static String get driverRejectTrip => '$baseUrl/api/app/driver/reject-trip';
   static String get driverArrived => '$baseUrl/api/app/driver/arrived';
@@ -120,6 +124,13 @@ class ApiConfig {
 
   // ── Module Revenue Config ─────────────────────────────────────────────
   static String get revenueConfig => '$baseUrl/api/app/revenue-config';
+  static String get localPoolSessionStart => '$baseUrl/api/app/driver/pool/session/start';
+  static String get localPoolSessionActive => '$baseUrl/api/app/driver/pool/session/active';
+  static String get localPoolSessionEnd => '$baseUrl/api/app/driver/pool/session/end';
+  static String get localPoolLocation => '$baseUrl/api/app/driver/pool/location';
+  static String localPoolPickup(String requestId) => '$baseUrl/api/app/driver/pool/passengers/$requestId/pickup';
+  static String localPoolDrop(String requestId) => '$baseUrl/api/app/driver/pool/passengers/$requestId/drop';
+  static String localPoolNoShow(String requestId) => '$baseUrl/api/app/driver/pool/passengers/$requestId/no-show';
 
   // ── Mapping (proxied through server — avoids hardcoded key) ─────────────
   static String get reverseGeocode => '$baseUrl/api/app/reverse-geocode';

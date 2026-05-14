@@ -60,6 +60,7 @@ class CallService {
     // For audio-only/relay, we also send a dummy offer to trigger state on other end
     _socket.sendCallOffer(
       targetUserId: targetUserId,
+      tripId: tripId,
       sdp: {'type': 'offer', 'audio': true},
     );
 
@@ -89,6 +90,7 @@ class CallService {
     if (activeCallTargetId != null) {
       _socket.sendCallAnswer(
         targetUserId: activeCallTargetId!,
+        tripId: activeCallTripId ?? '',
         sdp: {'type': 'answer', 'audio': true},
       );
     }
@@ -196,4 +198,4 @@ class CallService {
 }
 
 /// Call state enumeration (EXACT same as WebRTC version).
-enum CallState { idle, outgoing, incoming, connected, rejected }
+enum CallState { idle, outgoing, incoming, connected, rejected, micPermissionDenied }

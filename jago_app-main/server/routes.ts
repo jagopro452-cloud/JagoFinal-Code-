@@ -9952,6 +9952,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         Number(pickupLat),
         Number(pickupLng),
         vehicleCategoryId || undefined,
+        vcName || undefined,
         serviceType,
         dispatchMeta
       ).catch((err: any) => {

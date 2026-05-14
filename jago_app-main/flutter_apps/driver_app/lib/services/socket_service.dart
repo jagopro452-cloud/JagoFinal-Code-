@@ -4,11 +4,16 @@ import 'package:http/http.dart' as http;
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../config/api_config.dart';
+import 'api_client.dart';
+import 'auth_service.dart';
 
 class SocketService {
   static final SocketService _instance = SocketService._internal();
   factory SocketService() => _instance;
   SocketService._internal();
+  static const Duration _gpsStaleOfflineAfter = Duration(minutes: 2);
+  static const Duration _heartbeatInterval = Duration(seconds: 12);
+  static const String _activeTripKey = 'active_driver_trip_id';
 
   IO.Socket? _socket;
   bool _isConnected = false;
@@ -30,6 +35,14 @@ class SocketService {
   final _noDriversController = StreamController<Map<String, dynamic>>.broadcast();
   final _newParcelController = StreamController<Map<String, dynamic>>.broadcast();
   final _walletRechargedController = StreamController<Map<String, dynamic>>.broadcast();
+  final _walletUpdatedController = StreamController<Map<String, dynamic>>.broadcast();
+  final _driverStateChangedController = StreamController<Map<String, dynamic>>.broadcast();
+  final _kycUpdatedController = StreamController<Map<String, dynamic>>.broadcast();
+  final _serviceUpdatedController = StreamController<Map<String, dynamic>>.broadcast();
+  final _configUpdatedController = StreamController<Map<String, dynamic>>.broadcast();
+  final _poolNewPassengerController = StreamController<Map<String, dynamic>>.broadcast();
+  final _poolSeatUpdateController = StreamController<Map<String, dynamic>>.broadcast();
+  final _poolPassengerCancelledController = StreamController<Map<String, dynamic>>.broadcast();
   final _callIncomingController = StreamController<Map<String, dynamic>>.broadcast();
   final _callOfferController = StreamController<Map<String, dynamic>>.broadcast();
   final _callAnswerController = StreamController<Map<String, dynamic>>.broadcast();
@@ -48,6 +61,14 @@ class SocketService {
   Stream<Map<String, dynamic>> get onNoDrivers => _noDriversController.stream;
   Stream<Map<String, dynamic>> get onNewParcel => _newParcelController.stream;
   Stream<Map<String, dynamic>> get onWalletRecharged => _walletRechargedController.stream;
+  Stream<Map<String, dynamic>> get onWalletUpdated => _walletUpdatedController.stream;
+  Stream<Map<String, dynamic>> get onDriverStateChanged => _driverStateChangedController.stream;
+  Stream<Map<String, dynamic>> get onKycUpdated => _kycUpdatedController.stream;
+  Stream<Map<String, dynamic>> get onServiceUpdated => _serviceUpdatedController.stream;
+  Stream<Map<String, dynamic>> get onConfigUpdated => _configUpdatedController.stream;
+  Stream<Map<String, dynamic>> get onPoolNewPassenger => _poolNewPassengerController.stream;
+  Stream<Map<String, dynamic>> get onPoolSeatUpdate => _poolSeatUpdateController.stream;
+  Stream<Map<String, dynamic>> get onPoolPassengerCancelled => _poolPassengerCancelledController.stream;
   Stream<Map<String, dynamic>> get onCallIncoming => _callIncomingController.stream;
   Stream<Map<String, dynamic>> get onCallOffer => _callOfferController.stream;
   Stream<Map<String, dynamic>> get onCallAnswer => _callAnswerController.stream;
@@ -55,9 +76,16 @@ class SocketService {
   Stream<Map<String, dynamic>> get onCallEnded => _callEndedController.stream;
   Stream<Map<String, dynamic>> get onCallRejected => _callRejectedController.stream;
   bool get isConnected => _isConnected;
+  bool get hasActiveTrip => (_activeTripId ?? '').isNotEmpty;
 
   Future<void> connect(String baseUrl) async {
-    if (_socket?.connected == true) return;
+    await _restoreActiveTripFromStorage();
+
+    if (_socket != null) {
+      if (_socket!.connected) return;
+      _socket!.connect();
+      return;
+    }
 
     final prefs = await SharedPreferences.getInstance();
     var userId = prefs.getString('user_id') ?? '';
@@ -98,10 +126,13 @@ class SocketService {
     _socket!.on('connect', (_) {
       _isConnected = true;
       _connectedController.add(true);
+      print('[SOCKET][DRIVER] connected');
+      _restoreSessionBindings();
     });
 
     // On reconnect after server restart: restore online status so driver stays visible
     _socket!.on('reconnect', (_) {
+      print('[SOCKET][DRIVER] reconnected wasOnline=$_wasOnline activeTrip=$_activeTripId');
       if (_wasOnline) {
         _socket!.emit('driver:online', {
           'isOnline': true,
@@ -122,6 +153,33 @@ class SocketService {
     _socket!.on('disconnect', (_) {
       _isConnected = false;
       _connectedController.add(false);
+      print('[SOCKET][DRIVER] disconnected');
+    });
+
+    _socket!.on('error:unauthorized', (_) async {
+      final refreshed = await AuthService.refreshOnce();
+      if (refreshed) {
+        disconnect();
+        await connect(baseUrl);
+      }
+    });
+
+    _socket!.on('connect_error', (error) async {
+      final errorText = error?.toString().toLowerCase() ?? '';
+      if (!errorText.contains('unauthor')) return;
+      final refreshed = await AuthService.refreshOnce();
+      if (refreshed) {
+        disconnect();
+        await connect(baseUrl);
+      }
+    });
+
+    _socket!.on('driver:online_ack', (data) {
+      print('[SOCKET][DRIVER] online_ack $data');
+    });
+
+    _socket!.on('driver:heartbeat_ack', (data) {
+      // Server confirmed Redis TTL refresh — no action needed
     });
 
     _socket!.on('trip:new_request', (data) {
@@ -173,6 +231,31 @@ class SocketService {
     _socket!.on('wallet:recharged', (data) {
       _walletRechargedController.add(Map<String, dynamic>.from(data));
     });
+    _socket!.on('wallet:updated', (data) {
+      _walletUpdatedController.add(Map<String, dynamic>.from(data));
+    });
+    _socket!.on('driver:state_changed', (data) {
+      _driverStateChangedController.add(Map<String, dynamic>.from(data));
+    });
+    _socket!.on('kyc:updated', (data) {
+      _kycUpdatedController.add(Map<String, dynamic>.from(data));
+    });
+    _socket!.on('service:updated', (data) {
+      _serviceUpdatedController.add(Map<String, dynamic>.from(data));
+    });
+    _socket!.on('config:updated', (data) {
+      if (data == null) return;
+      _configUpdatedController.add(Map<String, dynamic>.from(data));
+    });
+    _socket!.on('pool:new_passenger', (data) {
+      _poolNewPassengerController.add(Map<String, dynamic>.from(data));
+    });
+    _socket!.on('pool:seat_update', (data) {
+      _poolSeatUpdateController.add(Map<String, dynamic>.from(data));
+    });
+    _socket!.on('pool:passenger_cancelled', (data) {
+      _poolPassengerCancelledController.add(Map<String, dynamic>.from(data));
+    });
 
     // ── WebRTC Call Signaling ──────────────────────────────────
     _socket!.on('call:incoming', (data) {
@@ -209,19 +292,59 @@ class SocketService {
     _startHeartbeat();
   }
 
-  /// Heartbeat: if driver is online but no location sent for 15s → auto-offline.
-  /// Prevents ghost-online drivers who have GPS failures.
+  Future<void> _restoreActiveTripFromStorage() async {
+    if ((_activeTripId ?? '').isNotEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    final tripId = prefs.getString(_activeTripKey)?.trim() ?? '';
+    if (tripId.isNotEmpty) {
+      _activeTripId = tripId;
+    }
+  }
+
+  void _restoreSessionBindings() {
+    if (!_isConnected || _socket == null) return;
+    if (_wasOnline) {
+      _socket!.emit('driver:online', {
+        'isOnline': true,
+        if (_lastLat != null) 'lat': _lastLat,
+        if (_lastLng != null) 'lng': _lastLng,
+      });
+    }
+    if ((_activeTripId ?? '').isNotEmpty) {
+      _socket!.emit('driver:rejoin_trip', {'tripId': _activeTripId});
+      if (_lastLat != null && _lastLng != null) {
+        _socket!.emit('driver:location', {
+          'lat': _lastLat,
+          'lng': _lastLng,
+          'heading': 0,
+          'speed': 0,
+        });
+      }
+    }
+  }
+
+  /// Heartbeat: keeps server-side Redis presence TTL alive (35s TTL, 12s ping = safe margin).
+  /// Also auto-offlines driver if GPS has been silent too long (no active trip).
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
-    _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (_) {
-      if (!_wasOnline) return;
+    _heartbeatTimer = Timer.periodic(_heartbeatInterval, (_) {
+      if (!_wasOnline || !_isConnected || _socket == null) return;
+
+      // Refresh Redis TTL — include last known coords if available
+      _socket!.emit('driver:heartbeat', {
+        'ts': DateTime.now().millisecondsSinceEpoch,
+        if (_lastLat != null) 'lat': _lastLat,
+        if (_lastLng != null) 'lng': _lastLng,
+      });
+
+      // GPS staleness check: skip during active trip (GPS may legitimately lag)
+      if (_activeTripId != null) return;
       final last = _lastLocationSentAt;
       if (last == null) return;
-      final stale = DateTime.now().difference(last).inSeconds >= 15;
-      if (stale && _isConnected) {
-        // GPS failed or app went background — mark driver offline
+      if (DateTime.now().difference(last) >= _gpsStaleOfflineAfter) {
         _socket!.emit('driver:online', {'isOnline': false});
         _wasOnline = false;
+        print('[SOCKET][DRIVER] auto-offline after stale GPS > ${_gpsStaleOfflineAfter.inSeconds}s');
       }
     });
   }
@@ -229,10 +352,21 @@ class SocketService {
   /// Call when driver enters/exits a trip so socket can rejoin room on reconnect.
   /// Also joins the room immediately if connected.
   void setActiveTrip(String? tripId) {
-    _activeTripId = tripId;
-    if (tripId != null && _isConnected && _socket != null) {
-      _socket!.emit('driver:rejoin_trip', {'tripId': tripId});
+    final normalized = tripId?.trim();
+    _activeTripId = (normalized == null || normalized.isEmpty) ? null : normalized;
+    _persistActiveTripId(_activeTripId);
+    if (_activeTripId != null && _isConnected && _socket != null) {
+      _socket!.emit('driver:rejoin_trip', {'tripId': _activeTripId});
     }
+  }
+
+  Future<void> _persistActiveTripId(String? tripId) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (tripId == null || tripId.isEmpty) {
+      await prefs.remove(_activeTripKey);
+      return;
+    }
+    await prefs.setString(_activeTripKey, tripId);
   }
 
   void sendLocation({
@@ -246,6 +380,7 @@ class SocketService {
     _lastLat = lat;
     _lastLng = lng;
     _lastLocationSentAt = DateTime.now();
+    print('[SOCKET][DRIVER] sendLocation lat=$lat lng=$lng heading=$heading speed=$speed connected=$_isConnected');
     if (_isConnected) {
       _socket!.emit('driver:location', {
         'lat': lat,
@@ -268,6 +403,21 @@ class SocketService {
     );
   }
 
+  void sendParcelLocation({
+    required String orderId,
+    required double lat,
+    required double lng,
+  }) {
+    if (!_isConnected || orderId.trim().isEmpty) return;
+    try {
+      _socket!.emit('driver:parcel_location', {
+        'orderId': orderId,
+        'lat': lat,
+        'lng': lng,
+      });
+    } catch (_) {}
+  }
+
   Future<void> _postLocationViaHttp({
     required double lat,
     required double lng,
@@ -277,27 +427,24 @@ class SocketService {
     int? etaSeconds,
   }) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final token = prefs.getString('auth_token');
-      if (token == null || token.isEmpty) return;
-      await http.post(
-        Uri.parse(ApiConfig.driverLocation),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: jsonEncode({
-          'lat': lat,
-          'lng': lng,
-          'heading': heading,
-          'speed': speed,
-          'isOnline': _wasOnline,
-          if (remainingDistanceMeters != null)
-            'remainingDistanceMeters': remainingDistanceMeters,
-          if (etaSeconds != null) 'etaSeconds': etaSeconds,
-        }),
-      ).timeout(const Duration(seconds: 10));
+      await const ApiClient().request(
+        (headers) => http.post(
+          Uri.parse(ApiConfig.driverLocation),
+          headers: headers,
+          body: jsonEncode({
+            'lat': lat,
+            'lng': lng,
+            'heading': heading,
+            'speed': speed,
+            'isOnline': _wasOnline,
+            if (remainingDistanceMeters != null)
+              'remainingDistanceMeters': remainingDistanceMeters,
+            if (etaSeconds != null) 'etaSeconds': etaSeconds,
+          }),
+        ).timeout(const Duration(seconds: 10)),
+        isActiveTrip: hasActiveTrip,
+        source: 'driver_location_http_fallback',
+      );
     } catch (_) {}
   }
 
@@ -305,6 +452,10 @@ class SocketService {
     _wasOnline = isOnline;
     if (lat != null) _lastLat = lat;
     if (lng != null) _lastLng = lng;
+    if (isOnline) {
+      _lastLocationSentAt = DateTime.now();
+    }
+    print('[SOCKET][DRIVER] setOnlineStatus isOnline=$isOnline lat=$lat lng=$lng connected=$_isConnected');
     if (_isConnected) {
       _socket!.emit('driver:online', {
         'isOnline': isOnline,
@@ -319,19 +470,30 @@ class SocketService {
 
   Future<void> _setOnlineViaHttp({required bool isOnline, double? lat, double? lng}) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final token = prefs.getString('auth_token');
-      if (token == null) return;
-      await http.patch(
-        Uri.parse(ApiConfig.driverOnlineStatus),
-        headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'isOnline': isOnline,
-          if (lat != null) 'lat': lat,
-          if (lng != null) 'lng': lng,
-        }),
-      ).timeout(const Duration(seconds: 10));
+      await const ApiClient().request(
+        (headers) => http.patch(
+          Uri.parse(ApiConfig.driverOnlineStatus),
+          headers: headers,
+          body: jsonEncode({
+            'isOnline': isOnline,
+            if (lat != null) 'lat': lat,
+            if (lng != null) 'lng': lng,
+          }),
+        ).timeout(const Duration(seconds: 10)),
+        isActiveTrip: hasActiveTrip,
+        source: 'driver_online_status_http_fallback',
+      );
     } catch (_) {}
+  }
+
+  void refreshOnlinePresence({double? lat, double? lng}) {
+    if (!_wasOnline) return;
+    print('[SOCKET][DRIVER] refreshOnlinePresence lat=${lat ?? _lastLat} lng=${lng ?? _lastLng}');
+    setOnlineStatus(
+      isOnline: true,
+      lat: lat ?? _lastLat,
+      lng: lng ?? _lastLng,
+    );
   }
 
   Future<bool> acceptTrip(String tripId) async {
@@ -390,19 +552,19 @@ class SocketService {
     _socket!.emit('call:initiate', {'targetUserId': targetUserId, 'tripId': tripId, 'callerName': callerName});
   }
 
-  void sendCallOffer({required String targetUserId, required dynamic sdp}) {
+  void sendCallOffer({required String targetUserId, required String tripId, required dynamic sdp}) {
     if (!_isConnected) return;
-    _socket!.emit('call:offer', {'targetUserId': targetUserId, 'sdp': sdp});
+    _socket!.emit('call:offer', {'targetUserId': targetUserId, 'tripId': tripId, 'sdp': sdp});
   }
 
-  void sendCallAnswer({required String targetUserId, required dynamic sdp}) {
+  void sendCallAnswer({required String targetUserId, required String tripId, required dynamic sdp}) {
     if (!_isConnected) return;
-    _socket!.emit('call:answer', {'targetUserId': targetUserId, 'sdp': sdp});
+    _socket!.emit('call:answer', {'targetUserId': targetUserId, 'tripId': tripId, 'sdp': sdp});
   }
 
-  void sendIceCandidate({required String targetUserId, required dynamic candidate}) {
+  void sendIceCandidate({required String targetUserId, required String tripId, required dynamic candidate}) {
     if (!_isConnected) return;
-    _socket!.emit('call:ice', {'targetUserId': targetUserId, 'candidate': candidate});
+    _socket!.emit('call:ice', {'targetUserId': targetUserId, 'tripId': tripId, 'candidate': candidate});
   }
 
   void endCall({required String targetUserId, String? tripId, int? durationSec}) {
@@ -436,6 +598,14 @@ class SocketService {
     _newParcelController.close();
     _noDriversController.close();
     _walletRechargedController.close();
+    _walletUpdatedController.close();
+    _driverStateChangedController.close();
+    _kycUpdatedController.close();
+    _serviceUpdatedController.close();
+    _configUpdatedController.close();
+    _poolNewPassengerController.close();
+    _poolSeatUpdateController.close();
+    _poolPassengerCancelledController.close();
     _callIncomingController.close();
     _callOfferController.close();
     _callAnswerController.close();

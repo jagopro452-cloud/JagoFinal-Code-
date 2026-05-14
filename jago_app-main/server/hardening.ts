@@ -273,6 +273,7 @@ async function reassignTripToNextDriver(
     Number(trip.pickup_lat),
     Number(trip.pickup_lng),
     trip.vehicle_category_id ? String(trip.vehicle_category_id) : undefined,
+    trip.vehicle_name ? String(trip.vehicle_name) : undefined,
     serviceType,
     {
       refId: String(trip.ref_id || ""),
