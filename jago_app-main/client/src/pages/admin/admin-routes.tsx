@@ -22,6 +22,7 @@ const CarSharing = lazy(() => import("@/pages/admin/car-sharing"));
 const IntercityCarSharing = lazy(() => import("@/pages/admin/intercity-carsharing"));
 const ParcelRefunds = lazy(() => import("@/pages/admin/parcel-refunds"));
 const SafetyAlerts = lazy(() => import("@/pages/admin/safety-alerts"));
+const AlertEngine = lazy(() => import("@/pages/admin/alert-engine"));
 const Banners = lazy(() => import("@/pages/admin/banners"));
 const Discounts = lazy(() => import("@/pages/admin/discounts"));
 const SpinWheel = lazy(() => import("@/pages/admin/spin-wheel"));
@@ -57,6 +58,7 @@ const Insurance = lazy(() => import("@/pages/admin/insurance"));
 const DriverEarnings = lazy(() => import("@/pages/admin/driver-earnings"));
 const Referrals = lazy(() => import("@/pages/admin/referrals"));
 const DriverVerificationPage = lazy(() => import("@/pages/admin/driver-verification"));
+const LocalPool = lazy(() => import("@/pages/admin/local-pool"));
 const OutstationPool = lazy(() => import("@/pages/admin/outstation-pool"));
 const ParcelOrders = lazy(() => import("@/pages/admin/parcel-orders"));
 const SystemHealth = lazy(() => import("@/pages/admin/system-health"));
@@ -77,9 +79,11 @@ export default function AdminRoutes() {
         <Route path="/admin/trips" component={Trips} />
         <Route path="/admin/car-sharing" component={CarSharing} />
         <Route path="/admin/intercity-carsharing" component={IntercityCarSharing} />
+        <Route path="/admin/local-pool" component={LocalPool} />
         <Route path="/admin/outstation-pool" component={OutstationPool} />
         <Route path="/admin/parcel-refunds" component={ParcelRefunds} />
         <Route path="/admin/safety-alerts" component={SafetyAlerts} />
+        <Route path="/admin/alert-engine" component={AlertEngine} />
         <Route path="/admin/banners" component={Banners} />
         <Route path="/admin/coupons" component={Coupons} />
         <Route path="/admin/discounts" component={Discounts} />
