@@ -13217,14 +13217,56 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ========== APK DOWNLOADS ==========
   const apkDir = path.join(process.cwd(), "public", "apks");
-  const apkLatestAliases: Record<string, string> = {
-    "jago-customer-latest.apk": "jago-customer-v1.0.74-release.apk",
-    "jago-driver-latest.apk": "jago-pilot-v1.0.75-release.apk",
-    "jago-pilot-latest.apk": "jago-pilot-v1.0.75-release.apk",
+  const apkAliasPrefixes: Record<string, string> = {
+    "jago-customer-latest.apk": "jago-customer-v",
+    "jago-driver-latest.apk": "jago-driver-v",
+    "jago-pilot-latest.apk": "jago-pilot-v",
+  };
+
+  const parseApkVersion = (fileName: string): [number, number, number] => {
+    const match = fileName.match(/v(\d+)\.(\d+)\.(\d+)/i);
+    if (!match) return [0, 0, 0];
+    return [Number(match[1]), Number(match[2]), Number(match[3])];
+  };
+
+  const compareApkVersions = (a: string, b: string): number => {
+    const av = parseApkVersion(a);
+    const bv = parseApkVersion(b);
+    for (let i = 0; i < 3; i++) {
+      if (av[i] !== bv[i]) return bv[i] - av[i];
+    }
+    return 0;
+  };
+
+  const findLatestApk = (prefix: string): string | null => {
+    if (!fs.existsSync(apkDir)) return null;
+    const files = fs.readdirSync(apkDir)
+      .filter((file) => file.startsWith(prefix) && file.endsWith(".apk"))
+      .sort(compareApkVersions);
+    return files[0] ?? null;
+  };
+
+  const formatApkVersion = (fileName: string | null, fallback: string): string => {
+    const match = fileName?.match(/v\d+\.\d+\.\d+/i);
+    return match?.[0] ?? fallback;
+  };
+
+  const formatApkSize = (fileName: string | null): string => {
+    if (!fileName) return "APK unavailable";
+    const filePath = path.join(apkDir, fileName);
+    if (!fs.existsSync(filePath)) return "APK unavailable";
+    const sizeMb = Math.round(fs.statSync(filePath).size / (1024 * 1024));
+    return `${sizeMb} MB`;
+  };
+
+  const resolveApkAlias = (fileName: string): string | null => {
+    const prefix = apkAliasPrefixes[fileName];
+    if (!prefix) return null;
+    return findLatestApk(prefix);
   };
 
   app.get("/apks/:fileName", (req, res, next) => {
-    const target = apkLatestAliases[req.params.fileName];
+    const target = resolveApkAlias(req.params.fileName);
     if (!target) return next();
     return res.sendFile(path.join(apkDir, target));
   });
@@ -15523,8 +15565,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     { key: "premium", name: "Premium", active: false, icon: "premium" },
   ];
 
-  function normalizeVehicleKey(value: string) {
-    const v = String(value || "").trim().toLowerCase();
+  function normalizeVehicleKey(value: string | string[] | null | undefined) {
+    const raw = Array.isArray(value) ? value[0] : value;
+    const v = String(raw || "").trim().toLowerCase();
+    if (v.includes("bike") && v.includes("parcel")) return "parcel_bike";
+    if (v.includes("auto") && v.includes("parcel")) return "parcel_auto";
+    if (v.includes("mini") && v.includes("truck")) return "mini_truck";
+    if (v.includes("tata") && v.includes("ace")) return "mini_truck";
+    if (v.includes("pickup")) return "pickup_van";
+    if (v.includes("outstation") && v.includes("pool")) return "outstation_pool";
+    if ((v.includes("local") || v.includes("city") || v.includes("carpool")) && v.includes("pool")) return "local_pool";
     if (v.includes("bike")) return "bike";
     if (v.includes("auto")) return "auto";
     if (v.includes("premium")) return "premium";
@@ -15723,7 +15773,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
   app.post("/api/admin/services/toggle", requireAdminAuth, async (req, res) => {
     try {
-      const { serviceKey, status } = req.body;
+      const serviceKey = typeof req.body?.serviceKey === "string" ? req.body.serviceKey.trim() : "";
+      const status = typeof req.body?.status === "string" ? req.body.status.trim() : "";
       if (!serviceKey || !["active", "inactive"].includes(status)) {
         return res.status(400).json({ message: "Invalid service key or status" });
       }

@@ -596,7 +596,7 @@ export default function Zones() {
           { label: "Total Zones", val: zones.length, icon: "bi-map-fill", color: "#7c3aed", bg: "#f5f3ff" },
           { label: "Active", val: activeCount, icon: "bi-check-circle-fill", color: "#16a34a", bg: "#f0fdf4" },
           { label: "Inactive", val: zones.length - activeCount, icon: "bi-pause-circle-fill", color: "#64748b", bg: "#f8fafc" },
-          { label: "With Surge", val: zones.filter((z: any) => (z.surgeFactor || 1) > 1).length, icon: "bi-lightning-fill", color: "#d97706", bg: "#fefce8" },
+          { label: "With Surge", val: zones.filter((z: any) => Number((z.surgeFactor ?? z.surge_factor) || 1) > 1).length, icon: "bi-lightning-fill", color: "#d97706", bg: "#fefce8" },
         ].map((s, i) => (
           <div key={i} className="col-6 col-xl-3">
             <div className="card border-0 shadow-sm" style={{ borderRadius: 14 }}>

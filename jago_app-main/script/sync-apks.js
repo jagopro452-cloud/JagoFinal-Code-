@@ -80,10 +80,11 @@ function syncAPKs() {
   });
 
   const customerLatest = findLatest(apkFiles, "jago-customer-");
+  const driverLatest = findLatest(apkFiles, "jago-driver-");
   const pilotLatest = findLatest(apkFiles, "jago-pilot-");
   const aliases = [
     { source: customerLatest, alias: "jago-customer-latest.apk" },
-    { source: pilotLatest, alias: "jago-driver-latest.apk" },
+    { source: driverLatest, alias: "jago-driver-latest.apk" },
     { source: pilotLatest, alias: "jago-pilot-latest.apk" },
   ];
 
