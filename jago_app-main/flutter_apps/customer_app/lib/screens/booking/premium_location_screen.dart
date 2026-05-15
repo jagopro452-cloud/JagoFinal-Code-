@@ -59,6 +59,8 @@ class _PremiumLocationScreenState extends State<PremiumLocationScreen> {
   Timer? _debounce;
   bool _isTyping = false;
   bool _detectingLocation = false;
+  bool _isSelectingSearchResult = false;
+  bool _searchingPickupField = false;
 
   bool get _isParcel => widget.serviceType == 'parcel';
   Color get _primaryAccent => _isParcel ? _parcelPrimary : _ridePrimary;
@@ -97,8 +99,19 @@ class _PremiumLocationScreenState extends State<PremiumLocationScreen> {
     if (mounted) {
       setState(() {
         _isTyping = _pickupFocus.hasFocus || _dropFocus.hasFocus;
-        if (!_isTyping) _searchResults = [];
       });
+      if (!_pickupFocus.hasFocus &&
+          !_dropFocus.hasFocus &&
+          !_isSelectingSearchResult) {
+        Future.delayed(const Duration(milliseconds: 120), () {
+          if (!mounted) return;
+          if (!_pickupFocus.hasFocus &&
+              !_dropFocus.hasFocus &&
+              !_isSelectingSearchResult) {
+            setState(() => _searchResults = []);
+          }
+        });
+      }
     }
   }
 
@@ -142,7 +155,8 @@ class _PremiumLocationScreenState extends State<PremiumLocationScreen> {
     return "Selected Location";
   }
 
-  void _onSearch(String query) {
+  void _onSearch(String query, {required bool isPickup}) {
+    _searchingPickupField = isPickup;
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 400), () async {
       final q = query.trim();
@@ -169,9 +183,10 @@ class _PremiumLocationScreenState extends State<PremiumLocationScreen> {
     });
   }
 
-  Future<void> _selectPlace(dynamic p) async {
+  Future<void> _selectPlace(dynamic p, {required bool isPickup}) async {
     final placeId = p['placeId'] ?? p['place_id'];
     if (placeId == null) return;
+    _isSelectingSearchResult = true;
     try {
       final headers = await AuthService.getHeaders();
       final res = await http.get(
@@ -189,7 +204,7 @@ class _PremiumLocationScreenState extends State<PremiumLocationScreen> {
               "Selected Location";
           if (mounted) {
             setState(() {
-              if (_pickupFocus.hasFocus) {
+              if (isPickup) {
                 _pickup = addr; _pickupLat = lat; _pickupLng = lng; _pickupCtrl.text = addr;
               } else {
                 _drop = addr; _dropLat = lat; _dropLng = lng; _dropCtrl.text = addr;
@@ -200,7 +215,10 @@ class _PremiumLocationScreenState extends State<PremiumLocationScreen> {
           }
         }
       }
-    } catch (_) {}
+    } catch (_) {
+    } finally {
+      _isSelectingSearchResult = false;
+    }
   }
 
   void _swapLocations() {
@@ -275,7 +293,7 @@ class _PremiumLocationScreenState extends State<PremiumLocationScreen> {
 
   Widget _buildRouteCard() {
     return Container(padding: const EdgeInsets.all(24), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(30), boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 30, offset: const Offset(0, 15))], border: Border.all(color: const Color(0xFFF1F5F9))), child: Column(children: [
-      _buildLocationInput(title: "Pickup", hint: _isParcel ? "Pickup point?" : "Starting point?", controller: _pickupCtrl, focusNode: _pickupFocus, icon: Icons.my_location_rounded, iconColor: _primaryAccent, isPickup: true, loading: _detectingLocation && _pickup.isEmpty, onChanged: _onSearch, trailing: GestureDetector(onTap: _detectLocation, child: Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4), decoration: BoxDecoration(color: _primaryAccent.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)), child: Text("Current", style: GoogleFonts.poppins(fontSize: 12, fontWeight: FontWeight.w700, color: _primaryAccent))))),
+      _buildLocationInput(title: "Pickup", hint: _isParcel ? "Pickup point?" : "Starting point?", controller: _pickupCtrl, focusNode: _pickupFocus, icon: Icons.my_location_rounded, iconColor: _primaryAccent, isPickup: true, loading: _detectingLocation && _pickup.isEmpty, onChanged: (value) => _onSearch(value, isPickup: true), trailing: GestureDetector(onTap: _detectLocation, child: Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4), decoration: BoxDecoration(color: _primaryAccent.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)), child: Text("Current", style: GoogleFonts.poppins(fontSize: 12, fontWeight: FontWeight.w700, color: _primaryAccent))))),
       const SizedBox(height: 12),
       _buildDividerWithSwap(),
       const SizedBox(height: 12),
@@ -289,7 +307,7 @@ class _PremiumLocationScreenState extends State<PremiumLocationScreen> {
         icon: Icons.location_on_rounded,
         iconColor: _secondaryAccent,
         isPickup: false,
-        onChanged: _onSearch,
+        onChanged: (value) => _onSearch(value, isPickup: false),
         trailing: GestureDetector(
           onTap: () {
             Navigator.push(
@@ -355,7 +373,7 @@ class _PremiumLocationScreenState extends State<PremiumLocationScreen> {
       final secText = p['secondaryText']?.toString() ??
           p['structured_formatting']?['secondary_text']?.toString() ??
           '';
-      return ListTile(contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), leading: Icon(Icons.location_on_rounded, color: _primaryAccent, size: 20), title: Text(mainText, style: GoogleFonts.poppins(fontSize: 14, fontWeight: FontWeight.w600, color: const Color(0xFF1E293B))), subtitle: secText.isNotEmpty ? Text(secText, style: GoogleFonts.poppins(fontSize: 11, color: const Color(0xFF64748B)), maxLines: 1, overflow: TextOverflow.ellipsis) : null, onTap: () => _selectPlace(p));
+      return ListTile(contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), leading: Icon(Icons.location_on_rounded, color: _primaryAccent, size: 20), title: Text(mainText, style: GoogleFonts.poppins(fontSize: 14, fontWeight: FontWeight.w600, color: const Color(0xFF1E293B))), subtitle: secText.isNotEmpty ? Text(secText, style: GoogleFonts.poppins(fontSize: 11, color: const Color(0xFF64748B)), maxLines: 1, overflow: TextOverflow.ellipsis) : null, onTap: () => _selectPlace(p, isPickup: _searchingPickupField));
     }));
   }
 }

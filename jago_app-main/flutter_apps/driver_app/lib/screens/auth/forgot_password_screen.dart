@@ -23,7 +23,6 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   int _step = 0;
   String? _firebaseVerificationId;
   String? _firebaseIdToken;
-  String? _otpProvider;
   int _seconds = 0;
   Timer? _timer;
 
@@ -31,8 +30,10 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   void dispose() {
     _timer?.cancel();
     FirebaseOtpService.resetVerification();
-    _phoneCtrl.dispose(); _otpCtrl.dispose();
-    _newPassCtrl.dispose(); _confirmCtrl.dispose();
+    _phoneCtrl.dispose();
+    _otpCtrl.dispose();
+    _newPassCtrl.dispose();
+    _confirmCtrl.dispose();
     super.dispose();
   }
 
@@ -60,7 +61,6 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     setState(() => _loading = true);
     _firebaseVerificationId = null;
     _firebaseIdToken = null;
-    _otpProvider = null;
     await FirebaseOtpService.resetVerification();
     final precheck = await AuthService.forgotPassword(phone);
     if (!mounted) return;
@@ -69,6 +69,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       _showSnack(precheck['message'] ?? 'Unable to start password reset.', error: true);
       return;
     }
+
     bool firebaseSent = false;
     String? firebaseError;
     await FirebaseOtpService.sendOtp(
@@ -83,7 +84,6 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     );
     if (!mounted) return;
     if (firebaseSent) {
-      _otpProvider = 'firebase';
       setState(() { _loading = false; _step = 1; });
       _startTimer();
       _showSnack('OTP sent to +91$phone');
@@ -91,20 +91,6 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     }
 
     firebaseError ??= 'OTP send failed. Retrying once...';
-    if (FirebaseOtpService.shouldPreferServerFallback(firebaseError)) {
-      final serverOtp = await AuthService.sendOtp(phone, 'driver', true);
-      if (!mounted) return;
-      if (serverOtp['success'] != true) {
-        setState(() => _loading = false);
-        _showSnack(firebaseError ?? serverOtp['message'] ?? 'Failed to send OTP', error: true);
-        return;
-      }
-      _otpProvider = 'server';
-      setState(() { _loading = false; _step = 1; });
-      _startTimer();
-      _showSnack('OTP sent to +91$phone via SMS');
-      return;
-    }
     await FirebaseOtpService.sendOtp(
       phoneNumber: '+91$phone',
       forceResend: true,
@@ -118,91 +104,31 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     );
     if (!mounted) return;
     if (firebaseSent) {
-      _otpProvider = 'firebase';
       setState(() { _loading = false; _step = 1; });
       _startTimer();
       _showSnack('OTP sent to +91$phone');
       return;
     }
 
-    final serverOtp = await AuthService.sendOtp(phone, 'driver', true);
-    if (!mounted) return;
-    if (serverOtp['success'] != true) {
-      setState(() => _loading = false);
-      _showSnack(firebaseError ?? serverOtp['message'] ?? 'Failed to send OTP', error: true);
-      return;
-    }
-    _otpProvider = 'server';
-    setState(() { _loading = false; _step = 1; });
-    _startTimer();
-    _showSnack('OTP sent to +91$phone via SMS');
+    setState(() => _loading = false);
+    _showSnack(firebaseError ?? 'Failed to send OTP', error: true);
   }
 
   Future<void> _verifyOtpStep() async {
     final otp = _otpCtrl.text.trim();
     if (otp.length != 6) { _showSnack('Enter the 6-digit OTP', error: true); return; }
     if (_firebaseVerificationId == null) {
-      final isServerOtp = (_otpProvider ?? 'server') == 'server';
-      if (!isServerOtp) {
-        _showSnack('OTP session expired. Please resend OTP.', error: true);
-        return;
-      }
+      _showSnack('OTP session expired. Please resend OTP.', error: true);
+      return;
     }
     setState(() => _loading = true);
-    final otpProvider = _otpProvider ?? (_firebaseVerificationId != null ? 'firebase' : 'server');
     try {
-      if (otpProvider == 'firebase') {
-        try {
-          final idToken = await FirebaseOtpService.verifyOtp(
-              smsCode: otp, verificationId: _firebaseVerificationId);
-          if (!mounted) return;
-          _firebaseIdToken = idToken;
-        } catch (e) {
-          String? firebaseResendError;
-          var firebaseResent = false;
-          await FirebaseOtpService.sendOtp(
-            phoneNumber: '+91${_phoneCtrl.text.trim()}',
-            forceResend: true,
-            onCodeSent: (verificationId) {
-              _firebaseVerificationId = verificationId;
-              firebaseResent = true;
-            },
-            onError: (error) {
-              firebaseResendError = error;
-            },
-          );
-          if (!mounted) return;
-          setState(() => _loading = false);
-          _otpCtrl.clear();
-          if (firebaseResent && _firebaseVerificationId != null) {
-            _otpProvider = 'firebase';
-            _startTimer();
-            _showSnack('Firebase verification expired. We sent a fresh OTP. Please enter the new code.', error: true);
-          } else {
-            final fallback = await AuthService.sendOtp(_phoneCtrl.text.trim(), 'driver', true);
-            if (!mounted) return;
-            if (fallback['success'] == true) {
-              _firebaseVerificationId = null;
-              _otpProvider = 'server';
-              _startTimer();
-              _showSnack('Firebase verification failed. We sent a new SMS OTP instead. Please enter the new code.', error: true);
-            } else {
-              _showSnack(fallback['message'] ?? firebaseResendError ?? e.toString().replaceAll('Exception: ', ''), error: true);
-            }
-          }
-          return;
-        }
-      } else {
-        final res = await AuthService.verifyOtp(_phoneCtrl.text.trim(), otp, 'driver');
-        if (!mounted) return;
-        if (res['success'] != true && res['token'] == null) {
-          setState(() => _loading = false);
-          _showSnack(res['message'] ?? 'Wrong OTP. Please try again.', error: true);
-          return;
-        }
-        _firebaseIdToken = null;
-      }
+      final idToken = await FirebaseOtpService.verifyOtp(
+        smsCode: otp,
+        verificationId: _firebaseVerificationId,
+      );
       if (!mounted) return;
+      _firebaseIdToken = idToken;
       setState(() { _loading = false; _step = 2; });
     } catch (e) {
       if (!mounted) return;
@@ -216,14 +142,13 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     final confirm = _confirmCtrl.text;
     if (newPass.length < 6) { _showSnack('Password must be at least 6 characters', error: true); return; }
     if (newPass != confirm) { _showSnack('Passwords do not match', error: true); return; }
-    final otpProvider = _otpProvider ?? (_firebaseIdToken != null ? 'firebase' : 'server');
-    if (otpProvider == 'firebase' && _firebaseIdToken == null) { _showSnack('Verification expired. Please restart.', error: true); return; }
+    if (_firebaseIdToken == null) { _showSnack('Verification expired. Please restart.', error: true); return; }
     setState(() => _loading = true);
-    final res = otpProvider == 'firebase'
-        ? await AuthService.resetPasswordWithFirebase(
-            _firebaseIdToken!, _phoneCtrl.text.trim(), newPass)
-        : await AuthService.resetPassword(
-            _phoneCtrl.text.trim(), _otpCtrl.text.trim(), newPass);
+    final res = await AuthService.resetPasswordWithFirebase(
+      _firebaseIdToken!,
+      _phoneCtrl.text.trim(),
+      newPass,
+    );
     if (!mounted) return;
     setState(() => _loading = false);
     if (res['success'] == true) {
@@ -243,8 +168,12 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       child: Scaffold(
         backgroundColor: JT.bg,
         appBar: AppBar(
-          backgroundColor: JT.bg, elevation: 0,
-          leading: IconButton(icon: Icon(Icons.arrow_back_ios_new_rounded, color: JT.textPrimary), onPressed: () => Navigator.pop(context)),
+          backgroundColor: JT.bg,
+          elevation: 0,
+          leading: IconButton(
+            icon: Icon(Icons.arrow_back_ios_new_rounded, color: JT.textPrimary),
+            onPressed: () => Navigator.pop(context),
+          ),
           title: Text('Forgot Password', style: TextStyle(color: JT.textPrimary, fontWeight: FontWeight.w500)),
         ),
         body: SingleChildScrollView(
@@ -271,16 +200,23 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
           Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: Text('+91', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500, color: JT.textPrimary))),
           Container(width: 1, height: 24, color: JT.border),
           Expanded(child: TextField(
-            controller: _phoneCtrl, keyboardType: TextInputType.phone,
+            controller: _phoneCtrl,
+            keyboardType: TextInputType.phone,
             inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(10)],
             style: TextStyle(fontSize: 15, fontWeight: FontWeight.w400, color: JT.textPrimary),
-            decoration: InputDecoration(hintText: 'Enter 10-digit number', hintStyle: TextStyle(color: JT.iconInactive), border: InputBorder.none, contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16)),
+            decoration: InputDecoration(
+              hintText: 'Enter 10-digit number',
+              hintStyle: TextStyle(color: JT.iconInactive),
+              border: InputBorder.none,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+            ),
           )),
         ]),
       ),
       const SizedBox(height: 32),
       SizedBox(
-        width: double.infinity, height: 56,
+        width: double.infinity,
+        height: 56,
         child: ElevatedButton(
           onPressed: _loading ? null : _sendOtp,
           style: ElevatedButton.styleFrom(backgroundColor: JT.primary, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)), elevation: 0),
@@ -303,11 +239,17 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       Container(
         decoration: BoxDecoration(color: JT.surface, borderRadius: BorderRadius.circular(14), border: Border.all(color: JT.border)),
         child: TextField(
-          controller: _otpCtrl, keyboardType: TextInputType.number,
+          controller: _otpCtrl,
+          keyboardType: TextInputType.number,
           inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(6)],
           textAlign: TextAlign.center,
           style: TextStyle(fontSize: 22, fontWeight: FontWeight.w400, letterSpacing: 8, color: JT.textPrimary),
-          decoration: InputDecoration(hintText: '------', hintStyle: TextStyle(color: JT.iconInactive, letterSpacing: 8), border: InputBorder.none, contentPadding: const EdgeInsets.symmetric(vertical: 16)),
+          decoration: InputDecoration(
+            hintText: '------',
+            hintStyle: TextStyle(color: JT.iconInactive, letterSpacing: 8),
+            border: InputBorder.none,
+            contentPadding: const EdgeInsets.symmetric(vertical: 16),
+          ),
         ),
       ),
       const SizedBox(height: 8),
@@ -317,7 +259,8 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
         Center(child: GestureDetector(onTap: _sendOtp, child: Text('Resend OTP', style: TextStyle(color: JT.primary, fontWeight: FontWeight.w500, fontSize: 13)))),
       const SizedBox(height: 32),
       SizedBox(
-        width: double.infinity, height: 56,
+        width: double.infinity,
+        height: 56,
         child: ElevatedButton(
           onPressed: _loading ? null : _verifyOtpStep,
           style: ElevatedButton.styleFrom(backgroundColor: JT.primary, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)), elevation: 0),
@@ -344,7 +287,8 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       _buildPassField(ctrl: _confirmCtrl, hint: 'Re-enter new password', show: _showConfirm, onToggle: () => setState(() => _showConfirm = !_showConfirm)),
       const SizedBox(height: 32),
       SizedBox(
-        width: double.infinity, height: 56,
+        width: double.infinity,
+        height: 56,
         child: ElevatedButton(
           onPressed: _loading ? null : _resetPassword,
           style: ElevatedButton.styleFrom(backgroundColor: JT.primary, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)), elevation: 0),
@@ -358,11 +302,14 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     return Container(
       decoration: BoxDecoration(color: JT.surface, borderRadius: BorderRadius.circular(14), border: Border.all(color: JT.border)),
       child: TextField(
-        controller: ctrl, obscureText: !show,
+        controller: ctrl,
+        obscureText: !show,
         style: TextStyle(fontSize: 15, fontWeight: FontWeight.w400, color: JT.textPrimary),
         decoration: InputDecoration(
-          hintText: hint, hintStyle: TextStyle(color: JT.iconInactive),
-          border: InputBorder.none, contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+          hintText: hint,
+          hintStyle: TextStyle(color: JT.iconInactive),
+          border: InputBorder.none,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
           prefixIcon: Icon(Icons.lock_outline_rounded, color: JT.iconInactive),
           suffixIcon: IconButton(icon: Icon(show ? Icons.visibility_off_outlined : Icons.visibility_outlined, color: JT.iconInactive), onPressed: onToggle),
         ),

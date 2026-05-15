@@ -7631,6 +7631,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         // Fallback: verify token via Firebase REST API (only needs Web API key � no service account needed)
         // Try the Web API key from env var first, then fall back to the known app key
         const webApiKey = process.env.FIREBASE_WEB_API_KEY || '';
+        if (!webApiKey) {
+          return res.status(503).json({
+            message: "Firebase token verification is not configured on the server.",
+          });
+        }
         let restVerified = false;
         try {
           const lookupRes = await fetch(
@@ -7654,13 +7659,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
         // Final fallback: Firebase verified on-device — trust the phone number the app sent.
         // We no longer require a server SMS or send-otp marker for Firebase-only auth.
+        // Reject unverifiable tokens instead of trusting the client phone number.
         if (!restVerified) {
-          const clientPhone = (phone?.toString() || "").replace(/\D/g, "").slice(-10);
-          if (!clientPhone || clientPhone.length < 10) {
-            return res.status(400).json({ message: "Phone number required for login. Please try again." });
-          }
-          phoneStr = clientPhone;
-          console.log(`[AUTH] Firebase REST fallback used for ${clientPhone.slice(-4).padStart(10, '*')} - Firebase Admin not configured`);
+          return res.status(401).json({
+            message: "Firebase token verification failed. Please request a fresh OTP and try again.",
+          });
         }
       }
 
