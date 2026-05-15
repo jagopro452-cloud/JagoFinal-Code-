@@ -95,6 +95,7 @@ function KpiCard({ icon, label, value, sub, accent }: { icon: string; label: str
       background: "#fff", borderRadius: 16, padding: "18px 20px",
       boxShadow: "0 2px 12px rgba(0,0,0,0.06)", border: "1px solid #F3F4F6",
       display: "flex", gap: 14, alignItems: "center",
+      minHeight: 96,
     }}>
       <div style={{ width: 46, height: 46, borderRadius: 13, background: `${color}15`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>
         {icon}
@@ -184,7 +185,7 @@ export default function SystemHealthPage() {
 
   return (
     <AdminLayout>
-      <div style={{ padding: "28px 32px", maxWidth: 1200 }}>
+      <div style={{ padding: "28px 32px", maxWidth: 1280, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
 
         {/* Header */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 28, flexWrap: "wrap", gap: 12 }}>
@@ -317,8 +318,8 @@ export default function SystemHealthPage() {
                       const disabled = vehicleToggling === vehicle.key;
                       return (
                         <div key={vehicle.key} style={{
-                          display: "grid",
-                          gridTemplateColumns: "52px minmax(130px,1.2fr) 120px minmax(160px,1fr) 86px",
+                          display: "flex",
+                          flexWrap: "wrap",
                           gap: 14,
                           alignItems: "center",
                           padding: "14px 16px",
@@ -334,14 +335,16 @@ export default function SystemHealthPage() {
                           }}>
                             {VEHICLE_ICONS[vehicle.key] || "🚘"}
                           </div>
-                          <div>
+                          <div style={{ flex: "1 1 220px", minWidth: 0 }}>
                             <div style={{ fontSize: 16, fontWeight: 900, color: "#0F172A" }}>{vehicle.name}</div>
                             <div style={{ fontSize: 12, color: "#64748B", fontWeight: 600 }}>vehicle_status/{vehicle.key}</div>
                           </div>
-                          <StatusPill ok={vehicle.active} label={vehicle.active ? "Active" : "Inactive"} />
-                          <div style={{ fontSize: 12, color: "#64748B" }}>
-                            <div style={{ fontWeight: 800, color: "#334155" }}>Updated Time</div>
-                            <div>{updated}</div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 12, flex: "1 1 280px", flexWrap: "wrap", justifyContent: "space-between" }}>
+                            <StatusPill ok={vehicle.active} label={vehicle.active ? "Active" : "Inactive"} />
+                            <div style={{ fontSize: 12, color: "#64748B", minWidth: 150 }}>
+                              <div style={{ fontWeight: 800, color: "#334155" }}>Updated Time</div>
+                              <div>{updated}</div>
+                            </div>
                           </div>
                           <label style={{
                             width: 64, height: 34, borderRadius: 999, padding: 4,
@@ -350,6 +353,8 @@ export default function SystemHealthPage() {
                             position: "relative",
                             transition: "all 180ms ease",
                             opacity: disabled ? 0.65 : 1,
+                            marginLeft: "auto",
+                            flexShrink: 0,
                           }}>
                             <input
                               type="checkbox"
@@ -387,6 +392,9 @@ export default function SystemHealthPage() {
                   border: `1px solid ${s.service_status === "active" ? "#d1fae5" : "#F1F5F9"}`,
                   boxShadow: "0 4px 6px -1px rgba(0,0,0,0.05), 0 2px 4px -1px rgba(0,0,0,0.03)",
                   transition: "all 0.3s ease",
+                  display: "flex",
+                  flexDirection: "column",
+                  minHeight: 178,
                 }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
                     <div style={{ width: 40, height: 40, borderRadius: 10, background: s.service_status === "active" ? "#F0FDF4" : "#F8FAFC", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20 }}>
@@ -408,7 +416,8 @@ export default function SystemHealthPage() {
                       background: s.service_status === "active" ? "#FEF2F2" : "#ECFDF5",
                       color: s.service_status === "active" ? "#DC2626" : "#059669",
                       boxShadow: s.service_status === "active" ? "0 2px 4px rgba(220,38,38,0.1)" : "0 2px 4px rgba(5,150,105,0.1)",
-                      transition: "all 0.2s"
+                      transition: "all 0.2s",
+                      marginTop: "auto",
                     }}
                   >
                     {toggling === s.service_key ? (
@@ -455,7 +464,7 @@ export default function SystemHealthPage() {
             <h6 style={{ fontWeight: 800, fontSize: 13, textTransform: "uppercase", letterSpacing: 1, color: "#6B7280", marginBottom: 12 }}>
               Admin Revenue
             </h6>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginBottom: 28 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 14, marginBottom: 28 }}>
               <div style={{ background: "linear-gradient(135deg,#2F7BFF,#4A90E2)", borderRadius: 16, padding: "20px 22px", color: "#fff" }}>
                 <div style={{ fontSize: 13, opacity: 0.8, marginBottom: 4 }}>GST Wallet Balance</div>
                 <div style={{ fontSize: 28, fontWeight: 800 }}>₹{data.gstWallet.balance.toFixed(2)}</div>
