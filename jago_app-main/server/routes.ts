@@ -852,7 +852,12 @@ async function ensureAdminExists() {
     } else {
       // Admin exists � password sync ONLY on explicit restart flag to prevent overwriting user changes
       // By default, users can change their password and it will persist across restarts
-      const shouldSyncPassword = process.env.ADMIN_PASSWORD_SYNC_ON_RESTART === 'true';
+      // Keep local/dev admin credentials aligned with .env so login verification
+      // does not fail because of a stale password left in the database.
+      // Production still requires an explicit opt-in flag before overwriting.
+      const shouldSyncPassword =
+        process.env.ADMIN_PASSWORD_SYNC_ON_RESTART === 'true' ||
+        runtimeEnv.NODE_ENV !== 'production';
       console.log(`[admin-bootstrap] Admin exists: ${adminEmail}, should_sync_password=${shouldSyncPassword}`);
       if (shouldSyncPassword) {
         console.log(`[admin-bootstrap] Hashing new password for ${adminEmail}...`);
@@ -1889,6 +1894,7 @@ async function ensureOperationalSchema() {
 
     // -- Platform services: add icon_url + banner_url for uploaded images ------
     await rawDb.execute(rawSql`
+      ALTER TABLE platform_services ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
       ALTER TABLE platform_services ADD COLUMN IF NOT EXISTS icon_url TEXT;
       ALTER TABLE platform_services ADD COLUMN IF NOT EXISTS banner_url TEXT;
     `).catch(dbCatch("db"));
@@ -4413,7 +4419,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.json({ saved: results.length, settings: results });
       }
       const { keyName, value, settingsType } = req.body;
-      const setting = await storage.upsertBusinessSetting(keyName, value, settingsType);
+      const setting = await storage.upsertBusinessSetting(
+        keyName,
+        value,
+        settingsType || "business_settings",
+      );
       res.json(setting);
     } catch (e: any) {
       res.status(500).json({ message: safeErrMsg(e) });
@@ -4453,7 +4463,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const keyName = req.body.key_name || req.body.keyName;
       const value = req.body.value ?? '';
-      const settingsType = req.body.settingsType;
+      const settingsType = req.body.settingsType || "business_settings";
       const setting = await storage.upsertBusinessSetting(keyName, value, settingsType);
       res.json(setting);
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }

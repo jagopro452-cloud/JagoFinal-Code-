@@ -248,7 +248,7 @@ app.use((req, res, next) => {
   const forwardedProto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
   const requestProto = forwardedProto || req.protocol || "https";
   const requestOrigin = `${requestProto}://${req.headers.host}`;
-  const defaultOrigins = "https://jagopro.org,https://www.jagopro.org,http://localhost:5173,http://localhost:5000,http://127.0.0.1:5173,http://127.0.0.1:5000";
+  const defaultOrigins = "https://jagopro.org,https://www.jagopro.org,https://sea-lion-app-h5luj.ondigitalocean.app,http://localhost:5173,http://localhost:5000,http://127.0.0.1:5173,http://127.0.0.1:5000";
   const allowedOrigins = ((process.env.ALLOWED_ORIGINS || defaultOrigins))
     .split(",")
     .map((s) => s.trim())
