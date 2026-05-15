@@ -2,6 +2,18 @@ import { useState, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 
+async function fetchJson<T>(url: string): Promise<T> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Request failed (${response.status}) for ${url}`);
+  }
+  return response.json() as Promise<T>;
+}
+
+function ensureArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface EngineStatus {
@@ -73,7 +85,7 @@ function Sparkline({ data, color = "#2563eb", h = 30, w = 72 }: { data: number[]
 // Health score from status
 function computeHealth(status: EngineStatus | undefined): { score: "GOOD" | "WARNING" | "CRITICAL"; color: string; icon: string } {
   if (!status) return { score: "GOOD", color: "#16a34a", icon: "🟢" };
-  const firing = status.activeAlerts;
+  const firing = ensureArray<EngineStatus["activeAlerts"][number]>(status.activeAlerts);
   const hasCrit = firing.some(a => a.priority <= 1);
   const hasWarn = firing.some(a => a.priority >= 2);
   if (hasCrit || !status.autoActionsEnabled && firing.length > 0)
@@ -141,11 +153,9 @@ function ManualActionModal({ action, onConfirm, onClose, isPending }: {
 function RuleHistory({ ruleId, onClose }: { ruleId: string; onClose: () => void }) {
   const { data, isLoading } = useQuery<RuleEvent[]>({
     queryKey: [`/api/admin/alert-engine/rule-history/${ruleId}`],
-    queryFn: async () => {
-      const r = await fetch(`/api/admin/alert-engine/rule-history/${encodeURIComponent(ruleId)}`);
-      return r.json();
-    },
+    queryFn: async () => ensureArray<RuleEvent>(await fetchJson<unknown>(`/api/admin/alert-engine/rule-history/${encodeURIComponent(ruleId)}`)),
   });
+  const history = ensureArray<RuleEvent>(data);
   const TAG_COLOR: Record<string, string> = {
     ALERT_CRITICAL: "#dc2626", ALERT_WARNING: "#d97706", ALERT_RESOLVED: "#16a34a",
     AUTO_ACTION: "#2563eb", ACTION_SUPPRESSED: "#94a3b8",
@@ -159,10 +169,10 @@ function RuleHistory({ ruleId, onClose }: { ruleId: string; onClose: () => void 
         </div>
         <div style={{ overflow: "auto", flex: 1, padding: "8px 0" }}>
           {isLoading && <div style={{ padding: 20, textAlign: "center", color: "#94a3b8", fontSize: 12 }}>Loading…</div>}
-          {!isLoading && (!data || data.length === 0) && (
+          {!isLoading && history.length === 0 && (
             <div style={{ padding: 20, textAlign: "center", color: "#94a3b8", fontSize: 12 }}>No history yet — rule hasn't fired</div>
           )}
-          {data?.map((ev, i) => (
+          {history.map((ev, i) => (
             <div key={i} style={{ padding: "8px 18px", borderBottom: "1px solid #f8fafc" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
                 <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 4, background: (TAG_COLOR[ev.tag] ?? "#6b7280") + "18", color: TAG_COLOR[ev.tag] ?? "#6b7280" }}>{ev.tag}</span>
@@ -214,24 +224,24 @@ export default function AlertEnginePage() {
   // Data fetches
   const { data: status } = useQuery<EngineStatus>({
     queryKey: ["/api/admin/alert-engine/status"],
-    queryFn: async () => (await fetch("/api/admin/alert-engine/status")).json(),
+    queryFn: async () => fetchJson<EngineStatus>("/api/admin/alert-engine/status"),
     refetchInterval: 30_000,
   });
 
   const { data: config } = useQuery<EngineConfig>({
     queryKey: ["/api/admin/alert-engine/config"],
-    queryFn: async () => (await fetch("/api/admin/alert-engine/config")).json(),
+    queryFn: async () => fetchJson<EngineConfig>("/api/admin/alert-engine/config"),
   });
 
   const { data: history = [] } = useQuery<MetricSnap[]>({
     queryKey: ["/api/admin/alert-engine/metrics-history"],
-    queryFn: async () => (await fetch("/api/admin/alert-engine/metrics-history")).json(),
+    queryFn: async () => ensureArray<MetricSnap>(await fetchJson<unknown>("/api/admin/alert-engine/metrics-history")),
     refetchInterval: 65_000,
   });
 
   const { data: recentActions = [] } = useQuery<RecentAction[]>({
     queryKey: ["/api/admin/alert-engine/recent-actions"],
-    queryFn: async () => (await fetch("/api/admin/alert-engine/recent-actions")).json(),
+    queryFn: async () => ensureArray<RecentAction>(await fetchJson<unknown>("/api/admin/alert-engine/recent-actions")),
     refetchInterval: 30_000,
   });
 
@@ -294,6 +304,8 @@ export default function AlertEnginePage() {
     catch { return {}; }
   }, [config, configJson]);
 
+  const activeAlerts = ensureArray<EngineStatus["activeAlerts"][number]>(status?.activeAlerts);
+  const allRules = ensureArray<EngineStatus["allRules"][number]>(status?.allRules);
   const health = computeHealth(status);
   const sparkSearch     = history.map(h => h.searchingRides);
   const sparkAccept     = history.map(h => h.acceptRatePct);
@@ -301,8 +313,8 @@ export default function AlertEnginePage() {
 
   // Dangerous state flags
   const isBookingPaused = recentActions.some(a => a.tag === "AUTO_ACTION" && (a.details?.action === "booking_pause" || a.message?.includes("booking_pause"))) ||
-    status?.activeAlerts.some(a => a.ruleId === "redis_down" || a.ruleId === "payment_failures_high");
-  const surgeHigh = (status?.effectiveMaxSurgeCap ?? 2.5) > 2.0 && status?.activeAlerts.some(a => ["searching_rides_high","no_online_drivers","low_accept_rate"].includes(a.ruleId));
+    activeAlerts.some(a => a.ruleId === "redis_down" || a.ruleId === "payment_failures_high");
+  const surgeHigh = (status?.effectiveMaxSurgeCap ?? 2.5) > 2.0 && activeAlerts.some(a => ["searching_rides_high","no_online_drivers","low_accept_rate"].includes(a.ruleId));
 
   return (
     <div style={{ padding: "24px 28px", fontFamily: "Inter, sans-serif", minHeight: "100vh", background: "#f8fafc" }}>
@@ -330,7 +342,7 @@ export default function AlertEnginePage() {
             )}
           </div>
           <p style={{ margin: 0, color: "#64748b", fontSize: 12 }}>
-            {status ? `${status.allRules.filter(r => r.firing).length} firing · ${status.allRules.filter(r => r.enabled).length} enabled · ${fmtAge(status.uptimeMs)} uptime` : "Connecting…"}
+            {status ? `${allRules.filter(r => r.firing).length} firing · ${allRules.filter(r => r.enabled).length} enabled · ${fmtAge(status.uptimeMs)} uptime` : "Connecting…"}
           </p>
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -355,7 +367,7 @@ export default function AlertEnginePage() {
           { label: "Surge Auto",   value: <Dot ok={status?.surgeAutomationEnabled ?? false} label={status?.surgeAutomationEnabled ? "ON" : "OFF"} /> },
           { label: "Booking Ctrl", value: <Dot ok={status?.bookingPauseEnabled ?? false} label={status?.bookingPauseEnabled ? "ON" : "OFF"} /> },
           { label: "Surge Cap",    value: <strong style={{ fontSize: 13 }}>{status?.effectiveMaxSurgeCap ?? 2.5}×</strong> },
-          { label: "Active Alerts",value: <span style={{ color: (status?.activeAlerts.length ?? 0) > 0 ? "#dc2626" : "#16a34a", fontWeight: 700, fontSize: 13 }}>{status?.activeAlerts.length ?? 0}</span> },
+          { label: "Active Alerts",value: <span style={{ color: activeAlerts.length > 0 ? "#dc2626" : "#16a34a", fontWeight: 700, fontSize: 13 }}>{activeAlerts.length}</span> },
         ].map(({ label, value }) => (
           <div key={label} style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 10, padding: "10px 14px" }}>
             <div style={{ fontSize: 10, color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.7, marginBottom: 5 }}>{label}</div>
@@ -383,13 +395,13 @@ export default function AlertEnginePage() {
       </div>
 
       {/* ── Active Alerts Banner ── */}
-      {(status?.activeAlerts.length ?? 0) > 0 && (
+      {activeAlerts.length > 0 && (
         <div style={{ background: "#fef2f2", border: "1.5px solid #fca5a5", borderRadius: 10, padding: "12px 16px", marginBottom: 18 }}>
           <div style={{ fontWeight: 700, color: "#dc2626", marginBottom: 8, fontSize: 13 }}>
             <i className="bi bi-exclamation-triangle-fill" style={{ marginRight: 6 }} />
-            {status!.activeAlerts.length} Alert{status!.activeAlerts.length > 1 ? "s" : ""} Firing
+            {activeAlerts.length} Alert{activeAlerts.length > 1 ? "s" : ""} Firing
           </div>
-          {status!.activeAlerts.map(a => (
+          {activeAlerts.map(a => (
             <div key={a.ruleId} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
               <span style={{ fontSize: 10, fontWeight: 800, padding: "2px 5px", borderRadius: 3, background: PC[a.priority] ?? "#64748b", color: "#fff" }}>P{a.priority}</span>
               <span style={{ fontSize: 13, color: "#7f1d1d", fontWeight: 600 }}>{a.label}</span>
@@ -457,9 +469,9 @@ export default function AlertEnginePage() {
               <span style={{ fontWeight: 700, fontSize: 13, color: "#0f172a" }}>Rules — Live State</span>
               <span style={{ fontSize: 11, color: "#94a3b8" }}>click rule for history</span>
             </div>
-            {status?.allRules.map((rule, i) => (
+            {allRules.map((rule, i) => (
               <div key={rule.id} onClick={() => setHistoryRule(rule.id)} style={{
-                padding: "11px 16px", borderBottom: i < status.allRules.length - 1 ? "1px solid #f8fafc" : "none",
+                padding: "11px 16px", borderBottom: i < allRules.length - 1 ? "1px solid #f8fafc" : "none",
                 background: rule.firing ? "#fef2f2" : rule.enabled ? "#fff" : "#f9fafb", cursor: "pointer",
                 transition: "background 0.15s",
               }}

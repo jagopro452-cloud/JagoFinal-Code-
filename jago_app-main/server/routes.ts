@@ -148,6 +148,13 @@ import {
   getBrainStatus,
 } from "./ai-brain";
 import {
+  getAlertEngineStatus,
+  getEngineConfig,
+  reloadEngineConfig,
+  getMetricHistory,
+  executeManualAction,
+} from "./alert-engine";
+import {
   checkBookingRateLimit,
   detectBookingFraud,
   checkCustomerBans,
@@ -16161,6 +16168,124 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         topZones: topZones.rows.map(camelize),
       });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  // -- ADMIN: Alert engine ---------------------------------------------------
+  app.get("/api/admin/alert-engine/status", requireAdminAuth, async (_req, res) => {
+    try {
+      res.json(getAlertEngineStatus());
+    } catch (e: any) {
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
+  });
+
+  app.get("/api/admin/alert-engine/config", requireAdminAuth, async (_req, res) => {
+    try {
+      res.json(getEngineConfig());
+    } catch (e: any) {
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
+  });
+
+  app.get("/api/admin/alert-engine/metrics-history", requireAdminAuth, async (_req, res) => {
+    try {
+      res.json(getMetricHistory());
+    } catch (e: any) {
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
+  });
+
+  app.get("/api/admin/alert-engine/recent-actions", requireAdminAuth, async (_req, res) => {
+    try {
+      const r = await rawDb.execute(rawSql`
+        SELECT tag, message, details, created_at
+        FROM system_logs
+        WHERE tag IN (
+          'AUTO_ACTION',
+          'MANUAL_ACTION',
+          'CONFIG_RELOAD',
+          'CONFIG_ROLLBACK',
+          'ALERT_RESOLVED',
+          'ACTION_SUPPRESSED_REDIS_DOWN',
+          'ALERT_CRITICAL',
+          'ALERT_WARNING'
+        )
+        ORDER BY created_at DESC
+        LIMIT 50
+      `);
+      res.json(r.rows.map(camelize));
+    } catch (e: any) {
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
+  });
+
+  app.get("/api/admin/alert-engine/rule-history/:ruleId", requireAdminAuth, async (req, res) => {
+    try {
+      const { ruleId } = req.params;
+      const r = await rawDb.execute(rawSql`
+        SELECT tag, message, details, created_at
+        FROM system_logs
+        WHERE (
+          details->>'rule' = ${ruleId}
+          OR details->>'ruleId' = ${ruleId}
+        )
+        OR message ILIKE ${`%${ruleId}%`}
+        ORDER BY created_at DESC
+        LIMIT 100
+      `);
+      res.json(r.rows.map(camelize));
+    } catch (e: any) {
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
+  });
+
+  app.post("/api/admin/alert-engine/config/reload", requireAdminAuth, requireAdminRole(["admin", "superadmin"]), async (req, res) => {
+    try {
+      const adminUser = (req as any).adminUser;
+      const result = reloadEngineConfig({
+        reason: typeof req.body?.reason === "string" ? req.body.reason : undefined,
+        force: !!req.body?.force,
+        requestedBy: adminUser?.email || adminUser?.name || "admin",
+      });
+      res.status(result.ok ? 200 : 400).json(result);
+    } catch (e: any) {
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
+  });
+
+  app.post("/api/admin/alert-engine/test", requireAdminAuth, async (_req, res) => {
+    try {
+      const status = getAlertEngineStatus();
+      const metrics = getMetricHistory();
+      res.json({
+        ok: true,
+        message: "Alert engine check completed",
+        checkedAt: new Date().toISOString(),
+        running: status.running,
+        activeAlerts: Array.isArray(status.activeAlerts) ? status.activeAlerts.length : 0,
+        metricsSnapshots: Array.isArray(metrics) ? metrics.length : 0,
+      });
+    } catch (e: any) {
+      res.status(500).json({ ok: false, message: safeErrMsg(e) });
+    }
+  });
+
+  app.post("/api/admin/alert-engine/manual-action", requireAdminAuth, requireAdminRole(["admin", "superadmin"]), async (req, res) => {
+    try {
+      const adminUser = (req as any).adminUser;
+      const action = String(req.body?.action || "").trim();
+      if (!["booking_pause", "booking_restore", "surge_restore"].includes(action)) {
+        return res.status(400).json({ ok: false, message: "Invalid manual action" });
+      }
+      const result = await executeManualAction(
+        action as "booking_pause" | "booking_restore" | "surge_restore",
+        adminUser?.email || adminUser?.name || "admin",
+        typeof req.body?.reason === "string" ? req.body.reason : undefined,
+      );
+      res.status(result.ok ? 200 : 400).json(result);
+    } catch (e: any) {
+      res.status(500).json({ ok: false, message: safeErrMsg(e) });
+    }
   });
 
   // -- HOOK: Log booking events automatically --------------------------------
