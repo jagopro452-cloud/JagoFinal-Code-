@@ -61,6 +61,7 @@ class _PremiumLocationScreenState extends State<PremiumLocationScreen> {
   bool _detectingLocation = false;
   bool _isSelectingSearchResult = false;
   bool _searchingPickupField = false;
+  int _searchRequestSeq = 0;
 
   bool get _isParcel => widget.serviceType == 'parcel';
   Color get _primaryAccent => _isParcel ? _parcelPrimary : _ridePrimary;
@@ -160,8 +161,11 @@ class _PremiumLocationScreenState extends State<PremiumLocationScreen> {
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 400), () async {
       final q = query.trim();
+      final requestId = ++_searchRequestSeq;
       if (q.length < 2) {
-        if (mounted) setState(() => _searchResults = []);
+        if (mounted && requestId == _searchRequestSeq) {
+          setState(() => _searchResults = []);
+        }
         return;
       }
       try {
@@ -175,17 +179,72 @@ class _PremiumLocationScreenState extends State<PremiumLocationScreen> {
           headers: headers,
         );
         if (res.statusCode == 200) {
+          final currentQuery =
+              (isPickup ? _pickupCtrl.text : _dropCtrl.text).trim();
+          if (!mounted || requestId != _searchRequestSeq || currentQuery != q) {
+            return;
+          }
           final data = json.decode(res.body) as Map<String, dynamic>;
           final preds = (data['predictions'] as List<dynamic>? ?? []);
           if (mounted) setState(() => _searchResults = preds);
         }
-      } catch (_) {}
+      } catch (_) {
+        if (mounted && requestId == _searchRequestSeq) {
+          setState(() => _searchResults = []);
+        }
+      }
+    });
+  }
+
+  void _onAddressEdited(String value, {required bool isPickup}) {
+    setState(() {
+      if (isPickup) {
+        _pickup = value;
+        _pickupLat = 0;
+        _pickupLng = 0;
+      } else {
+        _drop = value;
+        _dropLat = 0;
+        _dropLng = 0;
+      }
     });
   }
 
   Future<void> _selectPlace(dynamic p, {required bool isPickup}) async {
+    final selectedLat = (p['lat'] as num?)?.toDouble() ?? 0;
+    final selectedLng = (p['lng'] as num?)?.toDouble() ?? 0;
+    final fallbackAddress = p['fullDescription']?.toString() ??
+        p['description']?.toString() ??
+        p['mainText']?.toString() ??
+        "Selected Location";
+    if (selectedLat != 0 && selectedLng != 0) {
+      setState(() {
+        if (isPickup) {
+          _pickup = fallbackAddress;
+          _pickupLat = selectedLat;
+          _pickupLng = selectedLng;
+          _pickupCtrl.text = fallbackAddress;
+        } else {
+          _drop = fallbackAddress;
+          _dropLat = selectedLat;
+          _dropLng = selectedLng;
+          _dropCtrl.text = fallbackAddress;
+        }
+        _searchResults = [];
+        FocusScope.of(context).unfocus();
+      });
+      return;
+    }
+
     final placeId = p['placeId'] ?? p['place_id'];
-    if (placeId == null) return;
+    if (placeId == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please choose a valid address from the list')),
+        );
+      }
+      return;
+    }
     _isSelectingSearchResult = true;
     try {
       final headers = await AuthService.getHeaders();
@@ -198,10 +257,7 @@ class _PremiumLocationScreenState extends State<PremiumLocationScreen> {
         if (data['lat'] != null && data['lng'] != null) {
           final double lat = (data['lat'] as num).toDouble();
           final double lng = (data['lng'] as num).toDouble();
-          String addr = data['address']?.toString() ??
-              p['fullDescription']?.toString() ??
-              p['description']?.toString() ??
-              "Selected Location";
+          String addr = data['address']?.toString() ?? fallbackAddress;
           if (mounted) {
             setState(() {
               if (isPickup) {
@@ -213,9 +269,20 @@ class _PremiumLocationScreenState extends State<PremiumLocationScreen> {
               FocusScope.of(context).unfocus();
             });
           }
+          return;
         }
       }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not resolve that address. Please choose another result.')),
+        );
+      }
     } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Address lookup failed. Please try another result.')),
+        );
+      }
     } finally {
       _isSelectingSearchResult = false;
     }
@@ -293,7 +360,7 @@ class _PremiumLocationScreenState extends State<PremiumLocationScreen> {
 
   Widget _buildRouteCard() {
     return Container(padding: const EdgeInsets.all(24), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(30), boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 30, offset: const Offset(0, 15))], border: Border.all(color: const Color(0xFFF1F5F9))), child: Column(children: [
-      _buildLocationInput(title: "Pickup", hint: _isParcel ? "Pickup point?" : "Starting point?", controller: _pickupCtrl, focusNode: _pickupFocus, icon: Icons.my_location_rounded, iconColor: _primaryAccent, isPickup: true, loading: _detectingLocation && _pickup.isEmpty, onChanged: (value) => _onSearch(value, isPickup: true), trailing: GestureDetector(onTap: _detectLocation, child: Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4), decoration: BoxDecoration(color: _primaryAccent.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)), child: Text("Current", style: GoogleFonts.poppins(fontSize: 12, fontWeight: FontWeight.w700, color: _primaryAccent))))),
+      _buildLocationInput(title: "Pickup", hint: _isParcel ? "Pickup point?" : "Starting point?", controller: _pickupCtrl, focusNode: _pickupFocus, icon: Icons.my_location_rounded, iconColor: _primaryAccent, isPickup: true, loading: _detectingLocation && _pickup.isEmpty, onChanged: (value) { _onAddressEdited(value, isPickup: true); _onSearch(value, isPickup: true); }, trailing: GestureDetector(onTap: _detectLocation, child: Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4), decoration: BoxDecoration(color: _primaryAccent.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)), child: Text("Current", style: GoogleFonts.poppins(fontSize: 12, fontWeight: FontWeight.w700, color: _primaryAccent))))),
       const SizedBox(height: 12),
       _buildDividerWithSwap(),
       const SizedBox(height: 12),
@@ -307,7 +374,7 @@ class _PremiumLocationScreenState extends State<PremiumLocationScreen> {
         icon: Icons.location_on_rounded,
         iconColor: _secondaryAccent,
         isPickup: false,
-        onChanged: (value) => _onSearch(value, isPickup: false),
+        onChanged: (value) { _onAddressEdited(value, isPickup: false); _onSearch(value, isPickup: false); },
         trailing: GestureDetector(
           onTap: () {
             Navigator.push(

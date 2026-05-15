@@ -25,9 +25,12 @@ key.properties
 !public/apks/
 !public/apks/jago-customer-v1.0.74-release.apk
 !public/apks/jago-customer-v1.0.93-release.apk
+!public/apks/jago-customer-v1.0.96-release.apk
 !public/apks/jago-pilot-v1.0.75-release.apk
 !public/apks/jago-driver-v1.0.94-release.apk
 !public/apks/jago-pilot-v1.0.94-release.apk
+!public/apks/jago-driver-v1.0.95-release.apk
+!public/apks/jago-pilot-v1.0.95-release.apk
 flutter_apps/customer_app/build/
 flutter_apps/driver_app/build/
 flutter_apps/customer_app/.dart_tool/
@@ -59,9 +62,12 @@ do-spec.yaml
 public/apks/*
 !public/apks/jago-customer-v1.0.74-release.apk
 !public/apks/jago-customer-v1.0.93-release.apk
+!public/apks/jago-customer-v1.0.96-release.apk
 !public/apks/jago-pilot-v1.0.75-release.apk
 !public/apks/jago-driver-v1.0.94-release.apk
 !public/apks/jago-pilot-v1.0.94-release.apk
+!public/apks/jago-driver-v1.0.95-release.apk
+!public/apks/jago-pilot-v1.0.95-release.apk
 .env.*
 
 # Sensitive artifacts and prompt dumps

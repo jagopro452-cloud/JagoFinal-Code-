@@ -76,6 +76,7 @@ class _MapLocationPickerState extends State<MapLocationPicker> {
   bool _searching = false;
   bool _showSearch = false;
   Timer? _debounce;
+  int _searchRequestSeq = 0;
 
   // Session token for Places Autocomplete (reduces billing)
   String _sessionToken = DateTime.now().millisecondsSinceEpoch.toString();
@@ -266,21 +267,26 @@ class _MapLocationPickerState extends State<MapLocationPicker> {
   // ─── Places Autocomplete Search ─────────────────────────────────────────
 
   Future<void> _searchPlaces(String query) async {
-    if (query.length < 3) {
+    final normalizedQuery = query.trim();
+    if (normalizedQuery.length < 3) {
       setState(() => _predictions = []);
       return;
     }
+    final requestId = ++_searchRequestSeq;
     setState(() => _searching = true);
     try {
       final headers = await AuthService.getHeaders();
       final hasGps = _gpsLat != null && _gpsLng != null;
-      final qp = StringBuffer('?query=${Uri.encodeComponent(query)}&sessionToken=$_sessionToken');
+      final qp = StringBuffer('?query=${Uri.encodeComponent(normalizedQuery)}&sessionToken=$_sessionToken');
       if (hasGps) qp.write('&lat=$_gpsLat&lng=$_gpsLng');
       final res = await http.get(
         Uri.parse('${ApiConfig.placesAutocomplete}$qp'),
         headers: headers,
       ).timeout(const Duration(seconds: 6));
       if (res.statusCode == 200) {
+        if (!mounted || requestId != _searchRequestSeq || _searchCtrl.text.trim() != normalizedQuery) {
+          return;
+        }
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         final preds = (data['predictions'] as List<dynamic>?) ?? [];
         if (mounted) {
@@ -297,7 +303,7 @@ class _MapLocationPickerState extends State<MapLocationPicker> {
         }
       }
     } catch (_) {}
-    if (mounted) setState(() => _searching = false);
+    if (mounted && requestId == _searchRequestSeq) setState(() => _searching = false);
   }
 
   /// Get lat/lng from a Place ID using Place Details API.

@@ -149,6 +149,7 @@ class _ParcelBookingScreenState extends State<ParcelBookingScreen>
   List<Map<String, dynamic>> _suggestions = [];
   Timer? _debounce;
   String _placesSessionToken = DateTime.now().microsecondsSinceEpoch.toString();
+  int _placesSearchSeq = 0;
 
 
   // Fare estimate
@@ -376,23 +377,34 @@ class _ParcelBookingScreenState extends State<ParcelBookingScreen>
 
   void _onPickupSearch(String q) {
     _debounce?.cancel();
+    setState(() {
+      _pickupAddr = q;
+      _pickupLat = 0;
+      _pickupLng = 0;
+    });
     if (q.length < 3) { setState(() => _pickupSuggestions = []); return; }
-    _refreshPlacesSessionToken();
     _debounce = Timer(const Duration(milliseconds: 400), () => _searchAddress(q, isPickup: true));
   }
 
   void _onDropSearch(String q) {
     _debounce?.cancel();
+    setState(() {
+      _destLat = 0;
+      _destLng = 0;
+    });
     if (q.length < 3) { setState(() => _suggestions = []); return; }
-    _refreshPlacesSessionToken();
     _debounce = Timer(const Duration(milliseconds: 400), () => _searchAddress(q, isPickup: false));
   }
 
   Future<void> _searchAddress(String q, {required bool isPickup}) async {
+    final normalizedQuery = q.trim();
+    if (normalizedQuery.length < 3) return;
+    _refreshPlacesSessionToken();
+    final requestId = ++_placesSearchSeq;
     try {
       final headers = await AuthService.getHeaders();
       final queryParameters = <String, String>{
-        'input': q,
+        'input': normalizedQuery,
         'sessionToken': _placesSessionToken,
       };
       final refLat = isPickup ? _pickupLat : (_pickupLat != 0 ? _pickupLat : widget.pickupLat);
@@ -406,6 +418,10 @@ class _ParcelBookingScreenState extends State<ParcelBookingScreen>
         headers: headers,
       ).timeout(const Duration(seconds: 30));
       if (r.statusCode == 200) {
+        final currentQuery = (isPickup ? _pickupAddressCtrl.text : _dropAddressCtrl.text).trim();
+        if (!mounted || requestId != _placesSearchSeq || currentQuery != normalizedQuery) {
+          return;
+        }
         final body = jsonDecode(r.body);
         final list = (body['predictions'] ?? body['results'] ?? body) as List;
         if (mounted) setState(() {

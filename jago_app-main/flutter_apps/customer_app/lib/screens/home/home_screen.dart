@@ -2552,6 +2552,7 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
   List<Map<String, dynamic>> _popular = [];
   bool _loading = false;
   Timer? _debounce;
+  int _searchRequestSeq = 0;
 
   static const Color _primary = JT.primary;
 
@@ -2652,25 +2653,30 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
   }
 
   Future<void> _search(String query) async {
-    if (query.length < 3) {
+    final normalizedQuery = query.trim();
+    if (normalizedQuery.length < 3) {
       setState(() {
         _results = [];
         _loading = false;
       });
       return;
     }
+    final requestId = ++_searchRequestSeq;
     setState(() => _loading = true);
     try {
       final headers = await AuthService.getHeaders();
       final lat = widget.pickupLat;
       final lng = widget.pickupLng;
-      final qp = StringBuffer('?query=${Uri.encodeComponent(query)}');
+      final qp = StringBuffer('?query=${Uri.encodeComponent(normalizedQuery)}');
       if (lat != 0.0 && lng != 0.0) qp.write('&lat=$lat&lng=$lng');
       final r = await http.get(
         Uri.parse('${ApiConfig.placesAutocomplete}$qp'),
         headers: headers,
       ).timeout(const Duration(seconds: 6));
       if (r.statusCode == 200) {
+        if (!mounted || requestId != _searchRequestSeq || _ctrl.text.trim() != normalizedQuery) {
+          return;
+        }
         final data = jsonDecode(r.body) as Map<String, dynamic>;
         final preds = (data['predictions'] as List<dynamic>?) ?? [];
         setState(() {
@@ -2687,7 +2693,7 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
         });
       }
     } catch (_) {}
-    if (mounted) setState(() => _loading = false);
+    if (mounted && requestId == _searchRequestSeq) setState(() => _loading = false);
   }
 
   Future<void> _resolveAndSelect(Map<String, dynamic> p) async {

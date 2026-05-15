@@ -69,6 +69,7 @@ class _LocationScreenState extends State<LocationScreen>
   String _activeQuery = '';
   Timer? _debounce;
   String _sessionToken = ''; // Google Places Session Token for cost optimization
+  int _searchRequestSeq = 0;
 
   // ── Animation ─────────────────────────────────────────────────────────────
   late AnimationController _slideCtrl;
@@ -274,6 +275,9 @@ class _LocationScreenState extends State<LocationScreen>
   // ── Search ────────────────────────────────────────────────────────────────
   void _onDropChanged(String q) {
     setState(() {
+      _drop = q;
+      _dropLat = 0.0;
+      _dropLng = 0.0;
       _activeQuery = q;
       _activeField = true;
     });
@@ -291,6 +295,7 @@ class _LocationScreenState extends State<LocationScreen>
 
   void _onStopChanged(String q) {
     setState(() {
+      _showStop = q.trim().isNotEmpty;
       _activeQuery = q;
       _activeField = false;
     });
@@ -644,7 +649,9 @@ class _LocationScreenState extends State<LocationScreen>
   }
 
   Future<void> _search(String query) async {
-    if (!mounted || query.trim().length < 2) return;
+    final normalizedQuery = query.trim();
+    if (!mounted || normalizedQuery.length < 2) return;
+    final requestId = ++_searchRequestSeq;
     setState(() => _searching = true);
     try {
       final headers = await AuthService.getHeaders();
@@ -652,42 +659,61 @@ class _LocationScreenState extends State<LocationScreen>
       final lng = _pickupLng;
       
       // Use the session token to optimize API costs
-      final qp = StringBuffer('?query=${Uri.encodeComponent(query)}');
+      final qp = StringBuffer('?query=${Uri.encodeComponent(normalizedQuery)}');
       qp.write('&sessionToken=$_sessionToken');
       
       if (lat != 0.0 && lng != 0.0) qp.write('&lat=$lat&lng=$lng');
       
-      print('[PLACES] Searching: $query (session: $_sessionToken)');
+      print('[PLACES] Searching: $normalizedQuery (session: $_sessionToken)');
       final r = await http.get(
         Uri.parse('${ApiConfig.placesAutocomplete}$qp'),
         headers: headers,
       ).timeout(const Duration(seconds: 6));
       
       if (!mounted) return;
+      final currentQuery = (_activeField ? _dropCtrl.text : _stopCtrl.text).trim();
+      if (requestId != _searchRequestSeq || currentQuery != normalizedQuery) {
+        return;
+      }
       if (r.statusCode == 200) {
         final data = jsonDecode(r.body) as Map<String, dynamic>;
         final preds = (data['predictions'] as List<dynamic>?) ?? [];
         var mapped = _mapPredictions(preds);
         if (mapped.isEmpty) {
-          mapped = await _searchPlacesFallback(query);
+          mapped = await _searchPlacesFallback(normalizedQuery);
+          if (!mounted) return;
+          final fallbackQuery = (_activeField ? _dropCtrl.text : _stopCtrl.text).trim();
+          if (requestId != _searchRequestSeq || fallbackQuery != normalizedQuery) {
+            return;
+          }
         }
         setState(() {
           _searchResults = mapped;
         });
         print('[PLACES] Found ${_searchResults.length} results');
       } else {
-        final fallback = await _searchPlacesFallback(query);
+        final fallback = await _searchPlacesFallback(normalizedQuery);
         if (!mounted) return;
+        final fallbackQuery = (_activeField ? _dropCtrl.text : _stopCtrl.text).trim();
+        if (requestId != _searchRequestSeq || fallbackQuery != normalizedQuery) {
+          return;
+        }
         setState(() => _searchResults = fallback);
       }
     } catch (e) {
       print('[PLACES] Error: $e');
-      final fallback = await _searchPlacesFallback(query);
+      final fallback = await _searchPlacesFallback(normalizedQuery);
       if (mounted) {
+        final fallbackQuery = (_activeField ? _dropCtrl.text : _stopCtrl.text).trim();
+        if (requestId != _searchRequestSeq || fallbackQuery != normalizedQuery) {
+          return;
+        }
         setState(() => _searchResults = fallback);
       }
     }
-    if (mounted) setState(() => _searching = false);
+    if (mounted && requestId == _searchRequestSeq) {
+      setState(() => _searching = false);
+    }
   }
 
   // ── Selection Handlers ────────────────────────────────────────────────────
@@ -1119,6 +1145,8 @@ class _LocationScreenState extends State<LocationScreen>
                     _dropCtrl.clear();
                     setState(() {
                       _drop = '';
+                      _dropLat = 0.0;
+                      _dropLng = 0.0;
                       _searchResults = [];
                     });
                     _dropFocus.requestFocus();
@@ -1174,7 +1202,7 @@ class _LocationScreenState extends State<LocationScreen>
                 ),
               const Spacer(),
               // Proceed button (shows when drop is selected)
-              if (_drop.isNotEmpty)
+              if (_dropLat != 0.0 && _dropLng != 0.0)
                 GestureDetector(
                   onTap: _proceedToVehicles,
                   child: AnimatedContainer(
