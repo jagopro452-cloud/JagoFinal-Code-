@@ -13286,6 +13286,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Download page � jagopro.org/download
   app.get("/download", (_req, res) => {
     const base = process.env.APP_BASE_URL || "https://oyster-app-9e9cd.ondigitalocean.app";
+    const customerLatest = findLatestApk("jago-customer-v");
+    const driverLatest = findLatestApk("jago-driver-v") ?? findLatestApk("jago-pilot-v");
     res.send(`<!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Download JAGO Pro App</title>
@@ -13309,12 +13311,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   <a class="btn btn-blue" href="/apks/jago-customer-latest.apk" download>
     ?? Download Customer App
   </a>
-  <span class="badge">v1.0.74 | Universal APK | Latest</span>
+  <span class="badge">${formatApkVersion(customerLatest, "Latest")} | Universal APK | ${formatApkSize(customerLatest)}</span>
   <br><br>
   <a class="btn btn-green" href="/apks/jago-driver-latest.apk" download>
     ?? Download Driver / Pilot App
   </a>
-  <span class="badge">v1.0.75 | Universal APK | Latest</span>
+  <span class="badge">${formatApkVersion(driverLatest, "Latest")} | Universal APK | ${formatApkSize(driverLatest)}</span>
   <div class="version">Android 6.0+ required � Free Download</div>
 </div>
 </body></html>`);

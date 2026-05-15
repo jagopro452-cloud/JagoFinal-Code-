@@ -17,6 +17,9 @@ if (localPropertiesFile.exists()) {
     localPropertiesFile.withReader('UTF-8') { reader -> localProperties.load(reader) }
 }
 
+def flutterVersionCode = (localProperties.getProperty('flutter.versionCode') ?: '74').toInteger()
+def flutterVersionName = (localProperties.getProperty('flutter.versionName') ?: '1.0.74')
+
 android {
     namespace "com.mindwhile.jago_customer"
     compileSdk 36
@@ -54,8 +57,8 @@ android {
         applicationId "com.mindwhile.jago_customer"
         minSdkVersion 24
         targetSdkVersion 35
-        versionCode 74
-        versionName "1.0.74"
+        versionCode flutterVersionCode
+        versionName flutterVersionName
         multiDexEnabled true
         manifestPlaceholders = [googleMapsApiKey: localProperties.getProperty('GOOGLE_MAPS_KEY', 'AIzaSyAiMVYA_ppxeT344tkcoSsjeGGMaPU26eI')]
     }
