@@ -22,6 +22,7 @@ import { db as drizzleDb, pool as dbPool } from "./db";
 import path from "path";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
+import { fileURLToPath } from "node:url";
 
 try {
   const env = parseEnv();
@@ -35,6 +36,8 @@ app.set("trust proxy", 1);
 const httpServer = createServer(app);
 let bootstrapReady = false;
 let bootstrapError: string | null = null;
+const currentFilePath = fileURLToPath(import.meta.url);
+const currentDir = path.dirname(currentFilePath);
 
 declare module "http" {
   interface IncomingMessage {
@@ -405,7 +408,7 @@ const port = parseInt(process.env.PORT || "5000", 10);
 
   // ─── STEP 5: Apply custom hardening migration ───
   try {
-    await applySqlMigrationsFromDir(path.join(__dirname, "migrations"));
+    await applySqlMigrationsFromDir(path.join(currentDir, "migrations"));
   } catch (e: any) {
     log(`[migration] production SQL migrations failed (non-fatal): ${e.message}`);
   }
