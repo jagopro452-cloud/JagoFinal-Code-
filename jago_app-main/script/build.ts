@@ -14,8 +14,15 @@ run("esbuild server/index.ts --platform=node --bundle --format=esm --packages=ex
 
 const serverMigrationsSrc = path.resolve("server", "migrations");
 const serverMigrationsDest = path.resolve("dist", "migrations");
+const rootMigrationsSrc = path.resolve("migrations");
+const rootMigrationsDest = path.resolve("dist", "drizzle-migrations");
 
 if (fs.existsSync(serverMigrationsSrc)) {
   fs.mkdirSync(serverMigrationsDest, { recursive: true });
   fs.cpSync(serverMigrationsSrc, serverMigrationsDest, { recursive: true });
+}
+
+if (fs.existsSync(rootMigrationsSrc)) {
+  fs.mkdirSync(rootMigrationsDest, { recursive: true });
+  fs.cpSync(rootMigrationsSrc, rootMigrationsDest, { recursive: true });
 }

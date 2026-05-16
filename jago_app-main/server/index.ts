@@ -21,6 +21,7 @@ import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { db as drizzleDb, pool as dbPool } from "./db";
 import path from "path";
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 
 try {
   const env = parseEnv();
@@ -194,47 +195,54 @@ async function setupSocketRedisAdapter() {
   }
 }
 
-async function applyProductionHardeningMigration() {
-  const migrationName = "0001_operational_schema_hardening.sql";
-  const migrationCandidates = [
-    path.join(__dirname, "migrations", migrationName),
-    path.join(process.cwd(), "server", "migrations", migrationName),
-    path.join(process.cwd(), "migrations", migrationName),
-  ];
-
+async function ensureMigrationTable() {
   await dbPool.query(`
     CREATE TABLE IF NOT EXISTS migrations (
       name TEXT PRIMARY KEY,
       applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+}
 
-  const existing = await dbPool.query("SELECT 1 FROM migrations WHERE name = $1 LIMIT 1", [migrationName]);
-  if (existing.rowCount) {
-    log(`[migration] ${migrationName} already marked applied`);
+async function applySqlMigrationsFromDir(migrationsDir: string) {
+  await ensureMigrationTable();
+  if (!fsSync.existsSync(migrationsDir)) {
+    log(`[migration] directory missing, skipping: ${migrationsDir}`);
     return;
   }
 
-  let migrationSql: string | null = null;
-  for (const candidate of migrationCandidates) {
-    try {
-      migrationSql = await fs.readFile(candidate, "utf8");
-      break;
-    } catch {
-      // Try next candidate path.
+  const files = (await fs.readdir(migrationsDir))
+    .filter((name) => name.toLowerCase().endsWith(".sql"))
+    .sort();
+
+  for (const file of files) {
+    const existing = await dbPool.query("SELECT 1 FROM migrations WHERE name = $1 LIMIT 1", [file]);
+    if (existing.rowCount) {
+      log(`[migration] ${file} already marked applied`);
+      continue;
     }
+
+    const migrationPath = path.join(migrationsDir, file);
+    const migrationSql = await fs.readFile(migrationPath, "utf8");
+    await dbPool.query(migrationSql);
+    await dbPool.query(
+      "INSERT INTO migrations (name, applied_at) VALUES ($1, NOW()) ON CONFLICT (name) DO NOTHING",
+      [file]
+    );
+    log(`[migration] ${file} applied`);
+  }
+}
+
+async function runDrizzleMigrationsIfAvailable() {
+  const migrationsFolder = path.join(process.cwd(), "migrations");
+  const journalPath = path.join(migrationsFolder, "meta", "_journal.json");
+  if (!fsSync.existsSync(migrationsFolder) || !fsSync.existsSync(journalPath)) {
+    log(`[db] Drizzle migrations skipped; journal not found at ${journalPath}`);
+    return;
   }
 
-  if (!migrationSql) {
-    throw new Error(`Missing migration file: ${migrationName}`);
-  }
-
-  await dbPool.query(migrationSql);
-  await dbPool.query(
-    "INSERT INTO migrations (name, applied_at) VALUES ($1, NOW()) ON CONFLICT (name) DO NOTHING",
-    [migrationName]
-  );
-  log(`[migration] ${migrationName} applied`);
+  await migrate(drizzleDb, { migrationsFolder });
+  log("[db] Drizzle migrations applied OK");
 }
 
 // Security headers
@@ -388,9 +396,7 @@ const port = parseInt(process.env.PORT || "5000", 10);
 
   // ─── STEP 4: Drizzle migrations (MUST happen before ready flag) ───
   try {
-    const migrationsFolder = path.join(process.cwd(), "migrations");
-    await migrate(drizzleDb, { migrationsFolder });
-    log("[db] Drizzle migrations applied OK");
+    await runDrizzleMigrationsIfAvailable();
   } catch (e: any) {
     bootstrapError = `migration_failed:${e.message}`;
     console.error("[db] Drizzle migration failed:", e.message);
@@ -399,10 +405,9 @@ const port = parseInt(process.env.PORT || "5000", 10);
 
   // ─── STEP 5: Apply custom hardening migration ───
   try {
-    await applyProductionHardeningMigration();
+    await applySqlMigrationsFromDir(path.join(__dirname, "migrations"));
   } catch (e: any) {
-    // Log but don't block if this specific migration fails
-    log(`[migration] 0001_operational_schema_hardening failed (non-fatal): ${e.message}`);
+    log(`[migration] production SQL migrations failed (non-fatal): ${e.message}`);
   }
 
   // ─── STEP 6: Mark server ready — health probe passes from here ───
@@ -447,14 +452,6 @@ const port = parseInt(process.env.PORT || "5000", 10);
   })();
 
   // ─── DB MIGRATION: production_hardening indexes + constraints ───
-  (async () => {
-    try {
-      await applyProductionHardeningMigration();
-    } catch (e: any) {
-      log(`[migration] 001_production_hardening failed (non-fatal): ${e.message}`);
-    }
-  })();
-
   // ─── INITIALIZE PRODUCTION HARDENING (CRITICAL) ───
   (async () => {
     try {

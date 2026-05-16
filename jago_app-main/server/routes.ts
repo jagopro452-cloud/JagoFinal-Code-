@@ -222,41 +222,22 @@ function runUploadSingle(req: Request, res: Response, fieldName: string): Promis
 }
 
 async function ensureDriverDocumentsTable() {
-  await rawDb.execute(rawSql`
-    CREATE TABLE IF NOT EXISTS driver_documents (
-      id SERIAL PRIMARY KEY,
-      driver_id UUID,
-      doc_type VARCHAR(50),
-      file_url TEXT,
-      status VARCHAR(20) DEFAULT 'pending',
-      expiry_date DATE,
-      created_at TIMESTAMPTZ DEFAULT now(),
-      updated_at TIMESTAMPTZ DEFAULT now(),
-      UNIQUE(driver_id, doc_type)
-    )
-  `);
-  await rawDb.execute(rawSql`ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS expiry_date DATE`).catch(() => {});
-  await rawDb.execute(rawSql`
-    CREATE UNIQUE INDEX IF NOT EXISTS driver_documents_driver_doc_type_idx
-    ON driver_documents (driver_id, doc_type)
-  `).catch(() => {});
+  return;
 }
 
 async function ensureDriverDetailsRow(userId: string, vehicleType?: string | null) {
-  await rawDb.execute(rawSql`ALTER TABLE driver_details ADD COLUMN IF NOT EXISTS vehicle_type VARCHAR(50)`).catch(() => {});
-  await rawDb.execute(rawSql`ALTER TABLE driver_details ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now()`).catch(() => {});
-  const existing = await rawDb.execute(rawSql`SELECT id FROM driver_details WHERE user_id=${userId}::uuid LIMIT 1`).catch(() => ({ rows: [] as any[] }));
+  const existing = await rawDb.execute(rawSql`SELECT id FROM driver_details WHERE user_id=${userId}::uuid LIMIT 1`);
   if (!existing.rows.length) {
     await rawDb.execute(rawSql`
       INSERT INTO driver_details (user_id, vehicle_type, availability_status, is_online, total_trips, avg_rating, created_at, updated_at)
       VALUES (${userId}::uuid, ${vehicleType || 'bike'}, 'offline', false, 0, 5.0, now(), now())
-    `).catch(() => {});
+    `);
     return;
   }
   if (vehicleType) {
     await rawDb.execute(rawSql`
       UPDATE driver_details SET vehicle_type=${vehicleType}, updated_at=now() WHERE user_id=${userId}::uuid
-    `).catch(() => {});
+    `);
   }
 }
 
@@ -345,6 +326,270 @@ function dbCatch(label: string) {
 /** dbCatchRows � logs DB read errors and returns empty rows fallback. */
 function dbCatchRows(label: string): (err: any) => { rows: any[] } {
   return (err: any) => { console.error(`[db:${label}]`, formatDbError(err)); return { rows: [] as any[] }; };
+}
+
+function normalizePhone(phone: unknown): string {
+  return String(phone || "").replace(/\D/g, "").slice(-10);
+}
+
+function maskPhone(phone: string): string {
+  if (!phone) return "";
+  return phone.slice(-4).padStart(phone.length, "*");
+}
+
+function canonicalRoleForUserType(_userType: string): string {
+  return "user";
+}
+
+function sanitizeRegistrationPayload(body: any) {
+  return {
+    phone: maskPhone(normalizePhone(body?.phone)),
+    userType: body?.userType || null,
+    fullName: typeof body?.fullName === "string" ? body.fullName.trim() : null,
+    hasPassword: typeof body?.password === "string" && body.password.length >= 6,
+    email: typeof body?.email === "string" ? body.email.trim() : null,
+    city: typeof body?.city === "string" ? body.city.trim() : null,
+    vehicleType: body?.vehicleType || null,
+    vehicleNumber: body?.vehicleNumber || null,
+    docType: body?.docType || null,
+  };
+}
+
+function logRegistrationAudit(event: string, body: any, extra?: Record<string, unknown>) {
+  console.info(`[registration] ${event}`, JSON.stringify({
+    ...sanitizeRegistrationPayload(body),
+    ...(extra || {}),
+  }));
+}
+
+async function findUserByPhone(trx: any, phone: string, userType?: string) {
+  if (userType) {
+    return trx.execute(rawSql`
+      SELECT *
+      FROM users
+      WHERE (phone=${phone} OR mobile=${phone})
+        AND (
+          user_type=${userType}
+          OR (${userType}='customer' AND (user_type IS NULL OR role IN ('user', 'customer')))
+        )
+      LIMIT 1
+    `);
+  }
+  return trx.execute(rawSql`
+    SELECT *
+    FROM users
+    WHERE phone=${phone} OR mobile=${phone}
+    LIMIT 1
+  `);
+}
+
+async function upsertCustomerProfileRow(trx: any, userId: string, city?: string | null) {
+  await trx.execute(rawSql`
+    INSERT INTO customer_profiles (user_id, city, created_at, updated_at)
+    VALUES (${userId}::uuid, ${city || null}, NOW(), NOW())
+    ON CONFLICT (user_id) DO UPDATE
+    SET city = COALESCE(EXCLUDED.city, customer_profiles.city),
+        updated_at = NOW()
+  `);
+}
+
+async function upsertVehicleRow(
+  trx: any,
+  userId: string,
+  vehicle: {
+    vehicleType?: string | null;
+    vehicleBrand?: string | null;
+    vehicleModel?: string | null;
+    vehicleColor?: string | null;
+    vehicleYear?: number | null;
+    vehicleNumber?: string | null;
+    verificationStatus?: string | null;
+  },
+) {
+  await trx.execute(rawSql`
+    INSERT INTO vehicles (
+      user_id, vehicle_type, brand, model, color, vehicle_year,
+      registration_number, verification_status, created_at, updated_at
+    )
+    VALUES (
+      ${userId}::uuid, ${vehicle.vehicleType || null}, ${vehicle.vehicleBrand || null},
+      ${vehicle.vehicleModel || null}, ${vehicle.vehicleColor || null}, ${vehicle.vehicleYear || null},
+      ${vehicle.vehicleNumber || null}, ${vehicle.verificationStatus || 'pending'}, NOW(), NOW()
+    )
+    ON CONFLICT (user_id) DO UPDATE
+    SET vehicle_type = COALESCE(EXCLUDED.vehicle_type, vehicles.vehicle_type),
+        brand = COALESCE(EXCLUDED.brand, vehicles.brand),
+        model = COALESCE(EXCLUDED.model, vehicles.model),
+        color = COALESCE(EXCLUDED.color, vehicles.color),
+        vehicle_year = COALESCE(EXCLUDED.vehicle_year, vehicles.vehicle_year),
+        registration_number = COALESCE(EXCLUDED.registration_number, vehicles.registration_number),
+        verification_status = COALESCE(EXCLUDED.verification_status, vehicles.verification_status),
+        updated_at = NOW()
+  `);
+}
+
+async function upsertDriverDetailsRow(
+  trx: any,
+  userId: string,
+  vehicleType?: string | null,
+  vehicleCategoryId?: string | null,
+) {
+  await trx.execute(rawSql`
+    INSERT INTO driver_details (
+      user_id, vehicle_type, vehicle_category_id, availability_status,
+      is_online, total_trips, avg_rating, created_at, updated_at
+    )
+    VALUES (
+      ${userId}::uuid, ${vehicleType || 'bike'}, ${vehicleCategoryId || null}::uuid,
+      'offline', false, 0, 5.0, NOW(), NOW()
+    )
+    ON CONFLICT (user_id) DO UPDATE
+    SET vehicle_type = COALESCE(EXCLUDED.vehicle_type, driver_details.vehicle_type),
+        vehicle_category_id = COALESCE(EXCLUDED.vehicle_category_id, driver_details.vehicle_category_id),
+        updated_at = NOW()
+  `);
+}
+
+async function upsertDriverDocumentRow(
+  trx: any,
+  userId: string,
+  docType: string,
+  fileUrl: string,
+  expiryDate?: string | null,
+) {
+  await trx.execute(rawSql`
+    INSERT INTO driver_documents (
+      driver_id, doc_type, file_url, doc_url, status, verification_status,
+      expiry_date, created_at, updated_at
+    )
+    VALUES (
+      ${userId}::uuid, ${docType}, ${fileUrl}, ${fileUrl},
+      'pending', 'pending', ${expiryDate || null}, NOW(), NOW()
+    )
+    ON CONFLICT (driver_id, doc_type) DO UPDATE
+    SET file_url = EXCLUDED.file_url,
+        doc_url = EXCLUDED.doc_url,
+        status = 'pending',
+        verification_status = 'pending',
+        expiry_date = COALESCE(EXCLUDED.expiry_date, driver_documents.expiry_date),
+        updated_at = NOW()
+  `);
+
+  await trx.execute(rawSql`
+    INSERT INTO documents (
+      id, user_id, document_type, document_name, document_url, status, submitted_at
+    )
+    VALUES (
+      gen_random_uuid()::text, ${userId}::uuid, ${docType}, ${docType}, ${fileUrl}, 'pending', NOW()
+    )
+    ON CONFLICT (user_id, document_type) DO UPDATE
+    SET document_name = EXCLUDED.document_name,
+        document_url = EXCLUDED.document_url,
+        status = EXCLUDED.status,
+        submitted_at = NOW()
+  `);
+}
+
+async function provisionAppUserSessionTx(
+  trx: any,
+  input: {
+    phone: string;
+    userType: string;
+    fullName?: string | null;
+    email?: string | null;
+    passwordHash?: string | null;
+    referralCode?: string | null;
+    city?: string | null;
+    vehicleType?: string | null;
+  },
+) {
+  const anyUserRes = await findUserByPhone(trx, input.phone);
+  const anyUser = anyUserRes.rows.length ? (camelize(anyUserRes.rows[0]) as any) : null;
+  const isNew = !anyUser;
+  const fullName = (input.fullName || anyUser?.fullName || anyUser?.name || `User_${input.phone.slice(-4)}`).trim();
+  const role = canonicalRoleForUserType(input.userType);
+  const verificationStatus =
+    input.userType === "driver"
+      ? (anyUser?.verificationStatus && String(anyUser.verificationStatus).trim()) || "pending"
+      : (anyUser?.verificationStatus && String(anyUser.verificationStatus).trim()) || "verified";
+
+  let userId = anyUser?.id as string | undefined;
+  if (anyUser) {
+    await trx.execute(rawSql`
+      UPDATE users
+      SET name=${fullName},
+          full_name=${fullName},
+          mobile=${input.phone},
+          phone=${input.phone},
+          email=${input.email || anyUser.email || null},
+          role=COALESCE(role, ${role}),
+          user_type=${input.userType},
+          password_hash=COALESCE(${input.passwordHash || null}, password_hash),
+          verification_status=${verificationStatus},
+          is_active=true,
+          updated_at=NOW()
+      WHERE id=${anyUser.id}::uuid
+    `);
+  } else {
+    const inserted = await trx.execute(rawSql`
+      INSERT INTO users (
+        name, full_name, mobile, phone, email, role, user_type,
+        is_active, wallet_balance, password_hash, verification_status
+      )
+      VALUES (
+        ${fullName}, ${fullName}, ${input.phone}, ${input.phone}, ${input.email || null},
+        ${role}, ${input.userType}, true, 0, ${input.passwordHash || null}, ${verificationStatus}
+      )
+      RETURNING id
+    `);
+    userId = (inserted.rows[0] as any)?.id;
+  }
+
+  if (!userId) {
+    throw new Error("Failed to resolve user id during registration");
+  }
+
+  if (input.userType === "driver") {
+    await upsertDriverDetailsRow(trx, userId, input.vehicleType || "bike");
+  } else {
+    await upsertCustomerProfileRow(trx, userId, input.city || null);
+  }
+
+  const referralCode = `JAGOPRO${input.phone.slice(-6)}`;
+  await trx.execute(rawSql`
+    UPDATE users
+    SET referral_code = COALESCE(referral_code, ${referralCode})
+    WHERE id=${userId}::uuid
+  `);
+
+  if (input.referralCode) {
+    const referrer = await trx.execute(rawSql`SELECT id FROM users WHERE referral_code=${input.referralCode} LIMIT 1`);
+    if (referrer.rows.length) {
+      await trx.execute(rawSql`
+        INSERT INTO referrals (referrer_id, referred_id, referral_type, status, reward_amount)
+        VALUES (${(referrer.rows[0] as any).id}::uuid, ${userId}::uuid, ${input.userType}, 'pending', 50)
+        ON CONFLICT DO NOTHING
+      `);
+    }
+  }
+
+  const finalUserRes = await findUserByPhone(trx, input.phone, input.userType);
+  const finalUser = camelize(finalUserRes.rows[0]) as any;
+  const token = `${userId}:${crypto.randomBytes(32).toString("hex")}`;
+  const tokenExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  await trx.execute(rawSql`
+    UPDATE users
+    SET auth_token=${token},
+        auth_token_expires_at=${tokenExpiry},
+        last_login_at=NOW()
+    WHERE id=${userId}::uuid
+  `);
+
+  return {
+    isNew,
+    token,
+    user: finalUser,
+  };
 }
 
 const TRIP_UI_STATE_MAP: Record<string, string> = {
@@ -7565,8 +7810,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const { phone, userType = "customer" } = req.body;
       if (!phone) return res.status(400).json({ message: "Phone required" });
-      const phoneStr = phone.toString().replace(/\D/g, "");
+      const phoneStr = normalizePhone(phone);
       if (phoneStr.length < 10) return res.status(400).json({ message: "Invalid phone number" });
+      logRegistrationAudit("verify-otp.request", req.body, { provider: "server_otp" });
 
       // Rate limiting: max 5 OTPs per phone per hour
       const recentCount = await rawDb.execute(rawSql`
@@ -7591,8 +7837,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const { phone, otp, userType = "customer", name, referralCode } = req.body;
       if (!phone || !otp) return res.status(400).json({ message: "Phone and OTP required" });
-      const phoneStr = phone.toString().replace(/\D/g, "");
+      const phoneStr = normalizePhone(phone);
       if (phoneStr.length < 10) return res.status(400).json({ message: "Invalid phone number" });
+      logRegistrationAudit("verify-otp.request", req.body, { provider: "server_otp", phone: maskPhone(phoneStr) });
 
       // Per-phone OTP brute force protection (max_attempts from otp_settings, default 3)
       const otpCfg = await rawDb.execute(rawSql`SELECT max_attempts FROM otp_settings LIMIT 1`)
@@ -7625,6 +7872,33 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       // Mark used
       await rawDb.execute(rawSql`UPDATE otp_logs SET is_used=true WHERE id=${(otpRow.rows[0] as any).id}::uuid`);
+
+      const session = await rawDb.transaction(async (trx) =>
+        provisionAppUserSessionTx(trx, {
+          phone: phoneStr,
+          userType,
+          fullName: name || null,
+          referralCode: referralCode || null,
+        })
+      );
+
+      return res.json({
+        success: true,
+        isNew: session.isNew,
+        token: session.token,
+        user: {
+          id: session.user.id,
+          fullName: session.user.fullName || session.user.name,
+          phone: session.user.phone || session.user.mobile,
+          email: session.user.email || null,
+          userType: session.user.userType,
+          profilePhoto: session.user.profilePhoto || session.user.profileImage || null,
+          rating: parseFloat(session.user.rating || "5.0"),
+          isActive: session.user.isActive,
+          walletBalance: safeFloat(session.user.walletBalance, 0),
+          isLocked: session.user.isLocked || false,
+        }
+      });
 
       // Find or create user
       let userRes = await rawDb.execute(rawSql`SELECT * FROM users WHERE phone=${phoneStr} AND user_type=${userType} LIMIT 1`);
@@ -7748,6 +8022,32 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ message: "Could not determine phone number from token" });
       }
 
+      logRegistrationAudit("verify-firebase-token.request", req.body, { provider: "firebase", phone: maskPhone(phoneStr) });
+      const session = await rawDb.transaction(async (trx) =>
+        provisionAppUserSessionTx(trx, {
+          phone: phoneStr,
+          userType,
+        })
+      );
+
+      return res.json({
+        success: true,
+        isNew: session.isNew,
+        token: session.token,
+        user: {
+          id: session.user.id,
+          fullName: session.user.fullName || session.user.name,
+          phone: session.user.phone || session.user.mobile,
+          email: session.user.email || null,
+          userType: session.user.userType,
+          profilePhoto: session.user.profilePhoto || session.user.profileImage || null,
+          rating: parseFloat(session.user.rating || "5.0"),
+          isActive: session.user.isActive,
+          walletBalance: safeFloat(session.user.walletBalance, 0),
+          isLocked: session.user.isLocked || false,
+        }
+      });
+
       // Find or create user
       let userRes = await rawDb.execute(rawSql`SELECT * FROM users WHERE phone=${phoneStr} AND user_type=${userType} LIMIT 1`);
       let user: any;
@@ -7805,101 +8105,39 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const { phone, password, fullName, userType = "customer", email } = req.body;
       if (!phone || !password || !fullName) return res.status(400).json({ message: "Phone, password and name are required" });
       if (!['customer', 'driver'].includes(userType)) return res.status(400).json({ message: "Invalid user type" });
-      if (phone.length !== 10) return res.status(400).json({ message: "Enter a valid 10-digit phone number" });
+      const phoneStr = normalizePhone(phone);
+      if (phoneStr.length !== 10) return res.status(400).json({ message: "Enter a valid 10-digit phone number" });
       if (fullName.length > 100) return res.status(400).json({ message: "Name too long (max 100 chars)" });
       if (email && email.length > 200) return res.status(400).json({ message: "Email too long" });
       if (password.length < 6) return res.status(400).json({ message: "Password must be at least 6 characters" });
-      const dbRole = userType === 'driver' ? 'user' : 'user';
-      const existing = await rawDb.execute(rawSql`
-        SELECT * FROM users
-        WHERE phone=${phone} OR mobile=${phone}
-        LIMIT 1
-      `);
-      if (existing.rows.length) {
-        const existingUser = camelize(existing.rows[0]) as any;
-        if (existingUser.userType === userType) {
-          return res.status(409).json({ message: "Account already exists. Please login." });
-        }
-
-        // Legacy/live DBs often keep phone unique across all roles.
-        // When a customer later becomes a driver, upgrade the same account
-        // instead of attempting a conflicting second insert.
-        const passwordHash = await hashPassword(password);
-        await rawDb.execute(rawSql`
-          UPDATE users SET
-            name=${fullName},
-            full_name=${fullName},
-            mobile=${phone},
-            phone=${phone},
-            email=${email || existingUser.email || null},
-            role=COALESCE(role, ${dbRole}),
-            user_type=${userType},
-            password_hash=${passwordHash},
-            verification_status=${userType === 'driver' ? 'pending' : (existingUser.verificationStatus || 'verified')},
-            is_active=true,
-            updated_at=now()
-          WHERE id=${existingUser.id}::uuid
-        `);
-        if (userType === 'driver') {
-          await ensureDriverDetailsRow(existingUser.id, 'bike');
-        }
-        const token = `${existingUser.id}:${crypto.randomBytes(32).toString("hex")}`;
-        const tokenExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-        await rawDb.execute(rawSql`UPDATE users SET auth_token=${token}, auth_token_expires_at=${tokenExpiry} WHERE id=${existingUser.id}::uuid`);
-        await rawDb.execute(rawSql`
-          UPDATE users
-          SET referral_code = COALESCE(referral_code, ${'JAGOPRO' + phone.slice(-6)})
-          WHERE id=${existingUser.id}::uuid
-        `).catch(dbCatch("db"));
-        return res.json({
-          success: true,
-          isNew: false,
-          token,
-          user: {
-            id: existingUser.id,
-            fullName,
-            phone,
-            email: email || existingUser.email || null,
-            userType,
-            walletBalance: safeFloat(existingUser.walletBalance, 0),
-          },
-        });
-      }
+      logRegistrationAudit("register.request", req.body, { phone: maskPhone(phoneStr) });
       const passwordHash = await hashPassword(password);
-      const insertRes = await rawDb.execute(rawSql`
-        INSERT INTO users (name, full_name, mobile, phone, email, role, user_type, is_active, wallet_balance, password_hash, verification_status)
-        VALUES (${fullName}, ${fullName}, ${phone}, ${phone}, ${email || null}, ${dbRole}, ${userType}, true, 0, ${passwordHash}, ${userType === 'driver' ? 'pending' : 'verified'})
-        RETURNING *
-      `);
-      // Set referral_code separately (handles DB where column may not exist yet)
-      const refCode = 'JAGOPRO' + phone.slice(-6);
-      await rawDb.execute(rawSql`
-        UPDATE users
-        SET referral_code=${refCode}
-        WHERE (phone=${phone} OR mobile=${phone}) AND user_type=${userType}
-      `).catch(dbCatch("db"));
-      const user = camelize(insertRes.rows[0]) as any;
-      if (userType === 'driver') {
-        await ensureDriverDetailsRow(user.id, 'bike');
-      }
-      const token = `${user.id}:${crypto.randomBytes(32).toString("hex")}`;
-      const tokenExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-      await rawDb.execute(rawSql`UPDATE users SET auth_token=${token}, auth_token_expires_at=${tokenExpiry} WHERE id=${user.id}::uuid`);
-      // Handle referral code if provided
-      if (req.body.referralCode) {
-        try {
-          const referrer = await rawDb.execute(rawSql`SELECT id FROM users WHERE referral_code=${req.body.referralCode} LIMIT 1`);
-          if (referrer.rows.length) {
-            await rawDb.execute(rawSql`
-              INSERT INTO referrals (referrer_id, referred_id, referral_type, status, reward_amount)
-              VALUES (${(referrer.rows[0] as any).id}::uuid, ${user.id}::uuid, ${userType}, 'pending', 50)
-            `).catch(dbCatch("db"));
-          }
-        } catch (_) { }
-      }
-      res.json({ success: true, isNew: true, token, user: { id: user.id, fullName: user.fullName, phone: user.phone, email: user.email || null, userType: user.userType, walletBalance: 0 } });
+      const session = await rawDb.transaction(async (trx) =>
+        provisionAppUserSessionTx(trx, {
+          phone: phoneStr,
+          userType,
+          fullName,
+          email: email || null,
+          passwordHash,
+          referralCode: req.body?.referralCode || null,
+          vehicleType: userType === "driver" ? "bike" : null,
+        })
+      );
+      res.json({
+        success: true,
+        isNew: session.isNew,
+        token: session.token,
+        user: {
+          id: session.user.id,
+          fullName: session.user.fullName || session.user.name,
+          phone: session.user.phone || session.user.mobile,
+          email: session.user.email || null,
+          userType: session.user.userType,
+          walletBalance: safeFloat(session.user.walletBalance, 0),
+        },
+      });
     } catch (e: any) {
-      console.error("[driver-doc-upload] /api/app/driver/upload-document failed", {
+      console.error("[register] /api/app/register failed", {
         message: e?.message,
         stack: e?.stack,
         phone: req.body?.phone,
@@ -7915,9 +8153,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const { phone, password, userType = "customer" } = req.body;
       if (!phone || !password) return res.status(400).json({ message: "Phone and password are required" });
+      const phoneStr = normalizePhone(phone);
+      if (phoneStr.length !== 10) return res.status(400).json({ message: "Enter a valid 10-digit phone number" });
       const userRes = await rawDb.execute(rawSql`
         SELECT * FROM users
-        WHERE (phone=${phone} OR mobile=${phone})
+        WHERE (phone=${phoneStr} OR mobile=${phoneStr})
           AND (
             user_type=${userType}
             OR (${userType}='customer' AND role IN ('user', 'customer'))
@@ -7932,9 +8172,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!match) return res.status(401).json({ message: "Incorrect password. Please try again." });
       const token = `${user.id}:${crypto.randomBytes(32).toString("hex")}`;
       const tokenExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-      await rawDb.execute(rawSql`UPDATE users SET auth_token=${token}, auth_token_expires_at=${tokenExpiry} WHERE id=${user.id}::uuid`);
+      await rawDb.execute(rawSql`
+        UPDATE users
+        SET auth_token=${token},
+            auth_token_expires_at=${tokenExpiry},
+            last_login_at=NOW()
+        WHERE id=${user.id}::uuid
+      `);
       const walletBalance = safeFloat(user.walletBalance, 0);
-      res.json({ success: true, token, user: { id: user.id, fullName: user.fullName, phone: user.phone, email: user.email || null, userType: user.userType, profilePhoto: user.profilePhoto || null, rating: safeFloat(user.rating, 5.0), isActive: user.isActive, walletBalance, isLocked: user.isLocked || false } });
+      res.json({ success: true, token, user: { id: user.id, fullName: user.fullName || user.name, phone: user.phone || user.mobile, email: user.email || null, userType: user.userType, profilePhoto: user.profilePhoto || user.profileImage || null, rating: safeFloat(user.rating, 5.0), isActive: user.isActive, walletBalance, isLocked: user.isLocked || false } });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -7944,9 +8190,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const { phone, userType = "customer" } = req.body;
       if (!phone) return res.status(400).json({ message: "Phone number is required" });
-      const phoneStr = phone.toString().replace(/\D/g, "");
+      const phoneStr = normalizePhone(phone);
       if (phoneStr.length < 10) return res.status(400).json({ message: "Invalid phone number" });
-      const userRes = await rawDb.execute(rawSql`SELECT id FROM users WHERE phone=${phoneStr} AND user_type=${userType} LIMIT 1`);
+      const userRes = await rawDb.execute(rawSql`
+        SELECT id FROM users
+        WHERE (phone=${phoneStr} OR mobile=${phoneStr}) AND user_type=${userType}
+        LIMIT 1
+      `);
       if (!userRes.rows.length) return res.status(404).json({ message: "No account found with this phone number." });
       // Use Firebase Phone Auth for password reset verification
       console.log(`[RESET] ${phoneStr.slice(-4).padStart(phoneStr.length, '*')} ? Firebase password reset`);
@@ -7959,13 +8209,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const { phone, otp, newPassword, userType = "customer" } = req.body;
       if (!phone || !otp || !newPassword) return res.status(400).json({ message: "Phone, OTP and new password are required" });
-      const phoneStr = phone.toString().replace(/\D/g, "");
+      const phoneStr = normalizePhone(phone);
       if (phoneStr.length < 10) return res.status(400).json({ message: "Invalid phone number" });
       if (newPassword.length < 6) return res.status(400).json({ message: "Password must be at least 6 characters" });
-      const userRes = await rawDb.execute(rawSql`SELECT * FROM users WHERE phone=${phoneStr} AND user_type=${userType} AND reset_otp=${otp} AND reset_otp_expiry > NOW() LIMIT 1`);
+      const userRes = await rawDb.execute(rawSql`
+        SELECT * FROM users
+        WHERE (phone=${phoneStr} OR mobile=${phoneStr})
+          AND user_type=${userType}
+          AND reset_otp=${otp}
+          AND reset_otp_expiry > NOW()
+        LIMIT 1
+      `);
       if (!userRes.rows.length) return res.status(400).json({ message: "Invalid or expired OTP. Please try again." });
       const passwordHash = await hashPassword(newPassword);
-      await rawDb.execute(rawSql`UPDATE users SET password_hash=${passwordHash}, reset_otp=NULL, reset_otp_expiry=NULL WHERE phone=${phoneStr} AND user_type=${userType}`);
+      await rawDb.execute(rawSql`
+        UPDATE users
+        SET password_hash=${passwordHash}, reset_otp=NULL, reset_otp_expiry=NULL, updated_at=NOW()
+        WHERE (phone=${phoneStr} OR mobile=${phoneStr}) AND user_type=${userType}
+      `);
       res.json({ success: true, message: "Password reset successfully. Please login with your new password." });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
@@ -8003,11 +8264,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (firebasePhone !== phoneStr) return res.status(400).json({ message: "Phone number mismatch." });
 
       // Check user exists
-      const userRes = await rawDb.execute(rawSql`SELECT id FROM users WHERE phone=${phoneStr} AND user_type=${userType} LIMIT 1`);
+      const userRes = await rawDb.execute(rawSql`
+        SELECT id FROM users
+        WHERE (phone=${phoneStr} OR mobile=${phoneStr}) AND user_type=${userType}
+        LIMIT 1
+      `);
       if (!userRes.rows.length) return res.status(404).json({ message: "User not found." });
 
       const passwordHash = await hashPassword(newPassword);
-      await rawDb.execute(rawSql`UPDATE users SET password_hash=${passwordHash}, reset_otp=NULL, reset_otp_expiry=NULL WHERE phone=${phoneStr} AND user_type=${userType}`);
+      await rawDb.execute(rawSql`
+        UPDATE users
+        SET password_hash=${passwordHash}, reset_otp=NULL, reset_otp_expiry=NULL, updated_at=NOW()
+        WHERE (phone=${phoneStr} OR mobile=${phoneStr}) AND user_type=${userType}
+      `);
       res.json({ success: true, message: "Password reset successfully. Please login with your new password." });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
@@ -12520,20 +12789,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const { docType, expiryDate } = req.body; // dl_front, dl_back, rc, aadhar_front, aadhar_back, insurance
       const fileUrl = req.file ? `/uploads/${req.file.filename}` : null;
       if (!fileUrl || !docType) return res.status(400).json({ message: "Document type and file required" });
-      await ensureDriverDocumentsTable();
-      await rawDb.execute(rawSql`
-        INSERT INTO driver_documents (driver_id, doc_type, file_url, status, expiry_date, created_at, updated_at)
-        VALUES (${user.id}::uuid, ${docType}, ${fileUrl}, 'pending', ${expiryDate || null}, now(), now())
-        ON CONFLICT (driver_id, doc_type) DO UPDATE
-        SET file_url=${fileUrl}, status='pending', expiry_date=${expiryDate || null}, updated_at=now()
-      `);
+      logRegistrationAudit("driver.upload-document", { docType }, { userId: user.id });
+      await rawDb.transaction(async (trx) => {
+        await upsertDriverDocumentRow(trx, user.id, docType, fileUrl, expiryDate || null);
+      });
       res.json({ success: true, docType, fileUrl, status: 'pending', message: "Document uploaded. Under review." });
     } catch (e: any) {
-      console.error("[driver-register] /api/app/register failed", {
+      console.error("[driver-doc-upload] /api/app/driver/upload-document failed", {
         message: e?.message,
         stack: e?.stack,
-        phone: req.body?.phone,
-        userType: req.body?.userType,
+        userId: (req as any)?.currentUser?.id,
+        docType: req.body?.docType,
       });
       res.status(500).json({ message: safeErrMsg(e) });
     }
@@ -12543,7 +12809,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/app/driver/documents", authApp, async (req, res) => {
     try {
       const user = (req as any).currentUser;
-      const r = await rawDb.execute(rawSql`SELECT * FROM driver_documents WHERE driver_id=${user.id}::uuid`).catch(() => ({ rows: [] }));
+      const r = await rawDb.execute(rawSql`
+        SELECT driver_id, doc_type,
+               COALESCE(file_url, doc_url) AS file_url,
+               COALESCE(status, verification_status, 'pending') AS status,
+               expiry_date, admin_note, reviewed_at, created_at, updated_at
+        FROM driver_documents
+        WHERE driver_id=${user.id}::uuid
+        ORDER BY created_at
+      `).catch(() => ({ rows: [] }));
       res.json({ success: true, documents: r.rows.map(camelize) });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
@@ -12556,12 +12830,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!docType || !imageData) return res.status(400).json({ message: "docType and imageData required" });
       const validTypes = ['dl_front', 'dl_back', 'rc', 'aadhar_front', 'aadhar_back', 'insurance', 'selfie', 'vehicle_photo'];
       if (!validTypes.includes(docType)) return res.status(400).json({ message: "Invalid docType" });
-      await ensureDriverDocumentsTable();
-      await rawDb.execute(rawSql`
-        INSERT INTO driver_documents (driver_id, doc_type, file_url, status, expiry_date, created_at, updated_at)
-        VALUES (${user.id}::uuid, ${docType}, ${imageData}, 'pending', ${expiryDate || null}, now(), now())
-        ON CONFLICT (driver_id, doc_type) DO UPDATE SET file_url=${imageData}, status='pending', expiry_date=${expiryDate || null}, updated_at=now()
-      `);
+      logRegistrationAudit("driver.upload-document-base64", { docType }, { userId: user.id });
+      await rawDb.transaction(async (trx) => {
+        await upsertDriverDocumentRow(trx, user.id, docType, imageData, expiryDate || null);
+      });
       res.json({ success: true, docType, status: 'pending', message: "Document uploaded. Under review." });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
@@ -12581,24 +12853,38 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (password && typeof password === 'string' && password.length >= 6) {
         passwordHash = await hashPassword(password);
       }
-      await rawDb.execute(rawSql`
-        UPDATE users SET
-          full_name = COALESCE(${fullName || null}, full_name),
-          date_of_birth = COALESCE(${dateOfBirth || null}, date_of_birth),
-          city = COALESCE(${city || null}, city),
-          vehicle_brand = COALESCE(${vehicleBrand || null}, vehicle_brand),
-          vehicle_color = COALESCE(${vehicleColor || null}, vehicle_color),
-          vehicle_year = COALESCE(${vehicleYear || null}, vehicle_year),
-          license_number = COALESCE(${licenseNumber || null}, license_number),
-          license_expiry = COALESCE(${licenseExpiry || null}, license_expiry),
-          vehicle_number = COALESCE(${vehicleNumber || null}, vehicle_number),
-          vehicle_model = COALESCE(${vehicleModel || null}, vehicle_model),
-          selfie_image = COALESCE(${selfieImage || null}, selfie_image),
-          password_hash = COALESCE(${passwordHash || null}, password_hash),
-          updated_at = now()
-        WHERE id = ${user.id}::uuid
-      `);
-      await ensureDriverDetailsRow(user.id, vehicleType || null);
+      logRegistrationAudit("driver.update-registration", req.body, { userId: user.id });
+      await rawDb.transaction(async (trx) => {
+        await trx.execute(rawSql`
+          UPDATE users SET
+            name = COALESCE(${fullName || null}, name),
+            full_name = COALESCE(${fullName || null}, full_name),
+            date_of_birth = COALESCE(${dateOfBirth || null}, date_of_birth),
+            city = COALESCE(${city || null}, city),
+            vehicle_brand = COALESCE(${vehicleBrand || null}, vehicle_brand),
+            vehicle_color = COALESCE(${vehicleColor || null}, vehicle_color),
+            vehicle_year = COALESCE(${vehicleYear || null}, vehicle_year),
+            license_number = COALESCE(${licenseNumber || null}, license_number),
+            license_expiry = COALESCE(${licenseExpiry || null}, license_expiry),
+            vehicle_number = COALESCE(${vehicleNumber || null}, vehicle_number),
+            vehicle_model = COALESCE(${vehicleModel || null}, vehicle_model),
+            selfie_image = COALESCE(${selfieImage || null}, selfie_image),
+            password_hash = COALESCE(${passwordHash || null}, password_hash),
+            verification_status = COALESCE(verification_status, 'pending'),
+            updated_at = NOW()
+          WHERE id = ${user.id}::uuid
+        `);
+        await upsertDriverDetailsRow(trx, user.id, vehicleType || null);
+        await upsertVehicleRow(trx, user.id, {
+          vehicleType: vehicleType || null,
+          vehicleBrand: vehicleBrand || null,
+          vehicleModel: vehicleModel || null,
+          vehicleColor: vehicleColor || null,
+          vehicleYear: vehicleYear || null,
+          vehicleNumber: vehicleNumber || null,
+          verificationStatus: "pending",
+        });
+      });
       res.json({ success: true, message: "Profile updated" });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
@@ -12620,7 +12906,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         WHERE u.id = ${user.id}::uuid
       `);
       const docsR = await rawDb.execute(rawSql`
-        SELECT doc_type, status, expiry_date, admin_note, reviewed_at
+        SELECT doc_type,
+               COALESCE(file_url, doc_url) AS file_url,
+               COALESCE(status, verification_status, 'pending') AS status,
+               expiry_date, admin_note, reviewed_at
         FROM driver_documents WHERE driver_id = ${user.id}::uuid ORDER BY created_at
       `).catch(() => ({ rows: [] }));
       const profile = camelize(profileR.rows[0] || {});
@@ -12798,7 +13087,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       `);
       const drivers = await Promise.all(r.rows.map(async (d: any) => {
         const docsR = await rawDb.execute(rawSql`
-          SELECT doc_type, file_url, status, expiry_date, admin_note, reviewed_at
+          SELECT doc_type,
+                 COALESCE(file_url, doc_url) AS file_url,
+                 COALESCE(status, verification_status, 'pending') AS status,
+                 expiry_date, admin_note, reviewed_at
           FROM driver_documents WHERE driver_id = ${d.id}::uuid ORDER BY created_at
         `).catch(() => ({ rows: [] }));
         return { ...camelize(d), documents: docsR.rows.map(camelize) };
@@ -12815,8 +13107,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!docType || !status) return res.status(400).json({ message: "docType and status required" });
       if (!['approved', 'rejected', 'pending'].includes(status)) return res.status(400).json({ message: "Invalid status" });
       await rawDb.execute(rawSql`
-        UPDATE driver_documents SET status=${status}, admin_note=${adminNote || null},
-          reviewed_at=NOW(), updated_at=NOW()
+        UPDATE driver_documents SET
+          status=${status},
+          verification_status=${status},
+          admin_note=${adminNote || null},
+          reviewed_at=NOW(),
+          updated_at=NOW()
         WHERE driver_id=${id}::uuid AND doc_type=${docType}
       `);
       res.json({ success: true, docType, status });

@@ -25,6 +25,7 @@
     "test:coverage": "vitest run --coverage",
     "smoke:core": "node scripts/smoke-api-patched-flows.cjs",
     "smoke:prod": "node scripts/e2e-production-readiness.cjs",
+    "schema:drift": "node scripts/schema-drift-check.cjs",
     "ops:health": "node scripts/ops/health-alert.cjs",
     "load:basic": "node scripts/load-basic-concurrency.cjs"
   },
