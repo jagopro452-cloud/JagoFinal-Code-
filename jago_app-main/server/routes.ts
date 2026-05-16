@@ -201,6 +201,26 @@ const upload = multer({
   },
 });
 
+function runUploadSingle(req: Request, res: Response, fieldName: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    upload.single(fieldName)(req as any, res as any, (err: any) => {
+      if (!err) {
+        resolve();
+        return;
+      }
+      if (err instanceof multer.MulterError) {
+        if (err.code === "LIMIT_FILE_SIZE") {
+          reject(new Error("Image upload failed. File is too large. Please use an image under 8 MB."));
+          return;
+        }
+        reject(new Error(`Image upload failed. ${err.message}`));
+        return;
+      }
+      reject(err);
+    });
+  });
+}
+
 async function ensureDriverDocumentsTable() {
   await rawDb.execute(rawSql`
     CREATE TABLE IF NOT EXISTS driver_documents (
@@ -220,6 +240,22 @@ async function ensureDriverDocumentsTable() {
     CREATE UNIQUE INDEX IF NOT EXISTS driver_documents_driver_doc_type_idx
     ON driver_documents (driver_id, doc_type)
   `).catch(() => {});
+}
+
+async function ensureDriverDetailsRow(userId: string, vehicleType?: string | null) {
+  const existing = await rawDb.execute(rawSql`SELECT id FROM driver_details WHERE user_id=${userId}::uuid LIMIT 1`).catch(() => ({ rows: [] as any[] }));
+  if (!existing.rows.length) {
+    await rawDb.execute(rawSql`
+      INSERT INTO driver_details (user_id, vehicle_type, availability_status, is_online, total_trips, avg_rating, created_at, updated_at)
+      VALUES (${userId}::uuid, ${vehicleType || 'bike'}, 'offline', false, 0, 5.0, now(), now())
+    `).catch(() => {});
+    return;
+  }
+  if (vehicleType) {
+    await rawDb.execute(rawSql`
+      UPDATE driver_details SET vehicle_type=${vehicleType}, updated_at=now() WHERE user_id=${userId}::uuid
+    `).catch(() => {});
+  }
 }
 
 function generateRefId(): string {
@@ -7771,8 +7807,53 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (fullName.length > 100) return res.status(400).json({ message: "Name too long (max 100 chars)" });
       if (email && email.length > 200) return res.status(400).json({ message: "Email too long" });
       if (password.length < 6) return res.status(400).json({ message: "Password must be at least 6 characters" });
-      const existing = await rawDb.execute(rawSql`SELECT id FROM users WHERE phone=${phone} AND user_type=${userType} LIMIT 1`);
-      if (existing.rows.length) return res.status(409).json({ message: "Account already exists. Please login." });
+      const existing = await rawDb.execute(rawSql`SELECT * FROM users WHERE phone=${phone} LIMIT 1`);
+      if (existing.rows.length) {
+        const existingUser = camelize(existing.rows[0]) as any;
+        if (existingUser.userType === userType) {
+          return res.status(409).json({ message: "Account already exists. Please login." });
+        }
+
+        // Legacy/live DBs often keep phone unique across all roles.
+        // When a customer later becomes a driver, upgrade the same account
+        // instead of attempting a conflicting second insert.
+        const passwordHash = await hashPassword(password);
+        await rawDb.execute(rawSql`
+          UPDATE users SET
+            full_name=${fullName},
+            email=${email || existingUser.email || null},
+            user_type=${userType},
+            password_hash=${passwordHash},
+            verification_status=${userType === 'driver' ? 'pending' : (existingUser.verificationStatus || 'verified')},
+            is_active=true,
+            updated_at=now()
+          WHERE id=${existingUser.id}::uuid
+        `);
+        if (userType === 'driver') {
+          await ensureDriverDetailsRow(existingUser.id, 'bike');
+        }
+        const token = `${existingUser.id}:${crypto.randomBytes(32).toString("hex")}`;
+        const tokenExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+        await rawDb.execute(rawSql`UPDATE users SET auth_token=${token}, auth_token_expires_at=${tokenExpiry} WHERE id=${existingUser.id}::uuid`);
+        await rawDb.execute(rawSql`
+          UPDATE users
+          SET referral_code = COALESCE(referral_code, ${'JAGOPRO' + phone.slice(-6)})
+          WHERE id=${existingUser.id}::uuid
+        `).catch(dbCatch("db"));
+        return res.json({
+          success: true,
+          isNew: false,
+          token,
+          user: {
+            id: existingUser.id,
+            fullName,
+            phone,
+            email: email || existingUser.email || null,
+            userType,
+            walletBalance: safeFloat(existingUser.walletBalance, 0),
+          },
+        });
+      }
       const passwordHash = await hashPassword(password);
       const insertRes = await rawDb.execute(rawSql`
         INSERT INTO users (full_name, phone, email, user_type, is_active, wallet_balance, password_hash)
@@ -7783,6 +7864,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const refCode = 'JAGOPRO' + phone.slice(-6);
       await rawDb.execute(rawSql`UPDATE users SET referral_code=${refCode} WHERE phone=${phone} AND user_type=${userType}`).catch(dbCatch("db"));
       const user = camelize(insertRes.rows[0]) as any;
+      if (userType === 'driver') {
+        await ensureDriverDetailsRow(user.id, 'bike');
+      }
       const token = `${user.id}:${crypto.randomBytes(32).toString("hex")}`;
       const tokenExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
       await rawDb.execute(rawSql`UPDATE users SET auth_token=${token}, auth_token_expires_at=${tokenExpiry} WHERE id=${user.id}::uuid`);
@@ -12398,8 +12482,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // -- DRIVER: Upload documents (DL, RC, Aadhar) ----------------------------
-  app.post("/api/app/driver/upload-document", authApp, upload.single("document"), async (req, res) => {
+  app.post("/api/app/driver/upload-document", authApp, async (req, res) => {
     try {
+      await runUploadSingle(req, res, "document");
       const user = (req as any).currentUser;
       const { docType, expiryDate } = req.body; // dl_front, dl_back, rc, aadhar_front, aadhar_back, insurance
       const fileUrl = req.file ? `/uploads/${req.file.filename}` : null;
@@ -12474,11 +12559,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           updated_at = now()
         WHERE id = ${user.id}::uuid
       `);
-      if (vehicleType) {
-        await rawDb.execute(rawSql`
-          UPDATE driver_details SET vehicle_type=${vehicleType}, updated_at=now() WHERE user_id=${user.id}::uuid
-        `).catch(dbCatch("db"));
-      }
+      await ensureDriverDetailsRow(user.id, vehicleType || null);
       res.json({ success: true, message: "Profile updated" });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
