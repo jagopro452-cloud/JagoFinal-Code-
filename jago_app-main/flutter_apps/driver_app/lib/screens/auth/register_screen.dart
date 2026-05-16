@@ -428,11 +428,22 @@ class _RegisterScreenState extends State<RegisterScreen> {
         if (phone.length != 10) throw Exception('Enter a valid 10-digit phone number');
         if (password.length < 6) throw Exception('Password must be at least 6 characters');
         if (name.length < 2) throw Exception('Please enter your full name');
-        final regRes = await AuthService.registerWithPassword(phone, password, name);
-        if (regRes['success'] != true) {
-          throw Exception(regRes['message'] ?? 'Registration failed. Try again.');
+        if (mounted) {
+          setState(() {
+            _uploadStatusText = 'Restoring your account session...';
+          });
+        }
+        final loginRes = await AuthService.loginWithPassword(phone, password);
+        if (loginRes['success'] != true || (await AuthService.getToken())?.isEmpty != false) {
+          final regRes = await AuthService.registerWithPassword(phone, password, name);
+          if (regRes['success'] != true) {
+            throw Exception(regRes['message'] ?? 'Registration failed. Try again.');
+          }
         }
         token = await AuthService.getToken();
+        if (token == null || token.isEmpty) {
+          throw Exception('Session expired. Please login again.');
+        }
       }
 
       final authHeaders = await AuthService.getHeaders();
@@ -458,7 +469,48 @@ class _RegisterScreenState extends State<RegisterScreen> {
         }),
       );
 
-      if (profileRes.statusCode != 200) {
+      if (profileRes.statusCode == 401 || profileRes.statusCode == 403) {
+        final relogin = await AuthService.loginWithPassword(
+          _phoneCtrl.text.trim(),
+          _passwordCtrl.text,
+        );
+        if (relogin['success'] == true) {
+          final retriedHeaders = {
+            ...(await AuthService.getHeaders()),
+            'Content-Type': 'application/json',
+          };
+          final retriedProfileRes = await http.patch(
+            Uri.parse('${ApiConfig.baseUrl}/api/app/driver/update-registration'),
+            headers: retriedHeaders,
+            body: jsonEncode({
+              'name': _nameCtrl.text.trim(),
+              'dob': _dob?.toIso8601String(),
+              'city': _cityCtrl.text.trim(),
+              'password': _passwordCtrl.text,
+              'licenseNumber': _licenseNumCtrl.text.trim(),
+              'licenseExpiry': _licenseExpiry?.toIso8601String(),
+              'vehicleBrand': _vehicleBrandCtrl.text.trim(),
+              'vehicleModel': _vehicleModelCtrl.text.trim(),
+              'vehicleColor': _vehicleColorCtrl.text.trim(),
+              'vehicleYear': int.tryParse(_vehicleYearCtrl.text.trim()),
+              'vehicleNumber': _vehicleNumCtrl.text.trim().toUpperCase(),
+              'vehicleType': _vehicleType,
+            }),
+          );
+          if (retriedProfileRes.statusCode != 200) {
+            String msg = 'Failed to update profile';
+            try {
+              if ((retriedProfileRes.headers['content-type'] ?? '').contains('application/json')) {
+                final decoded = jsonDecode(retriedProfileRes.body);
+                msg = decoded['message'] ?? msg;
+              }
+            } catch (_) {}
+            throw Exception(msg);
+          }
+        } else {
+          throw Exception(relogin['message'] ?? 'Session expired. Please login again.');
+        }
+      } else if (profileRes.statusCode != 200) {
         String msg = 'Failed to update profile';
         try {
           if ((profileRes.headers['content-type'] ?? '').contains('application/json')) {

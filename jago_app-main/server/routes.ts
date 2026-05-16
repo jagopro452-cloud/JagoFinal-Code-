@@ -12497,7 +12497,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         SET file_url=${fileUrl}, status='pending', expiry_date=${expiryDate || null}, updated_at=now()
       `);
       res.json({ success: true, docType, fileUrl, status: 'pending', message: "Document uploaded. Under review." });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+    } catch (e: any) {
+      console.error("[driver-register] /api/app/register failed", {
+        message: e?.message,
+        stack: e?.stack,
+        phone: req.body?.phone,
+        userType: req.body?.userType,
+      });
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
   });
 
   // -- DRIVER: Get documents status ------------------------------------------
