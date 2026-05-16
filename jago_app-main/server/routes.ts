@@ -180,7 +180,15 @@ const diskStorage = multer.diskStorage({
     cb(null, `${Date.now()}-${crypto.randomBytes(6).toString("hex")}${ext}`);
   },
 });
-const ALLOWED_UPLOAD_MIMETYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'application/pdf']);
+const ALLOWED_UPLOAD_MIMETYPES = new Set([
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/webp',
+  'image/heic',
+  'image/heif',
+  'application/pdf',
+]);
 const upload = multer({
   storage: diskStorage,
   limits: { fileSize: 8 * 1024 * 1024 },
@@ -192,6 +200,27 @@ const upload = multer({
     }
   },
 });
+
+async function ensureDriverDocumentsTable() {
+  await rawDb.execute(rawSql`
+    CREATE TABLE IF NOT EXISTS driver_documents (
+      id SERIAL PRIMARY KEY,
+      driver_id UUID,
+      doc_type VARCHAR(50),
+      file_url TEXT,
+      status VARCHAR(20) DEFAULT 'pending',
+      expiry_date DATE,
+      created_at TIMESTAMPTZ DEFAULT now(),
+      updated_at TIMESTAMPTZ DEFAULT now(),
+      UNIQUE(driver_id, doc_type)
+    )
+  `);
+  await rawDb.execute(rawSql`ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS expiry_date DATE`).catch(() => {});
+  await rawDb.execute(rawSql`
+    CREATE UNIQUE INDEX IF NOT EXISTS driver_documents_driver_doc_type_idx
+    ON driver_documents (driver_id, doc_type)
+  `).catch(() => {});
+}
 
 function generateRefId(): string {
   return "TRP" + Math.random().toString(36).substr(2, 7).toUpperCase();
@@ -12372,27 +12401,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/app/driver/upload-document", authApp, upload.single("document"), async (req, res) => {
     try {
       const user = (req as any).currentUser;
-      const { docType } = req.body; // dl_front, dl_back, rc, aadhar_front, aadhar_back, insurance
+      const { docType, expiryDate } = req.body; // dl_front, dl_back, rc, aadhar_front, aadhar_back, insurance
       const fileUrl = req.file ? `/uploads/${req.file.filename}` : null;
       if (!fileUrl || !docType) return res.status(400).json({ message: "Document type and file required" });
+      await ensureDriverDocumentsTable();
       await rawDb.execute(rawSql`
-        INSERT INTO driver_documents (driver_id, doc_type, file_url, status, created_at, updated_at)
-        VALUES (${user.id}::uuid, ${docType}, ${fileUrl}, 'pending', now(), now())
-        ON CONFLICT (driver_id, doc_type) DO UPDATE SET file_url=${fileUrl}, status='pending', updated_at=now()
-      `).catch(async () => {
-        await rawDb.execute(rawSql`
-          CREATE TABLE IF NOT EXISTS driver_documents (
-            id SERIAL PRIMARY KEY,
-            driver_id UUID, doc_type VARCHAR(50), file_url TEXT,
-            status VARCHAR(20) DEFAULT 'pending', created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now(),
-            UNIQUE(driver_id, doc_type)
-          )
-        `);
-        await rawDb.execute(rawSql`
-          INSERT INTO driver_documents (driver_id, doc_type, file_url, status) VALUES (${user.id}::uuid, ${docType}, ${fileUrl}, 'pending')
-          ON CONFLICT (driver_id, doc_type) DO UPDATE SET file_url=${fileUrl}, status='pending', updated_at=now()
-        `);
-      });
+        INSERT INTO driver_documents (driver_id, doc_type, file_url, status, expiry_date, created_at, updated_at)
+        VALUES (${user.id}::uuid, ${docType}, ${fileUrl}, 'pending', ${expiryDate || null}, now(), now())
+        ON CONFLICT (driver_id, doc_type) DO UPDATE
+        SET file_url=${fileUrl}, status='pending', expiry_date=${expiryDate || null}, updated_at=now()
+      `);
       res.json({ success: true, docType, fileUrl, status: 'pending', message: "Document uploaded. Under review." });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
@@ -12414,6 +12432,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!docType || !imageData) return res.status(400).json({ message: "docType and imageData required" });
       const validTypes = ['dl_front', 'dl_back', 'rc', 'aadhar_front', 'aadhar_back', 'insurance', 'selfie', 'vehicle_photo'];
       if (!validTypes.includes(docType)) return res.status(400).json({ message: "Invalid docType" });
+      await ensureDriverDocumentsTable();
       await rawDb.execute(rawSql`
         INSERT INTO driver_documents (driver_id, doc_type, file_url, status, expiry_date, created_at, updated_at)
         VALUES (${user.id}::uuid, ${docType}, ${imageData}, 'pending', ${expiryDate || null}, now(), now())

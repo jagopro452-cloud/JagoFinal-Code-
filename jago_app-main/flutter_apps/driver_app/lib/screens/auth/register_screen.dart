@@ -140,7 +140,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
               const SizedBox(height: 8),
               Text(
                 isSelfie
-                    ? 'Take a fresh live selfie using camera.'
+                    ? 'Use camera or gallery for a clear selfie.'
                     : 'Use camera or gallery for a clear upload.',
                 style: JT.body,
                 textAlign: TextAlign.center,
@@ -157,18 +157,17 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   ImageSource.camera,
                 ),
               ),
-              if (!isSelfie)
-                ListTile(
-                  leading: const Icon(Icons.photo_library, color: JT.primary),
-                  title: Text(
-                    'Choose from Gallery',
-                    style: JT.bodyPrimary,
-                  ),
-                  onTap: () => Navigator.pop(
-                    context,
-                    ImageSource.gallery,
-                  ),
+              ListTile(
+                leading: const Icon(Icons.photo_library, color: JT.primary),
+                title: Text(
+                  'Choose from Gallery',
+                  style: JT.bodyPrimary,
                 ),
+                onTap: () => Navigator.pop(
+                  context,
+                  ImageSource.gallery,
+                ),
+              ),
               const SizedBox(height: 12),
             ],
           ),
@@ -491,22 +490,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
           final expiryDate = (entry.key == 'dl_front' || entry.key == 'dl_back') && _licenseExpiry != null
               ? DateFormat('yyyy-MM-dd').format(_licenseExpiry!)
               : null;
-          final lowerPath = entry.value!.path.toLowerCase();
-          final useBase64Primary = !lowerPath.endsWith('.pdf');
           try {
-            if (useBase64Primary) {
-              await _uploadDocumentBase64Fallback(
-                entry.key,
-                entry.value!,
-                expiryDate: expiryDate,
-              );
-            } else {
-              await _uploadDocumentMultipart(
-                entry.key,
-                entry.value!,
-                expiryDate: expiryDate,
-              );
-            }
+            await _uploadDocumentMultipart(
+              entry.key,
+              entry.value!,
+              expiryDate: expiryDate,
+            );
           } catch (e) {
             final lower = e.toString().toLowerCase();
             final canFallback = lower.contains('temporarily unavailable') ||
@@ -516,19 +505,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
             if (!canFallback) {
               throw Exception('$docLabel upload failed. ${_friendlyUploadError(e)}');
             }
-            if (useBase64Primary) {
-              await _uploadDocumentMultipart(
-                entry.key,
-                entry.value!,
-                expiryDate: expiryDate,
-              );
-            } else {
-              await _uploadDocumentBase64Fallback(
-                entry.key,
-                entry.value!,
-                expiryDate: expiryDate,
-              );
-            }
+            await _uploadDocumentBase64Fallback(
+              entry.key,
+              entry.value!,
+              expiryDate: expiryDate,
+            );
           }
         }
       }
@@ -742,7 +723,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       ),
       const SizedBox(height: 24),
       Text(
-        'Use live camera only. Make sure your face is clearly visible without glasses or hats.',
+        'Use camera or gallery. Make sure your face is clearly visible without glasses or hats.',
         textAlign: TextAlign.center,
         style: JT.body,
       ),
