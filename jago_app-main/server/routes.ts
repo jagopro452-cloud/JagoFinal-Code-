@@ -1334,6 +1334,7 @@ async function ensureOperationalSchema() {
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS seat_price NUMERIC(10,2) DEFAULT 0;
 
       ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS vehicle_type VARCHAR(50);
+      ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS type VARCHAR(50) DEFAULT 'ride';
       ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS base_fare NUMERIC(10,2) DEFAULT 0;
       ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS fare_per_km NUMERIC(10,2) DEFAULT 0;
       ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS minimum_fare NUMERIC(10,2) DEFAULT 0;
@@ -2746,6 +2747,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // Add extra columns if not exists
       await rawDb.execute(rawSql`ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS description TEXT`).catch(dbCatch("db"));
       await rawDb.execute(rawSql`ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS service_type VARCHAR(30) DEFAULT 'ride'`).catch(dbCatch("db"));
+      await rawDb.execute(rawSql`
+        UPDATE vehicle_categories
+        SET type = CASE
+          WHEN COALESCE(service_type, '') IN ('parcel', 'cargo') THEN COALESCE(NULLIF(type, ''), service_type)
+          WHEN COALESCE(is_carpool, false) = true THEN COALESCE(NULLIF(type, ''), 'pool')
+          ELSE COALESCE(NULLIF(type, ''), 'ride')
+        END
+        WHERE type IS NULL OR TRIM(type) = ''
+      `).catch(dbCatch("db"));
 
       const insertedVehicles: any[] = [];
       for (const v of vehicles) {
@@ -4088,7 +4098,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Vehicle Categories (filtered by is_active; optional ?type=ride|parcel|pool)
   app.get("/api/vehicle-categories", async (req, res) => {
     try {
-      const typeFilter = req.query.type?.toString() || '';
+      const typeFilter = req.query.type?.toString().trim().toLowerCase() || '';
       const q = typeFilter
         ? rawSql`
             SELECT *
@@ -4096,7 +4106,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             WHERE is_active = true
               AND (
                 LOWER(COALESCE(service_type, '')) = LOWER(${typeFilter})
-                OR LOWER(type) = LOWER(${typeFilter})
                 OR (
                   LOWER(${typeFilter}) IN ('pool', 'carpool')
                   AND (COALESCE(is_carpool, false) = true OR LOWER(COALESCE(service_type, '')) IN ('pool', 'carpool'))
@@ -4114,11 +4123,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             FROM vehicle_categories
             WHERE is_active = true
             ORDER BY
-              CASE COALESCE(service_type, CASE WHEN type='parcel' THEN 'parcel' ELSE 'ride' END)
+              CASE COALESCE(
+                NULLIF(service_type, ''),
+                CASE WHEN COALESCE(is_carpool, false) = true THEN 'pool' ELSE 'ride' END
+              )
                 WHEN 'ride' THEN 1
                 WHEN 'pool' THEN 2
                 WHEN 'carpool' THEN 2
                 WHEN 'parcel' THEN 3
+                WHEN 'cargo' THEN 4
                 ELSE 4
               END,
               name
