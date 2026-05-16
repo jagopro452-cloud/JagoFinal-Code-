@@ -235,15 +235,27 @@ async function applySqlMigrationsFromDir(migrationsDir: string) {
 }
 
 async function runDrizzleMigrationsIfAvailable() {
-  const migrationsFolder = path.join(process.cwd(), "migrations");
-  const journalPath = path.join(migrationsFolder, "meta", "_journal.json");
-  if (!fsSync.existsSync(migrationsFolder) || !fsSync.existsSync(journalPath)) {
-    log(`[db] Drizzle migrations skipped; journal not found at ${journalPath}`);
+  const candidates = [
+    path.join(process.cwd(), "migrations"),
+    path.join(currentDir, "drizzle-migrations"),
+    path.join(currentDir, "..", "migrations"),
+  ];
+
+  const selected = candidates.find((folder) =>
+    fsSync.existsSync(folder) &&
+    fsSync.existsSync(path.join(folder, "meta", "_journal.json"))
+  );
+
+  if (!selected) {
+    const checked = candidates
+      .map((folder) => path.join(folder, "meta", "_journal.json"))
+      .join(", ");
+    log(`[db] Drizzle migrations skipped; journal not found. Checked: ${checked}`);
     return;
   }
 
-  await migrate(drizzleDb, { migrationsFolder });
-  log("[db] Drizzle migrations applied OK");
+  await migrate(drizzleDb, { migrationsFolder: selected });
+  log(`[db] Drizzle migrations applied OK from ${selected}`);
 }
 
 // Security headers

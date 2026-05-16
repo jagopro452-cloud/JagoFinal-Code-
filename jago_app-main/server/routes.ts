@@ -3747,13 +3747,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           INSERT INTO admin_login_otp (admin_id, otp, expires_at)
           VALUES (${admin.id}::uuid, ${otp}, ${expiresAt.toISOString()})
         `);
-        // Deliver OTP via SMS to the configured admin phone
-        if (adminPhone) {
-          sendCustomSms(adminPhone as string, `JAGO Admin login OTP: ${otp}. Valid 5 minutes. Do not share.`).catch((e: any) => {
-            console.error(`[ADMIN-2FA] SMS delivery failed to ${adminPhone}:`, e.message);
+        const smsDelivered = await sendCustomSms(
+          adminPhone as string,
+          `JAGO Admin login OTP: ${otp}. Valid 5 minutes. Do not share.`,
+        ).catch((e: any) => {
+          console.error(`[ADMIN-2FA] SMS delivery failed to ${adminPhone}:`, e.message);
+          return false;
+        });
+        if (!smsDelivered) {
+          return res.status(503).json({
+            message: "Admin 2FA delivery is not configured correctly. Configure SMS provider credentials before enabling MFA.",
           });
-          console.log(`[ADMIN-2FA] OTP sent to ${adminPhone} for admin ${admin.email}`);
         }
+        console.log(`[ADMIN-2FA] OTP sent to ${adminPhone} for admin ${admin.email}`);
         const response: any = {
           requiresTwoFactor: true,
           admin: { id: admin.id, name: admin.name, email: admin.email, role: admin.role },
