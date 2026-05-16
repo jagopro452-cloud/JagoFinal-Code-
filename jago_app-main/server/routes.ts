@@ -1335,6 +1335,7 @@ async function ensureOperationalSchema() {
 
       ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS vehicle_type VARCHAR(50);
       ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS type VARCHAR(50) DEFAULT 'ride';
+      ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS service_type VARCHAR(30) DEFAULT 'ride';
       ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS base_fare NUMERIC(10,2) DEFAULT 0;
       ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS fare_per_km NUMERIC(10,2) DEFAULT 0;
       ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS minimum_fare NUMERIC(10,2) DEFAULT 0;
@@ -1354,6 +1355,15 @@ async function ensureOperationalSchema() {
       UPDATE users SET referral_code = 'JAGO' || RIGHT(phone, 4) || UPPER(SUBSTRING(id::text from 1 for 4))
         WHERE referral_code IS NULL AND phone IS NOT NULL AND LENGTH(phone) >= 4;
       CREATE UNIQUE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code) WHERE referral_code IS NOT NULL;
+
+      UPDATE vehicle_categories
+      SET service_type = CASE
+        WHEN COALESCE(NULLIF(service_type, ''), '') <> '' THEN service_type
+        WHEN COALESCE(is_carpool, false) = true THEN 'pool'
+        WHEN LOWER(COALESCE(type, '')) IN ('parcel', 'cargo') THEN LOWER(type)
+        ELSE 'ride'
+      END
+      WHERE service_type IS NULL OR TRIM(service_type) = '';
 
       -- Commission Settlement: per-driver pending balance tracking
       ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_commission_balance NUMERIC(12,2) NOT NULL DEFAULT 0;
