@@ -147,6 +147,7 @@ import {
   getAIDashboardData,
   getBrainStatus,
 } from "./ai-brain";
+import { featureFlags } from "./config/featureFlags";
 import {
   getAlertEngineStatus,
   getEngineConfig,
@@ -872,14 +873,20 @@ const adminDataLimiter = rateLimit({
 const ADMIN_SESSION_TTL_HOURS = Math.max(1, Number(process.env.ADMIN_SESSION_TTL_HOURS || 24));
 // SECURITY: Never expose OTPs in production responses, regardless of env var setting
 const isDevOtpResponseEnabled = process.env.ENABLE_DEV_OTP_RESPONSES === "true" && process.env.NODE_ENV !== "production";
+const VOICE_BOOKING_ENABLED =
+  featureFlags.enableExperimentalVoiceBooking || featureFlags.useVoiceAssistantV2;
+const AI_MOBILITY_BRAIN_ENABLED = featureFlags.enableAiMobilityBrain;
 
-const AI_ASSISTANT_SERVICE_URL = (process.env.AI_ASSISTANT_SERVICE_URL || "http://localhost:7104").replace(/\/$/, "");
-if (AI_ASSISTANT_SERVICE_URL.includes('localhost') && process.env.NODE_ENV === 'production') {
+const AI_ASSISTANT_SERVICE_URL = (process.env.AI_ASSISTANT_SERVICE_URL || "").replace(/\/$/, "");
+if (!VOICE_BOOKING_ENABLED) {
+  console.log("[VOICE] Experimental voice booking is disabled; external AI assistant dependency removed from production path.");
+} else if (AI_ASSISTANT_SERVICE_URL.includes('localhost') && process.env.NODE_ENV === 'production') {
   console.warn("[WARN] AI_ASSISTANT_SERVICE_URL points to localhost in production. Voice-intent AI microservice will be SKIPPED � set AI_ASSISTANT_SERVICE_URL env var to enable it.");
 }
 
 // -- Claude AI voice intent parser --------------------------------------------
 async function parseVoiceIntentWithClaude(text: string): Promise<any | null> {
+  if (!VOICE_BOOKING_ENABLED) return null;
   // Read live from DB first (admin panel save), fallback to env var
   let apiKey = process.env.ANTHROPIC_API_KEY;
   try {
@@ -977,6 +984,9 @@ function mapServiceSuggestionToVehicle(serviceSuggestion?: string | null): strin
 }
 
 async function parseVoiceIntentOrchestrated(text: string): Promise<{ parsed: any; parserSource: "claude-ai" | "ai-assistant-service" | "monolith-fallback" }> {
+  if (!VOICE_BOOKING_ENABLED) {
+    return { parserSource: "monolith-fallback", parsed: parseVoiceIntent(text) };
+  }
   // 1. Try external AI microservice � skip if it's the default localhost (not deployed)
   const isExternalService = AI_ASSISTANT_SERVICE_URL && !AI_ASSISTANT_SERVICE_URL.includes('localhost');
   if (isExternalService) try {
@@ -2359,6 +2369,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         REDIS_URL: has("REDIS_URL"),
         OPS_API_KEY: has("OPS_API_KEY"),
         ADMIN_PASSWORD: has("ADMIN_PASSWORD"),
+        VOICE_BOOKING_ENABLED,
+        AI_MOBILITY_BRAIN_ENABLED,
       },
     });
   });
@@ -4752,7 +4764,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/business-settings", requireAdminAuth, async (req, res) => {
     try {
       const { keyName, value, settingsType } = req.body;
-      const setting = await storage.upsertBusinessSetting(keyName, value, settingsType);
+      const setting = await storage.upsertBusinessSetting(
+        keyName,
+        value,
+        settingsType || "business_settings",
+      );
       res.json(setting);
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
@@ -11298,6 +11314,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.post("/api/app/voice-booking/parse", authApp, async (req, res) => {
     try {
+      if (!VOICE_BOOKING_ENABLED) {
+        return res.status(503).json({
+          success: false,
+          message: "Voice booking is disabled in production while core platform stabilization is in progress.",
+        });
+      }
       const { text, currentLat, currentLng, currentAddress } = req.body;
       if (!text) return res.status(400).json({ message: "No text provided" });
 
@@ -13490,7 +13512,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         await rawDb.execute(rawSql`ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS share_token VARCHAR(64)`);
         await rawDb.execute(rawSql`UPDATE trip_requests SET share_token=${shareToken} WHERE id=${tripId}::uuid`);
       });
-      const shareLink = `${process.env.APP_BASE_URL || 'https://oyster-app-9e9cd.ondigitalocean.app'}/track/${shareToken}`;
+      const appBaseUrl = String(process.env.APP_BASE_URL || "").trim();
+      if (!appBaseUrl) {
+        return res.status(503).json({ message: "APP_BASE_URL is not configured" });
+      }
+      const shareLink = `${appBaseUrl}/track/${shareToken}`;
       res.json({ success: true, shareLink, shareToken });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
@@ -13720,7 +13746,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // Download page � jagopro.org/download
   app.get("/download", (_req, res) => {
-    const base = process.env.APP_BASE_URL || "https://oyster-app-9e9cd.ondigitalocean.app";
+    const base = String(process.env.APP_BASE_URL || "").trim();
+    if (!base) {
+      return res.status(503).send("APP_BASE_URL is not configured");
+    }
     const customerLatest = findLatestApk("jago-customer-v");
     const driverLatest = findLatestApk("jago-driver-v") ?? findLatestApk("jago-pilot-v");
     res.send(`<!DOCTYPE html><html lang="en"><head>
@@ -15748,8 +15777,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     console.log("[DYNAMIC-SERVICES] City-based services + parcel vehicle types ready");
   }).catch((e: any) => console.error("[DYNAMIC-SERVICES] Init error:", e.message));
 
-  startAIMobilityBrain();
-  console.log("[AI-BRAIN] Mobility brain started (10s tick)");
+  if (AI_MOBILITY_BRAIN_ENABLED) {
+    startAIMobilityBrain();
+    console.log("[AI-BRAIN] Mobility brain started (10s tick)");
+  } else {
+    console.log("[AI-BRAIN] Disabled by feature flag; removed from startup path.");
+  }
 
   // -- Driver arrival timeout: notify if driver stays 'accepted' > 15 minutes --
   // Prevents customers from waiting indefinitely after driver accepted but never arrived.
@@ -17845,6 +17878,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   // -- Admin: AI Mobility Brain dashboard ----------------------------------
   app.get("/api/admin/ai-brain/dashboard", requireAdminAuth, async (_req, res) => {
     try {
+      if (!AI_MOBILITY_BRAIN_ENABLED) {
+        return res.status(503).json({ message: "AI mobility brain is disabled in production." });
+      }
       const data = await getAIDashboardData();
       res.json(data);
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
@@ -17852,6 +17888,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
   app.get("/api/admin/ai-brain/status", requireAdminAuth, async (_req, res) => {
     try {
+      if (!AI_MOBILITY_BRAIN_ENABLED) {
+        return res.status(503).json({ enabled: false, message: "AI mobility brain is disabled in production." });
+      }
       res.json(getBrainStatus());
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });

@@ -142,7 +142,6 @@ async function loadRuntimeConfigFromDb() {
       "twilio_account_sid",
       "twilio_auth_token",
       "twilio_phone_number",
-      "anthropic_api_key",
     ]]
   );
 
@@ -156,7 +155,6 @@ async function loadRuntimeConfigFromDb() {
     twilio_account_sid: "TWILIO_ACCOUNT_SID",
     twilio_auth_token: "TWILIO_AUTH_TOKEN",
     twilio_phone_number: "TWILIO_PHONE_NUMBER",
-    anthropic_api_key: "ANTHROPIC_API_KEY",
   };
 
   for (const row of settingsRes.rows as any[]) {

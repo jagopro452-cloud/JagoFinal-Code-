@@ -6,6 +6,8 @@ export interface FeatureFlags {
   useTripService: boolean;
   useSafetyService: boolean;
   useVoiceAssistantV2: boolean;
+  enableExperimentalVoiceBooking: boolean;
+  enableAiMobilityBrain: boolean;
   useDynamicPricingV2: boolean;
   useParcelHyperlocalService: boolean;
   useCarShareIntercityService: boolean;
@@ -30,6 +32,8 @@ export const featureFlags: FeatureFlags = {
   useTripService: envBool("FF_TRIP_SERVICE", false),
   useSafetyService: envBool("FF_SAFETY_SERVICE", false),
   useVoiceAssistantV2: envBool("FF_VOICE_ASSISTANT_V2", false),
+  enableExperimentalVoiceBooking: envBool("FF_VOICE_BOOKING", false),
+  enableAiMobilityBrain: envBool("FF_AI_MOBILITY_BRAIN", false),
   useDynamicPricingV2: envBool("FF_DYNAMIC_PRICING_V2", false),
   useParcelHyperlocalService: envBool("FF_PARCEL_HYPERLOCAL_SERVICE", false),
   useCarShareIntercityService: envBool("FF_CARSHARE_INTERCITY_SERVICE", false),
