@@ -1611,6 +1611,13 @@ async function ensureOperationalSchema() {
       );
 
       ALTER TABLE police_stations ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+      ALTER TABLE system_logs ADD COLUMN IF NOT EXISTS details JSONB DEFAULT '{}'::jsonb;
+      ALTER TABLE system_logs ADD COLUMN IF NOT EXISTS data JSONB DEFAULT '{}'::jsonb;
+      UPDATE system_logs
+      SET
+        details = COALESCE(details, data, '{}'::jsonb),
+        data = COALESCE(data, details, '{}'::jsonb)
+      WHERE details IS NULL OR data IS NULL;
 
       -- Commission settlements: records every driver payment toward pending balance
       CREATE TABLE IF NOT EXISTS commission_settlements (
@@ -3044,9 +3051,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const { db: hDb } = await import("./db");
       const { sql: hSql } = await import("drizzle-orm");
       const r = await hDb.execute(hSql`
-        SELECT pickup_lat as lat, pickup_lng as lng, 1 as intensity FROM trip_requests WHERE pickup_lat IS NOT NULL ORDER BY created_at DESC LIMIT 5000
+        SELECT *
+        FROM (
+          SELECT pickup_lat AS lat, pickup_lng AS lng, 1::numeric AS intensity
+          FROM trip_requests
+          WHERE pickup_lat IS NOT NULL
+          ORDER BY created_at DESC
+          LIMIT 5000
+        ) pickup_points
         UNION ALL
-        SELECT destination_lat as lat, destination_lng as lng, 0.6 as intensity FROM trip_requests WHERE destination_lat IS NOT NULL ORDER BY created_at DESC LIMIT 5000
+        SELECT *
+        FROM (
+          SELECT destination_lat AS lat, destination_lng AS lng, 0.6::numeric AS intensity
+          FROM trip_requests
+          WHERE destination_lat IS NOT NULL
+          ORDER BY created_at DESC
+          LIMIT 5000
+        ) drop_points
       `);
       res.json(r.rows);
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
@@ -3952,12 +3973,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // Skip paths handled by their own auth mechanism or that are truly public
     if (
       p === "/health" ||  // public health check
+      p.startsWith("/health/") ||  // nested health probes like /api/health/maps
       p === "/ping" ||  // simple test endpoint
       p.startsWith("/diag/") ||  // diagnostic endpoints
       p.startsWith("/ops/") ||  // requireOpsKey
       p.startsWith("/app/") ||  // mobile app routes � each has authApp
       p.startsWith("/admin/") ||  // global admin middleware at line 1101
       p.startsWith("/driver/") ||  // mobile driver routes � each has authApp
+      p === "/vehicle-categories" ||  // apps need this before auth/session exists
       p.startsWith("/webhook")       // payment callbacks (Razorpay, etc.)
     ) return next();
     // Everything else is a legacy admin route ? require admin auth
@@ -16737,7 +16760,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   app.get("/api/admin/alert-engine/recent-actions", requireAdminAuth, async (_req, res) => {
     try {
       const r = await rawDb.execute(rawSql`
-        SELECT tag, message, details, created_at
+        SELECT tag, message, COALESCE(details, data, '{}'::jsonb) AS details, created_at
         FROM system_logs
         WHERE tag IN (
           'AUTO_ACTION',
@@ -16762,11 +16785,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     try {
       const { ruleId } = req.params;
       const r = await rawDb.execute(rawSql`
-        SELECT tag, message, details, created_at
+        SELECT tag, message, COALESCE(details, data, '{}'::jsonb) AS details, created_at
         FROM system_logs
         WHERE (
-          details->>'rule' = ${ruleId}
-          OR details->>'ruleId' = ${ruleId}
+          COALESCE(details, data, '{}'::jsonb)->>'rule' = ${ruleId}
+          OR COALESCE(details, data, '{}'::jsonb)->>'ruleId' = ${ruleId}
         )
         OR message ILIKE ${`%${ruleId}%`}
         ORDER BY created_at DESC
