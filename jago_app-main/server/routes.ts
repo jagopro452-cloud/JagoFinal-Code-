@@ -1024,9 +1024,7 @@ async function parseVoiceIntentOrchestrated(text: string): Promise<{ parsed: any
 }
 const runtimeEnv = parseEnv();
 // In production 2FA is ON by default � disable only with ADMIN_2FA_REQUIRED=false
-const requireAdminTwoFactor = runtimeEnv.NODE_ENV === "production"
-  ? !isFalse(runtimeEnv.ADMIN_2FA_REQUIRED)
-  : isTrue(runtimeEnv.ADMIN_2FA_REQUIRED);
+const requireAdminTwoFactor = false;
 
 function extractBearerToken(req: Request): string | null {
   const auth = req.headers.authorization || "";
@@ -2489,7 +2487,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       ADMIN_PASSWORD: process.env.ADMIN_PASSWORD ? "***set***" : "NOT-SET",
       ADMIN_PASSWORD_SYNC_ON_RESTART: process.env.ADMIN_PASSWORD_SYNC_ON_RESTART || "default-false",
       ADMIN_SESSION_TTL_HOURS: process.env.ADMIN_SESSION_TTL_HOURS || "24",
-      ADMIN_2FA_REQUIRED: process.env.ADMIN_2FA_REQUIRED || "false",
       ADMIN_RESET_KEY: process.env.ADMIN_RESET_KEY ? "***set***" : "NOT-SET",
       OPS_API_KEY: process.env.OPS_API_KEY ? "***set***" : "NOT-SET",
     };
@@ -3800,6 +3797,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.post("/api/admin/login/verify-2fa", loginLimiter, async (req, res) => {
     try {
+      return res.status(410).json({
+        message: "Admin SMS-based 2FA is disabled. Use password login and session security controls.",
+      });
       const { email, otp } = req.body;
       if (!email || !otp) return res.status(400).json({ message: "Email and OTP are required" });
       const adminR = await rawDb.execute(rawSql`
@@ -7828,35 +7828,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // -- OTP SEND (Firebase Only) ----------------------------------------------
   // Mobile apps use Firebase Phone Auth on-device. The server keeps only a
   // lightweight request marker for rate limiting / telemetry and never sends SMS.
-  app.post("/api/app/send-otp", otpLimiter, async (req, res) => {
-    try {
-      const { phone, userType = "customer" } = req.body;
-      if (!phone) return res.status(400).json({ message: "Phone required" });
-      const phoneStr = normalizePhone(phone);
-      if (phoneStr.length < 10) return res.status(400).json({ message: "Invalid phone number" });
-      logRegistrationAudit("verify-otp.request", req.body, { provider: "server_otp" });
-
-      // Rate limiting: max 5 OTPs per phone per hour
-      const recentCount = await rawDb.execute(rawSql`
-        SELECT COUNT(*) as cnt FROM otp_logs WHERE phone=${phoneStr} AND created_at > NOW() - INTERVAL '1 hour'
-      `);
-      if (parseInt((recentCount.rows[0] as any)?.cnt || "0") >= 5) {
-        return res.status(429).json({ message: "Too many OTP requests. Try again after 1 hour." });
-      }
-
-      await rawDb.execute(rawSql`
-        INSERT INTO otp_logs (phone, otp, user_type, created_at, expires_at)
-        VALUES (${phoneStr}, ${'firebase'}, ${userType}, NOW(), NOW() + INTERVAL '10 minutes')
-        ON CONFLICT DO NOTHING
-      `).catch(dbCatch("db"));
-      console.log(`[OTP] ${phoneStr.slice(-4).padStart(phoneStr.length, '*')} -> Firebase`);
-      return res.json({ success: true, provider: 'firebase', message: 'Use Firebase OTP for verification.' });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  app.post("/api/app/send-otp", otpLimiter, async (_req, res) => {
+    return res.status(410).json({
+      success: false,
+      code: "FIREBASE_OTP_REQUIRED",
+      message: "Server OTP is disabled. Use Firebase Phone OTP in the app and then call verify-firebase-token.",
+    });
   });
 
   // -- OTP VERIFY + LOGIN / REGISTER ----------------------------------------
   app.post("/api/app/verify-otp", otpLimiter, async (req, res) => {
     try {
+      return res.status(410).json({
+        success: false,
+        code: "FIREBASE_OTP_REQUIRED",
+        message: "Server OTP verification is disabled. Verify with Firebase in the app and then call verify-firebase-token.",
+      });
       const { phone, otp, userType = "customer", name, referralCode } = req.body;
       if (!phone || !otp) return res.status(400).json({ message: "Phone and OTP required" });
       const phoneStr = normalizePhone(phone);
@@ -8124,6 +8111,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // -- PASSWORD-BASED REGISTER -----------------------------------------------
   app.post("/api/app/register", loginLimiter, async (req, res) => {
     try {
+      return res.status(410).json({
+        success: false,
+        code: "FIREBASE_OTP_REQUIRED",
+        message: "Password registration is disabled. Verify with Firebase Phone OTP and continue onboarding with the issued session.",
+      });
       const { phone, password, fullName, userType = "customer", email } = req.body;
       if (!phone || !password || !fullName) return res.status(400).json({ message: "Phone, password and name are required" });
       if (!['customer', 'driver'].includes(userType)) return res.status(400).json({ message: "Invalid user type" });
@@ -8173,6 +8165,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/app/login-password", loginLimiter, async (req, res) => {
     log(`Login request received for phone: ${req.body?.phone}`);
     try {
+      return res.status(410).json({
+        success: false,
+        code: "FIREBASE_OTP_REQUIRED",
+        message: "Password login is disabled. Use Firebase Phone OTP and verify-firebase-token.",
+      });
       const { phone, password, userType = "customer" } = req.body;
       if (!phone || !password) return res.status(400).json({ message: "Phone and password are required" });
       const phoneStr = normalizePhone(phone);
@@ -8229,6 +8226,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // -- RESET PASSWORD (verify OTP + set new password) ------------------------
   app.post("/api/app/reset-password", async (req, res) => {
     try {
+      return res.status(410).json({
+        success: false,
+        code: "FIREBASE_OTP_REQUIRED",
+        message: "Password reset via server OTP is disabled. Use Firebase verification and reset-password-firebase.",
+      });
       const { phone, otp, newPassword, userType = "customer" } = req.body;
       if (!phone || !otp || !newPassword) return res.status(400).json({ message: "Phone, OTP and new password are required" });
       const phoneStr = normalizePhone(phone);

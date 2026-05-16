@@ -136,12 +136,7 @@ async function loadRuntimeConfigFromDb() {
       "razorpay_key_id",
       "razorpay_key_secret",
       "razorpay_webhook_secret",
-      "fast2sms_api_key",
-      "two_factor_api_key",
       "google_maps_key",
-      "twilio_account_sid",
-      "twilio_auth_token",
-      "twilio_phone_number",
     ]]
   );
 
@@ -149,12 +144,7 @@ async function loadRuntimeConfigFromDb() {
     razorpay_key_id: "RAZORPAY_KEY_ID",
     razorpay_key_secret: "RAZORPAY_KEY_SECRET",
     razorpay_webhook_secret: "RAZORPAY_WEBHOOK_SECRET",
-    fast2sms_api_key: "FAST2SMS_API_KEY",
-    two_factor_api_key: "TWO_FACTOR_API_KEY",
     google_maps_key: "GOOGLE_MAPS_API_KEY",
-    twilio_account_sid: "TWILIO_ACCOUNT_SID",
-    twilio_auth_token: "TWILIO_AUTH_TOKEN",
-    twilio_phone_number: "TWILIO_PHONE_NUMBER",
   };
 
   for (const row of settingsRes.rows as any[]) {
