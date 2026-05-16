@@ -243,6 +243,8 @@ async function ensureDriverDocumentsTable() {
 }
 
 async function ensureDriverDetailsRow(userId: string, vehicleType?: string | null) {
+  await rawDb.execute(rawSql`ALTER TABLE driver_details ADD COLUMN IF NOT EXISTS vehicle_type VARCHAR(50)`).catch(() => {});
+  await rawDb.execute(rawSql`ALTER TABLE driver_details ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now()`).catch(() => {});
   const existing = await rawDb.execute(rawSql`SELECT id FROM driver_details WHERE user_id=${userId}::uuid LIMIT 1`).catch(() => ({ rows: [] as any[] }));
   if (!existing.rows.length) {
     await rawDb.execute(rawSql`
@@ -7807,7 +7809,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (fullName.length > 100) return res.status(400).json({ message: "Name too long (max 100 chars)" });
       if (email && email.length > 200) return res.status(400).json({ message: "Email too long" });
       if (password.length < 6) return res.status(400).json({ message: "Password must be at least 6 characters" });
-      const existing = await rawDb.execute(rawSql`SELECT * FROM users WHERE phone=${phone} LIMIT 1`);
+      const dbRole = userType === 'driver' ? 'user' : 'user';
+      const existing = await rawDb.execute(rawSql`
+        SELECT * FROM users
+        WHERE phone=${phone} OR mobile=${phone}
+        LIMIT 1
+      `);
       if (existing.rows.length) {
         const existingUser = camelize(existing.rows[0]) as any;
         if (existingUser.userType === userType) {
@@ -7820,8 +7827,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const passwordHash = await hashPassword(password);
         await rawDb.execute(rawSql`
           UPDATE users SET
+            name=${fullName},
             full_name=${fullName},
+            mobile=${phone},
+            phone=${phone},
             email=${email || existingUser.email || null},
+            role=COALESCE(role, ${dbRole}),
             user_type=${userType},
             password_hash=${passwordHash},
             verification_status=${userType === 'driver' ? 'pending' : (existingUser.verificationStatus || 'verified')},
@@ -7856,13 +7867,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       const passwordHash = await hashPassword(password);
       const insertRes = await rawDb.execute(rawSql`
-        INSERT INTO users (full_name, phone, email, user_type, is_active, wallet_balance, password_hash)
-        VALUES (${fullName}, ${phone}, ${email || null}, ${userType}, true, 0, ${passwordHash})
+        INSERT INTO users (name, full_name, mobile, phone, email, role, user_type, is_active, wallet_balance, password_hash, verification_status)
+        VALUES (${fullName}, ${fullName}, ${phone}, ${phone}, ${email || null}, ${dbRole}, ${userType}, true, 0, ${passwordHash}, ${userType === 'driver' ? 'pending' : 'verified'})
         RETURNING *
       `);
       // Set referral_code separately (handles DB where column may not exist yet)
       const refCode = 'JAGOPRO' + phone.slice(-6);
-      await rawDb.execute(rawSql`UPDATE users SET referral_code=${refCode} WHERE phone=${phone} AND user_type=${userType}`).catch(dbCatch("db"));
+      await rawDb.execute(rawSql`
+        UPDATE users
+        SET referral_code=${refCode}
+        WHERE (phone=${phone} OR mobile=${phone}) AND user_type=${userType}
+      `).catch(dbCatch("db"));
       const user = camelize(insertRes.rows[0]) as any;
       if (userType === 'driver') {
         await ensureDriverDetailsRow(user.id, 'bike');
@@ -7883,7 +7898,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         } catch (_) { }
       }
       res.json({ success: true, isNew: true, token, user: { id: user.id, fullName: user.fullName, phone: user.phone, email: user.email || null, userType: user.userType, walletBalance: 0 } });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+    } catch (e: any) {
+      console.error("[driver-doc-upload] /api/app/driver/upload-document failed", {
+        message: e?.message,
+        stack: e?.stack,
+        phone: req.body?.phone,
+        userType: req.body?.userType,
+      });
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
   });
 
   // -- PASSWORD-BASED LOGIN --------------------------------------------------
@@ -7892,7 +7915,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const { phone, password, userType = "customer" } = req.body;
       if (!phone || !password) return res.status(400).json({ message: "Phone and password are required" });
-      const userRes = await rawDb.execute(rawSql`SELECT * FROM users WHERE phone=${phone} AND user_type=${userType} LIMIT 1`);
+      const userRes = await rawDb.execute(rawSql`
+        SELECT * FROM users
+        WHERE (phone=${phone} OR mobile=${phone})
+          AND (
+            user_type=${userType}
+            OR (${userType}='customer' AND role IN ('user', 'customer'))
+          )
+        LIMIT 1
+      `);
       if (!userRes.rows.length) return res.status(404).json({ message: "No account found. Please register first." });
       const user = camelize(userRes.rows[0]) as any;
       if (!user.isActive) return res.status(403).json({ message: "Account deactivated. Contact support." });
