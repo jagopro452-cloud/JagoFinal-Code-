@@ -1091,7 +1091,12 @@ async function ensureAdminExists() {
     return;
   }
 
-  console.log(`[admin-bootstrap] Starting admin sync for ${adminEmail}, sync_on_restart=${process.env.ADMIN_PASSWORD_SYNC_ON_RESTART}`);
+  const maskedAdminEmail = (() => {
+    const [local, domain] = String(adminEmail || "").split("@");
+    if (!domain) return "[REDACTED_EMAIL]";
+    return `${(local || "").slice(0, 2)}***@${domain}`;
+  })();
+  console.log(`[admin-bootstrap] Starting admin sync for ${maskedAdminEmail}, sync_on_restart=${process.env.ADMIN_PASSWORD_SYNC_ON_RESTART}`);
 
 
   // -- Step 1: Guarantee the tables exist using rawDb (same path as ensureOperationalSchema)
@@ -1178,11 +1183,11 @@ async function ensureAdminExists() {
       const shouldSyncPassword =
         process.env.ADMIN_PASSWORD_SYNC_ON_RESTART === 'true' ||
         runtimeEnv.NODE_ENV !== 'production';
-      console.log(`[admin-bootstrap] Admin exists: ${adminEmail}, should_sync_password=${shouldSyncPassword}`);
+      console.log(`[admin-bootstrap] Admin exists: ${maskedAdminEmail}, should_sync_password=${shouldSyncPassword}`);
       if (shouldSyncPassword) {
-        console.log(`[admin-bootstrap] Hashing new password for ${adminEmail}...`);
+        console.log(`[admin-bootstrap] Hashing new password for ${maskedAdminEmail}...`);
         const hash = await hashPassword(adminPassword);
-        console.log(`[admin-bootstrap] Password hash generated: ${hash.substring(0, 20)}...`);
+        console.log(`[admin-bootstrap] Password hash generated successfully`);
         const updateResult = await rawDb.execute(rawSql`
           UPDATE admins 
           SET password=${hash}, is_active=true, auth_token=NULL, auth_token_expires_at=NULL 
@@ -1191,8 +1196,7 @@ async function ensureAdminExists() {
         `);
         if (updateResult.rows.length > 0) {
           const updated: any = updateResult.rows[0];
-          console.log(`[admin-bootstrap] ? Password synced for ${adminEmail} (ID: ${updated.id})`);
-          console.log(`[admin-bootstrap] New password hash: ${(updated.password || '').substring(0, 20)}...`);
+          console.log(`[admin-bootstrap] Password synced for ${maskedAdminEmail} (ID: ${updated.id})`);
         } else {
           console.warn(`[admin-bootstrap] ? Update returned no rows - admin may not exist or email doesn't match`);
         }

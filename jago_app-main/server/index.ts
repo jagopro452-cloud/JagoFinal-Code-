@@ -100,6 +100,63 @@ export function log(message: string, source = "express") {
   console.log(`${formattedTime} [${source}] ${message}`);
 }
 
+function maskEmail(email: string | null | undefined): string {
+  if (!email) return "[REDACTED_EMAIL]";
+  const [local, domain] = email.split("@");
+  if (!domain) return "[REDACTED_EMAIL]";
+  const safeLocal =
+    local.length <= 2 ? `${local[0] || "*"}*` : `${local.slice(0, 2)}***`;
+  return `${safeLocal}@${domain}`;
+}
+
+function redactLogValue(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") {
+    if (value.length > 160) return `${value.slice(0, 157)}...`;
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return `[array:${value.length}]`;
+  }
+  if (typeof value === "object") {
+    return "[object]";
+  }
+  return value;
+}
+
+function sanitizeResponseForDebug(body: unknown): Record<string, unknown> | undefined {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
+  const obj = body as Record<string, unknown>;
+  const sensitiveKeys = new Set([
+    "otp",
+    "password",
+    "passwordHash",
+    "token",
+    "sessionToken",
+    "authToken",
+    "resetOtp",
+    "firebaseToken",
+    "fcmToken",
+    "phone",
+    "email",
+    "address",
+    "wallet",
+    "walletBalance",
+    "transactions",
+    "data",
+    "users",
+  ]);
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (sensitiveKeys.has(key)) {
+      sanitized[key] = "[REDACTED]";
+      continue;
+    }
+    sanitized[key] = redactLogValue(value);
+  }
+  return sanitized;
+}
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -297,6 +354,7 @@ app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
   let capturedJsonResponse: Record<string, any> | undefined = undefined;
+  const allowResponsePreview = process.env.NODE_ENV !== "production";
 
   const originalResJson = res.json;
   res.json = function (bodyJson, ...args) {
@@ -310,13 +368,11 @@ app.use((req, res, next) => {
       recordRequest();
       if (res.statusCode >= 500) recordError();
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        const sanitized = { ...capturedJsonResponse };
-        if (sanitized.otp !== undefined) sanitized.otp = "[REDACTED]";
-        if (sanitized.password !== undefined) sanitized.password = "[REDACTED]";
-        if (sanitized.token !== undefined) sanitized.token = "[REDACTED]";
-        if (sanitized.sessionToken !== undefined) sanitized.sessionToken = "[REDACTED]";
+      if (allowResponsePreview && capturedJsonResponse) {
+        const sanitized = sanitizeResponseForDebug(capturedJsonResponse);
+        if (sanitized) {
         logLine += ` :: ${JSON.stringify(sanitized)}`;
+        }
       }
 
       log(logLine);
