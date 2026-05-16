@@ -17,6 +17,10 @@ if (localPropertiesFile.exists()) {
     localPropertiesFile.withReader('UTF-8') { reader -> localProperties.load(reader) }
 }
 
+def googleMapsKey = (localProperties.getProperty('GOOGLE_MAPS_KEY')
+    ?: System.getenv('GOOGLE_MAPS_KEY')
+    ?: '')
+
 def flutterVersionCode = (localProperties.getProperty('flutter.versionCode') ?: '75').toInteger()
 def flutterVersionName = (localProperties.getProperty('flutter.versionName') ?: '1.0.75')
 
@@ -60,7 +64,7 @@ android {
         versionCode flutterVersionCode
         versionName flutterVersionName
         multiDexEnabled true
-        manifestPlaceholders = [googleMapsApiKey: localProperties.getProperty('GOOGLE_MAPS_KEY', 'AIzaSyAiMVYA_ppxeT344tkcoSsjeGGMaPU26eI')]
+        manifestPlaceholders = [googleMapsApiKey: googleMapsKey]
     }
 
     buildTypes {

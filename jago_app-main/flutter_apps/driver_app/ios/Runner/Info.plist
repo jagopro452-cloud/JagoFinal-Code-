@@ -57,6 +57,8 @@
 	</array>
 
 	<!-- Google Maps -->
+	<key>GOOGLE_MAPS_KEY</key>
+	<string>$(GOOGLE_MAPS_KEY)</string>
 	<key>io.flutter.embedded_views_preview</key>
 	<true/>
 

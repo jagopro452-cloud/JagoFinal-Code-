@@ -2397,8 +2397,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         dbKey = String((keyR.rows[0] as any)?.value || "").trim();
       } catch {}
 
-      const resolvedKey = dbKey || envKey;
-      const resolvedSource = dbKey ? "db" : envKey ? "env" : null;
+      const resolvedKey = envKey || dbKey;
+      const resolvedSource = envKey ? "env" : dbKey ? "db" : null;
 
       const probeKey = async (apiKey: string) => {
         if (!apiKey) {
@@ -11156,10 +11156,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const dLat = parseFloat(destLat), dLng = parseFloat(destLng);
 
       // Try Google Distance Matrix first
-      const gmapsKeyR = await rawDb.execute(rawSql`
-        SELECT value FROM business_settings WHERE key_name='google_maps_api_key' LIMIT 1
-      `).catch(() => ({ rows: [] as any[] }));
-      const gmapsKey = (gmapsKeyR.rows[0] as any)?.value || process.env.GOOGLE_MAPS_API_KEY || '';
+      const gmapsKey = (await getConf("GOOGLE_MAPS_API_KEY", "google_maps_key"))?.trim() || '';
 
       let etaMinutes: number;
       let distanceKm: number;
