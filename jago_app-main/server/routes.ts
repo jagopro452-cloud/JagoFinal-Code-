@@ -1358,12 +1358,16 @@ async function ensureOperationalSchema() {
 
       UPDATE vehicle_categories
       SET service_type = CASE
-        WHEN COALESCE(NULLIF(service_type, ''), '') <> '' THEN service_type
         WHEN COALESCE(is_carpool, false) = true THEN 'pool'
         WHEN LOWER(COALESCE(type, '')) IN ('parcel', 'cargo') THEN LOWER(type)
+        WHEN LOWER(COALESCE(vehicle_type, '')) SIMILAR TO '%(parcel|cargo|courier|delivery|pickup|truck|tempo|ace)%' THEN 'parcel'
         ELSE 'ride'
       END
-      WHERE service_type IS NULL OR TRIM(service_type) = '';
+      WHERE service_type IS NULL
+         OR TRIM(service_type) = ''
+         OR (LOWER(COALESCE(type, '')) IN ('parcel', 'cargo') AND LOWER(COALESCE(service_type, '')) NOT IN ('parcel', 'cargo'))
+         OR (COALESCE(is_carpool, false) = true AND LOWER(COALESCE(service_type, '')) NOT IN ('pool', 'carpool'))
+         OR (COALESCE(is_carpool, false) = false AND LOWER(COALESCE(type, '')) NOT IN ('parcel', 'cargo') AND LOWER(COALESCE(service_type, '')) <> 'ride');
 
       -- Commission Settlement: per-driver pending balance tracking
       ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_commission_balance NUMERIC(12,2) NOT NULL DEFAULT 0;
@@ -2760,11 +2764,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       await rawDb.execute(rawSql`
         UPDATE vehicle_categories
         SET type = CASE
-          WHEN COALESCE(service_type, '') IN ('parcel', 'cargo') THEN COALESCE(NULLIF(type, ''), service_type)
+          WHEN LOWER(COALESCE(service_type, '')) IN ('parcel', 'cargo') THEN COALESCE(NULLIF(type, ''), LOWER(service_type))
           WHEN COALESCE(is_carpool, false) = true THEN COALESCE(NULLIF(type, ''), 'pool')
           ELSE COALESCE(NULLIF(type, ''), 'ride')
         END
         WHERE type IS NULL OR TRIM(type) = ''
+      `).catch(dbCatch("db"));
+      await rawDb.execute(rawSql`
+        UPDATE vehicle_categories
+        SET service_type = CASE
+          WHEN COALESCE(is_carpool, false) = true THEN 'pool'
+          WHEN LOWER(COALESCE(type, '')) IN ('parcel', 'cargo') THEN LOWER(type)
+          WHEN LOWER(COALESCE(vehicle_type, '')) SIMILAR TO '%(parcel|cargo|courier|delivery|pickup|truck|tempo|ace)%' THEN 'parcel'
+          ELSE 'ride'
+        END
+        WHERE service_type IS NULL
+           OR TRIM(service_type) = ''
+           OR (LOWER(COALESCE(type, '')) IN ('parcel', 'cargo') AND LOWER(COALESCE(service_type, '')) NOT IN ('parcel', 'cargo'))
+           OR (COALESCE(is_carpool, false) = true AND LOWER(COALESCE(service_type, '')) NOT IN ('pool', 'carpool'))
+           OR (COALESCE(is_carpool, false) = false AND LOWER(COALESCE(type, '')) NOT IN ('parcel', 'cargo') AND LOWER(COALESCE(service_type, '')) <> 'ride')
       `).catch(dbCatch("db"));
 
       const insertedVehicles: any[] = [];
