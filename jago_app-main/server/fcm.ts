@@ -28,7 +28,8 @@ async function initFirebaseAsync() {
   }
 
   try {
-    const firebaseAdmin = require("firebase-admin");
+    const firebaseAdminModule = await import("firebase-admin");
+    const firebaseAdmin: any = (firebaseAdminModule as any)?.default || firebaseAdminModule;
     // Avoid re-initializing if already done
     if (firebaseAdmin.apps.length === 0) {
       const serviceAccount = JSON.parse(serviceAccountJson);
