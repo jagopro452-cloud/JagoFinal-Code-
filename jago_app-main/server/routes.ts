@@ -4071,6 +4071,99 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  app.post("/api/admin/drivers", requireAdminAuth, requireAdminRole(["admin", "superadmin"]), async (req, res) => {
+    try {
+      const {
+        fullName,
+        phone,
+        email,
+        password,
+        vehicleNumber,
+        vehicleModel,
+        licenseNumber,
+        vehicleType = "bike",
+        vehicleCategoryId,
+      } = req.body || {};
+
+      const cleanName = String(fullName || "").trim();
+      const cleanPhone = normalizePhone(phone);
+      const cleanEmail = String(email || "").trim().toLowerCase();
+      const cleanPassword = String(password || "");
+
+      if (!cleanName) return res.status(400).json({ message: "Driver name is required" });
+      if (cleanPhone.length !== 10) return res.status(400).json({ message: "Enter a valid 10-digit phone number" });
+      if (cleanEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+        return res.status(400).json({ message: "Enter a valid email address" });
+      }
+      if (cleanPassword.length < 8) return res.status(400).json({ message: "Password must be at least 8 characters" });
+
+      const existingPhone = await rawDb.execute(rawSql`
+        SELECT id, user_type FROM users WHERE phone=${cleanPhone} OR mobile=${cleanPhone} LIMIT 1
+      `);
+      if (existingPhone.rows.length) {
+        return res.status(409).json({ message: "A user with this phone number already exists" });
+      }
+
+      if (cleanEmail) {
+        const existingEmail = await rawDb.execute(rawSql`
+          SELECT id FROM users WHERE LOWER(email)=${cleanEmail} LIMIT 1
+        `);
+        if (existingEmail.rows.length) {
+          return res.status(409).json({ message: "A user with this email already exists" });
+        }
+      }
+
+      const passwordHash = await hashPassword(cleanPassword);
+      const created = await rawDb.transaction(async (trx) => {
+        const inserted = await trx.execute(rawSql`
+          INSERT INTO users (
+            name, full_name, mobile, phone, email, role, user_type,
+            is_active, verification_status, vehicle_status, wallet_balance,
+            password_hash, vehicle_number, vehicle_model, license_number,
+            created_at, updated_at
+          )
+          VALUES (
+            ${cleanName}, ${cleanName}, ${cleanPhone}, ${cleanPhone}, ${cleanEmail || null},
+            'driver', 'driver', true, 'pending', 'pending', 0,
+            ${passwordHash}, ${String(vehicleNumber || "").trim() || null},
+            ${String(vehicleModel || "").trim() || null},
+            ${String(licenseNumber || "").trim() || null},
+            NOW(), NOW()
+          )
+          RETURNING *
+        `);
+        const driver = inserted.rows[0] as any;
+        await upsertDriverDetailsRow(
+          trx,
+          String(driver.id),
+          String(vehicleType || "bike"),
+          vehicleCategoryId ? String(vehicleCategoryId) : null,
+        );
+        await trx.execute(rawSql`
+          UPDATE users
+          SET referral_code = COALESCE(referral_code, ${`JAGOPRO${cleanPhone.slice(-6)}`})
+          WHERE id=${driver.id}::uuid
+        `).catch(() => ({ rows: [] }));
+        return driver;
+      });
+
+      await logAdminAction("driver_created", "driver", String((created as any).id), {
+        phone: cleanPhone,
+        vehicleType,
+        source: "admin_panel",
+      });
+
+      res.status(201).json({ success: true, driver: camelize(created) });
+    } catch (e: any) {
+      const msg = String(e?.message || "");
+      if (e?.code === "23505" || msg.includes("duplicate key")) {
+        return res.status(409).json({ message: "Driver already exists with this phone or email" });
+      }
+      console.error("[admin] create driver failed", { message: e?.message, stack: e?.stack });
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
+  });
+
   app.delete("/api/users/:id", requireAdminAuth, async (req, res) => {
     try {
       const { db: xDb, sql: xSql } = await import("./db").then(async m => ({ db: m.db, sql: (await import("drizzle-orm")).sql }));

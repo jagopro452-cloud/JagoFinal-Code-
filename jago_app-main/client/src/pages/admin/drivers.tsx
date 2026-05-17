@@ -203,7 +203,16 @@ export default function Drivers() {
   const [page, setPage] = useState(1);
   const [verifyTarget, setVerifyTarget] = useState<any>(null);
   const [showAdd, setShowAdd] = useState(false);
-  const [form, setForm] = useState({ fullName: "", phone: "", email: "", vehicleNumber: "", vehicleModel: "", licenseNumber: "" });
+  const [form, setForm] = useState({
+    fullName: "",
+    phone: "",
+    email: "",
+    password: "",
+    confirmPassword: "",
+    vehicleNumber: "",
+    vehicleModel: "",
+    licenseNumber: "",
+  });
   const { toast } = useToast();
   const qc = useQueryClient();
 
@@ -215,6 +224,7 @@ export default function Drivers() {
       fullName: form.fullName.trim(),
       phone: form.phone.trim(),
       email: form.email.trim(),
+      password: form.password,
       vehicleNumber: form.vehicleNumber.trim(),
       vehicleModel: form.vehicleModel.trim(),
       licenseNumber: form.licenseNumber.trim(),
@@ -223,7 +233,7 @@ export default function Drivers() {
       qc.invalidateQueries({ queryKey: ["/api/users"] });
       toast({ title: "Driver added successfully" });
       setShowAdd(false);
-      setForm({ fullName: "", phone: "", email: "", vehicleNumber: "", vehicleModel: "", licenseNumber: "" });
+      setForm({ fullName: "", phone: "", email: "", password: "", confirmPassword: "", vehicleNumber: "", vehicleModel: "", licenseNumber: "" });
     },
     onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
@@ -232,6 +242,8 @@ export default function Drivers() {
     form.fullName.trim().length > 0 &&
     normalizedPhone.length >= 10 &&
     emailLooksValid &&
+    form.password.length >= 8 &&
+    form.password === form.confirmPassword &&
     !addDriver.isPending;
 
   const { data, isLoading } = useQuery<any>({
@@ -309,6 +321,24 @@ export default function Drivers() {
                     )}
                   </div>
                   <div className="col-md-6">
+                    <label className="form-label fw-semibold small">Login Password <span className="text-danger">*</span></label>
+                    <input className="form-control" placeholder="Minimum 8 characters" type="password"
+                      value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
+                      data-testid="input-driver-password" />
+                    {form.password && form.password.length < 8 && (
+                      <div className="text-danger small mt-1">Password must be at least 8 characters</div>
+                    )}
+                  </div>
+                  <div className="col-md-6">
+                    <label className="form-label fw-semibold small">Confirm Password <span className="text-danger">*</span></label>
+                    <input className="form-control" placeholder="Re-enter password" type="password"
+                      value={form.confirmPassword} onChange={e => setForm(f => ({ ...f, confirmPassword: e.target.value }))}
+                      data-testid="input-driver-confirm-password" />
+                    {form.confirmPassword && form.password !== form.confirmPassword && (
+                      <div className="text-danger small mt-1">Passwords do not match</div>
+                    )}
+                  </div>
+                  <div className="col-md-6">
                     <label className="form-label fw-semibold small">License Number</label>
                     <input className="form-control" placeholder="e.g. AP1234567890"
                       value={form.licenseNumber} onChange={e => setForm(f => ({ ...f, licenseNumber: e.target.value }))}
@@ -329,7 +359,7 @@ export default function Drivers() {
                 </div>
                 <div className="alert alert-info mt-3 mb-0 py-2" style={{ fontSize: 12, borderRadius: 8 }}>
                   <i className="bi bi-info-circle me-1"></i>
-                  Driver will be added with <strong>Pending Verification</strong> status. Upload documents and approve from the driver list.
+                  Driver will be added with <strong>Pending Verification</strong> status and a password login. Upload documents and approve from the driver list.
                 </div>
                 <div className="d-flex gap-2 mt-4">
                   <button className="btn btn-light flex-1" onClick={() => setShowAdd(false)}>Cancel</button>
