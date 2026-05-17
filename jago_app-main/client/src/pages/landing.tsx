@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, type ReactNode } from "react";
+import { useState, useEffect, useRef, type MouseEvent, type ReactNode } from "react";
+import { Link } from "wouter";
 
 /* ═══════════════════════════════════════════════════════════════════════
    JAGO — Premium Light Landing Page
@@ -32,6 +33,7 @@ const C = {
 } as const;
 
 const ft = "'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif";
+const LANDING_NAV_OFFSET = 104;
 
 /* ─────────────── HOOKS ─────────────── */
 function useReveal(threshold = 0.12) {
@@ -497,6 +499,24 @@ export default function LandingPage() {
   const [selSvc, setSelSvc] = useState<null | any>(null);
   const [svcModalVisible, setSvcModalVisible] = useState(false);
 
+  const scrollToSection = (hash: string) => {
+    if (typeof document === "undefined" || !hash.startsWith("#")) return;
+    const target = document.querySelector<HTMLElement>(hash);
+    if (!target) return;
+    const top = Math.max(0, target.getBoundingClientRect().top + window.scrollY - LANDING_NAV_OFFSET);
+    window.history.replaceState(null, "", hash);
+    window.scrollTo({ top, behavior: "smooth" });
+  };
+
+  const handleSectionNavigation = (event: MouseEvent<HTMLElement>, hash: string) => {
+    event.preventDefault();
+    scrollToSection(hash);
+  };
+
+  const handlePlaceholderClick = (event: MouseEvent<HTMLElement>) => {
+    event.preventDefault();
+  };
+
   const openServiceModal = (service: any) => {
     setSelSvc(service);
     requestAnimationFrame(() => setSvcModalVisible(true));
@@ -505,6 +525,12 @@ export default function LandingPage() {
   const closeServiceModal = () => {
     setSvcModalVisible(false);
     window.setTimeout(() => setSelSvc(null), 240);
+  };
+
+  const closeServiceModalAndNavigate = (event: MouseEvent<HTMLElement>, hash: string) => {
+    event.preventDefault();
+    closeServiceModal();
+    window.setTimeout(() => scrollToSection(hash), 180);
   };
 
   useEffect(() => {
@@ -528,14 +554,20 @@ export default function LandingPage() {
     return () => window.removeEventListener("scroll", fn);
   }, []);
 
+  useEffect(() => {
+    if (!window.location.hash) return;
+    requestAnimationFrame(() => scrollToSection(window.location.hash));
+  }, []);
+
   return (
     <>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
         *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-        html{scroll-behavior:smooth;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+        html{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
         body{font-family:${ft};background:${C.cream};overflow-x:hidden;color:${C.body}}
         ::selection{background:rgba(182,109,255,.2);color:${C.heading}}
+        section[id]{scroll-margin-top:${LANDING_NAV_OFFSET}px}
 
         @keyframes jg-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-18px)}}
         @keyframes jg-float-card{0%,100%{transform:translateY(0) rotate(0deg)}50%{transform:translateY(-10px) rotate(0.5deg)}}
@@ -662,15 +694,15 @@ export default function LandingPage() {
           boxShadow: scrolled ? "0 4px 30px rgba(182,109,255,.06)" : "none",
         }}>
           <div className="cx" style={{ height: 80, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <a href="/" style={{ display: "flex", alignItems: "center", textDecoration: "none" }}>
+            <Link href="/" style={{ display: "flex", alignItems: "center", textDecoration: "none" }}>
               <img src="/jago-logo-new.png" alt="JAGO" style={{ height: 52, width: "auto" }} />
-            </a>
+            </Link>
             <div className="desk-only" style={{ display: "flex", gap: 40, alignItems: "center" }}>
               {[["#services", "Services"], ["#how", "How It Works"], ["#why", "Why JAGO"], ["#earn", "Earn"], ["#download", "Download"]].map(([h, l]) => (
-                <a key={h} href={h} className="nav-link">{l}</a>
+                <a key={h} href={h} className="nav-link" onClick={(event) => handleSectionNavigation(event, h)}>{l}</a>
               ))}
             </div>
-            <a href="#download" className="btn-primary" style={{
+            <a href="#download" className="btn-primary" onClick={(event) => handleSectionNavigation(event, "#download")} style={{
               padding: "12px 28px", borderRadius: 14, background: C.gradViolet, color: "#fff",
               fontSize: 14, fontWeight: 700, textDecoration: "none", fontFamily: ft,
               boxShadow: `0 8px 28px ${C.glowViolet}`,
@@ -715,7 +747,7 @@ export default function LandingPage() {
 
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                    <p style={{ textAlign: "center", fontSize: 11, color: C.bodyLight, margin: 0, fontWeight: 700, letterSpacing: 0.5 }}>READY TO MOVE BETTER?</p>
-                   <a href="#download" className="btn-primary" onClick={closeServiceModal} style={{
+                   <a href="#download" className="btn-primary" onClick={(event) => closeServiceModalAndNavigate(event, "#download")} style={{
                       display: "flex", alignItems: "center", justifyContent: "center", gap: 12,
                       background: C.gradViolet, color: "#fff", padding: "18px", borderRadius: 8,
                       textDecoration: "none", fontFamily: ft, fontWeight: 800, fontSize: 16,
@@ -771,7 +803,7 @@ export default function LandingPage() {
 
               {/* CTA Buttons */}
               <div className="hero-btns" style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 40, animation: "jg-hero-text .8s cubic-bezier(.16,1,.3,1) forwards", animationDelay: ".8s", opacity: 0 }}>
-                <a href="#download" className="btn-primary" style={{
+                <a href="#download" className="btn-primary" onClick={(event) => handleSectionNavigation(event, "#download")} style={{
                   display: "inline-flex", alignItems: "center", gap: 10,
                   background: C.gradViolet, color: "#fff",
                   padding: "18px 40px", borderRadius: 18, textDecoration: "none",
@@ -1135,21 +1167,22 @@ export default function LandingPage() {
                         { l: "Driver App", ic: "🏍️", desc: "Start earning today", c: "#fff", bg: "rgba(255,255,255,0.15)", glass: true },
                         { l: "Become Pilot", ic: "🚀", desc: "Join our elite team", c: "#fff", bg: "rgba(255,255,255,0.15)", glass: true },
                       ].map(d => (
-                        <a key={d.l} href="#" className="btn-primary" style={{
+                        <button key={d.l} type="button" className="btn-primary" onClick={(event) => handleSectionNavigation(event, "#download")} style={{
                           display: "flex", alignItems: "center", gap: 14,
                           background: d.bg, color: d.glass ? "#fff" : C.heading,
                           padding: "14px 24px", borderRadius: 20, textDecoration: "none",
                           fontSize: 14, fontWeight: 800, fontFamily: ft,
                           border: d.glass ? "1px solid rgba(255,255,255,0.3)" : "none",
                           backdropFilter: d.glass ? "blur(12px)" : "none",
-                          boxShadow: "0 10px 30px rgba(0,0,0,0.15)"
+                          boxShadow: "0 10px 30px rgba(0,0,0,0.15)",
+                          cursor: "pointer",
                         }}>
                           <span style={{ fontSize: 20 }}>{d.ic}</span>
                           <div style={{ textAlign: "left" }}>
                              <p style={{ margin: 0, fontSize: 13 }}>{d.l}</p>
                              <p style={{ margin: 0, fontSize: 9, opacity: 0.7 }}>{d.desc}</p>
                           </div>
-                        </a>
+                        </button>
                       ))}
                     </div>
 
@@ -1231,12 +1264,19 @@ export default function LandingPage() {
               ].map(col => (
                 <div key={col.t}>
                   <h4 style={{ fontSize: 12, fontWeight: 700, color: C.bodyLight, textTransform: "uppercase", letterSpacing: 2, marginBottom: 20, fontFamily: ft }}>{col.t}</h4>
-                  {col.links.map(([l, h]) => (
-                    <a key={l} href={h} style={{ display: "block", fontSize: 14, color: C.body, textDecoration: "none", marginBottom: 14, transition: "color .2s", fontFamily: ft }}
+                  {col.links.map(([l, h]) =>
+                    h.startsWith("/") ? (
+                      <Link key={l} href={h} style={{ display: "block", fontSize: 14, color: C.body, textDecoration: "none", marginBottom: 14, transition: "color .2s", fontFamily: ft }}
                       onMouseOver={e => ((e.target as HTMLElement).style.color = C.violet)}
                       onMouseOut={e => ((e.target as HTMLElement).style.color = C.body)}
-                    >{l}</a>
-                  ))}
+                      >{l}</Link>
+                    ) : (
+                      <button key={l} type="button" onClick={handlePlaceholderClick} style={{ display: "block", fontSize: 14, color: C.body, textDecoration: "none", marginBottom: 14, transition: "color .2s", fontFamily: ft, background: "none", border: "none", padding: 0, cursor: "default", textAlign: "left" }}
+                        onMouseOver={e => ((e.target as HTMLElement).style.color = C.violet)}
+                        onMouseOut={e => ((e.target as HTMLElement).style.color = C.body)}
+                      >{l}</button>
+                    )
+                  )}
                 </div>
               ))}
             </div>
@@ -1255,7 +1295,7 @@ export default function LandingPage() {
           borderTop: `1px solid ${C.border}`, display: "none",
           boxShadow: "0 -4px 30px rgba(182,109,255,.06)",
         }}>
-          <a href="#download" style={{
+          <a href="#download" onClick={(event) => handleSectionNavigation(event, "#download")} style={{
             display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
             width: "100%", padding: "16px", borderRadius: 16,
             background: C.gradViolet, color: "#fff", textDecoration: "none",

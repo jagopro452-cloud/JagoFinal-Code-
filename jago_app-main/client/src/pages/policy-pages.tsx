@@ -1,6 +1,7 @@
 ﻿import { useEffect } from "react";
 import { useTheme } from "@/components/theme-provider";
 import { Logo } from "@/components/Logo";
+import { Link } from "wouter";
 
 const COMPANY = "MindWhile IT Solutions Pvt Ltd";
 const BRAND   = "JAGO Pro";
@@ -81,20 +82,20 @@ function PolicyLayout({ title, badge, children }: { title: string; badge?: strin
         position: "sticky", top: 0, zIndex: 200,
         boxShadow: "0 1px 8px rgba(0,0,0,0.07)",
       }}>
-        <a href="/" style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
+        <Link href="/" style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
           <Logo size="sm" style={{ filter: isDark ? "none" : "brightness(0) saturate(100%)" }} />
-        </a>
+        </Link>
         <div style={{ flex: 1 }} />
         <div className="policy-nav-links">
-          <a href="/about-us">About</a>
-          <a href="/privacy">Privacy</a>
-          <a href="/terms">Terms</a>
-          <a href="/refund-policy">Refund</a>
-          <a href="/cookie-policy">Cookie</a>
-          <a href="/contact-us">Contact</a>
+          <Link href="/about-us">About</Link>
+          <Link href="/privacy">Privacy</Link>
+          <Link href="/terms">Terms</Link>
+          <Link href="/refund-policy">Refund</Link>
+          <Link href="/cookie-policy">Cookie</Link>
+          <Link href="/contact-us">Contact</Link>
         </div>
         <div style={{ width: 1, height: 20, background: tokens.navBorder, margin: "0 20px" }} />
-        <a href="/" style={{ fontSize: 13, color: "#2F7BFF", textDecoration: "none", fontWeight: 600 }}>← Home</a>
+        <Link href="/" style={{ fontSize: 13, color: "#2F7BFF", textDecoration: "none", fontWeight: 600 }}>← Home</Link>
       </nav>
 
       {/* Hero */}
@@ -136,10 +137,10 @@ function PolicyLayout({ title, badge, children }: { title: string; badge?: strin
       {/* Footer */}
       <div style={{ background: "#0f172a", color: "rgba(255,255,255,0.45)", textAlign: "center", padding: "22px 24px", fontSize: 13 }}>
         © {YEAR} {COMPANY} · {BRAND} is a registered product of {COMPANY} ·&nbsp;
-        <a href="/privacy" style={{ color: "rgba(255,255,255,0.55)", textDecoration: "none" }}>Privacy</a>&nbsp;·&nbsp;
-        <a href="/terms" style={{ color: "rgba(255,255,255,0.55)", textDecoration: "none" }}>Terms</a>&nbsp;·&nbsp;
-        <a href="/refund-policy" style={{ color: "rgba(255,255,255,0.55)", textDecoration: "none" }}>Refund</a>&nbsp;·&nbsp;
-        <a href="/cookie-policy" style={{ color: "rgba(255,255,255,0.55)", textDecoration: "none" }}>Cookie</a>&nbsp;·&nbsp;
+        <Link href="/privacy" style={{ color: "rgba(255,255,255,0.55)", textDecoration: "none" }}>Privacy</Link>&nbsp;·&nbsp;
+        <Link href="/terms" style={{ color: "rgba(255,255,255,0.55)", textDecoration: "none" }}>Terms</Link>&nbsp;·&nbsp;
+        <Link href="/refund-policy" style={{ color: "rgba(255,255,255,0.55)", textDecoration: "none" }}>Refund</Link>&nbsp;·&nbsp;
+        <Link href="/cookie-policy" style={{ color: "rgba(255,255,255,0.55)", textDecoration: "none" }}>Cookie</Link>&nbsp;·&nbsp;
         <a href={`mailto:${EMAIL}`} style={{ color: "rgba(255,255,255,0.55)", textDecoration: "none" }}>{EMAIL}</a>
       </div>
     </div>
