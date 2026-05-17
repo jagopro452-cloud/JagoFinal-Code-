@@ -28,15 +28,9 @@ class ApiConfig {
   // Socket.IO base URL (same server, no path)
   static String get socketUrl => baseUrl;
 
-  static String get sendOtp => '$baseUrl/api/app/send-otp';
-  static String get verifyOtp => '$baseUrl/api/app/verify-otp';
-  static String get verifyFirebaseToken => '$baseUrl/api/app/verify-firebase-token';
   static String get loginPassword => '$baseUrl/api/app/login-password';
   static String get registerAccount => '$baseUrl/api/app/register';
   static String get refreshSession => '$baseUrl/api/app/auth/refresh';
-  static String get forgotPassword => '$baseUrl/api/app/forgot-password';
-  static String get resetPassword => '$baseUrl/api/app/reset-password';
-  static String get resetPasswordFirebase => '$baseUrl/api/app/reset-password-firebase';
   static String get logout => '$baseUrl/api/app/logout';
   static String get fcmToken => '$baseUrl/api/app/fcm-token';
   static String get configs => '$baseUrl/api/app/configs';

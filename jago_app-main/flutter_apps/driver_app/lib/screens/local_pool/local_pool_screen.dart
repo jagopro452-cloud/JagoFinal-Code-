@@ -275,7 +275,7 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
           Text('Seats', style: GoogleFonts.poppins(fontWeight: FontWeight.w500)),
           const SizedBox(height: 8),
           DropdownButtonFormField<int>(
-            value: _maxSeats,
+            initialValue: _maxSeats,
             decoration: InputDecoration(
               filled: true,
               fillColor: _surface,

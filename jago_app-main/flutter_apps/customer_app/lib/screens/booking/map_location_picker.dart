@@ -441,10 +441,10 @@ class _MapLocationPickerState extends State<MapLocationPicker> {
                         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                         margin: const EdgeInsets.only(bottom: 6),
                         decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.8),
+                          color: Colors.black.withValues(alpha: 0.8),
                           borderRadius: BorderRadius.circular(20),
                           boxShadow: [
-                            BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 10, offset: const Offset(0, 4)),
+                            BoxShadow(color: Colors.black.withValues(alpha: 0.2), blurRadius: 10, offset: const Offset(0, 4)),
                           ],
                         ),
                         child: Text(
@@ -458,7 +458,7 @@ class _MapLocationPickerState extends State<MapLocationPicker> {
                         width: 8, height: 4,
                         margin: const EdgeInsets.only(top: 2),
                         decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.3),
+                          color: Colors.black.withValues(alpha: 0.3),
                           borderRadius: BorderRadius.circular(10),
                         ),
                       ),

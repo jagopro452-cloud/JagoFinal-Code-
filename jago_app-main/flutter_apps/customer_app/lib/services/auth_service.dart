@@ -349,30 +349,6 @@ class AuthService {
     return allowCachedFallback ? getSavedUser() : null;
   }
 
-  static Future<Map<String, dynamic>> sendOtp(
-    String phone, [
-    String userType = 'customer',
-    bool forceServerOtp = false,
-  ]) async {
-    return {
-      'success': false,
-      'code': 'FIREBASE_OTP_REQUIRED',
-      'message': 'Server OTP is disabled. Use Firebase Phone OTP in the app.',
-    };
-  }
-
-  static Future<Map<String, dynamic>> verifyOtp(
-    String phone,
-    String otp, [
-    String userType = 'customer',
-  ]) async {
-    return {
-      'success': false,
-      'code': 'FIREBASE_OTP_REQUIRED',
-      'message': 'Server OTP verification is disabled. Verify with Firebase and then call verifyFirebaseToken.',
-    };
-  }
-
   static Future<Map<String, dynamic>> updateProfile({
     String? fullName,
     String? email,
@@ -407,37 +383,19 @@ class AuthService {
     String phone,
     String password,
   ) async {
-    return {
-      'success': false,
-      'code': 'FIREBASE_OTP_REQUIRED',
-      'message': 'Password login is disabled. Use Firebase Phone OTP.',
-    };
-  }
-
-  static Future<Map<String, dynamic>> verifyFirebaseToken(
-    String idToken,
-    String phone, [
-    String userType = 'customer',
-  ]) async {
     try {
       final res = await http
           .post(
-            Uri.parse(ApiConfig.verifyFirebaseToken),
+            Uri.parse(ApiConfig.loginPassword),
             headers: _base,
             body: jsonEncode({
-              'firebaseIdToken': idToken,
               'phone': phone,
-              'userType': userType,
+              'password': password,
+              'userType': 'customer',
               'deviceId': await DeviceIdentityService.getDeviceId(),
             }),
           )
           .timeout(const Duration(seconds: 30));
-      if (!(res.headers['content-type'] ?? '').contains('application/json')) {
-        return {
-          'success': false,
-          'message': 'Server error. Please try again.',
-        };
-      }
       final data = jsonDecode(res.body) as Map<String, dynamic>;
       if (res.statusCode == 200 && data['token'] != null) {
         await _persistAuthPayload(data, fallbackPhone: phone);
@@ -462,38 +420,26 @@ class AuthService {
     String fullName, {
     String? email,
   }) async {
-    return {
-      'success': false,
-      'code': 'FIREBASE_OTP_REQUIRED',
-      'message': 'Password registration is disabled. Use Firebase Phone OTP and complete profile setup after verification.',
-    };
-  }
-
-  static Future<Map<String, dynamic>> resetPasswordWithFirebase(
-    String firebaseIdToken,
-    String phone,
-    String newPassword,
-  ) async {
     try {
       final res = await http
           .post(
-            Uri.parse(ApiConfig.resetPasswordFirebase),
+            Uri.parse(ApiConfig.registerAccount),
             headers: _base,
             body: jsonEncode({
-              'firebaseIdToken': firebaseIdToken,
               'phone': phone,
-              'newPassword': newPassword,
+              'password': password,
+              'fullName': fullName,
+              'email': email,
               'userType': 'customer',
+              'deviceId': await DeviceIdentityService.getDeviceId(),
             }),
           )
           .timeout(const Duration(seconds: 30));
-      if (!(res.headers['content-type'] ?? '').contains('application/json')) {
-        return {
-          'success': false,
-          'message': 'Server error. Please try again.',
-        };
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && data['token'] != null) {
+        await _persistAuthPayload(data, fallbackPhone: phone);
       }
-      return jsonDecode(res.body) as Map<String, dynamic>;
+      return data;
     } on TimeoutException {
       return {
         'success': false,
@@ -507,44 +453,4 @@ class AuthService {
     }
   }
 
-  static Future<Map<String, dynamic>> forgotPassword(String phone) async {
-    try {
-      final res = await http
-          .post(
-            Uri.parse(ApiConfig.forgotPassword),
-            headers: _base,
-            body: jsonEncode({'phone': phone, 'userType': 'customer'}),
-          )
-          .timeout(const Duration(seconds: 30));
-      if (!(res.headers['content-type'] ?? '').contains('application/json')) {
-        return {
-          'success': false,
-          'message': 'Server error. Please try again.',
-        };
-      }
-      return jsonDecode(res.body) as Map<String, dynamic>;
-    } on TimeoutException {
-      return {
-        'success': false,
-        'message': 'Request timed out. Check your connection.',
-      };
-    } catch (_) {
-      return {
-        'success': false,
-        'message': 'Network error. Check your connection.',
-      };
-    }
-  }
-
-  static Future<Map<String, dynamic>> resetPassword(
-    String phone,
-    String otp,
-    String newPassword,
-  ) async {
-    return {
-      'success': false,
-      'code': 'FIREBASE_OTP_REQUIRED',
-      'message': 'Server OTP password reset is disabled. Use resetPasswordWithFirebase after Firebase verification.',
-    };
-  }
 }

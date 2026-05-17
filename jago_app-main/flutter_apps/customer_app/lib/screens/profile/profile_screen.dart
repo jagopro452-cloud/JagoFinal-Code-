@@ -10,7 +10,6 @@ import '../../main.dart' show saveThemePreference, themeNotifier;
 import '../auth/login_screen.dart';
 import '../saved_places/saved_places_screen.dart';
 import '../preferences/ride_preferences_screen.dart';
-import '../monthly_pass/monthly_pass_screen.dart';
 import '../lost_found/lost_found_screen.dart';
 import '../safety/emergency_contacts_screen.dart';
 import '../referral/referral_screen.dart';

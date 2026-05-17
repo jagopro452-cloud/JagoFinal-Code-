@@ -293,7 +293,7 @@ class _RidePreferencesScreenState extends State<RidePreferencesScreen> {
             ),
             Switch.adaptive(
               value: val,
-              activeColor: const Color(0xFF2D8CFF),
+              activeThumbColor: const Color(0xFF2D8CFF),
               onChanged: onChanged,
             ),
           ],

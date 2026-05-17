@@ -1,12 +1,9 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../../config/jago_theme.dart';
 import '../../services/auth_service.dart';
-import '../../services/firebase_otp_service.dart';
 import '../main_screen.dart';
 
 class RegisterScreen extends StatefulWidget {
@@ -20,25 +17,21 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _nameCtrl = TextEditingController();
   final _phoneCtrl = TextEditingController();
   final _emailCtrl = TextEditingController();
-  final _otpCtrl = TextEditingController();
-
+  final _passwordCtrl = TextEditingController();
+  final _confirmCtrl = TextEditingController();
   bool _loading = false;
-  bool _otpSent = false;
-  int _seconds = 0;
-  Timer? _timer;
-  String? _firebaseVerificationId;
+  bool _hidePassword = true;
 
   static const Color _blue = Color(0xFF2F7BFF);
   static const Color _navy = JT.textPrimary;
 
   @override
   void dispose() {
-    _timer?.cancel();
-    FirebaseOtpService.resetVerification();
     _nameCtrl.dispose();
     _phoneCtrl.dispose();
     _emailCtrl.dispose();
-    _otpCtrl.dispose();
+    _passwordCtrl.dispose();
+    _confirmCtrl.dispose();
     super.dispose();
   }
 
@@ -46,124 +39,48 @@ class _RegisterScreenState extends State<RegisterScreen> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(msg, style: GoogleFonts.poppins(fontWeight: FontWeight.w400, color: Colors.white, fontSize: 13)),
+        content: Text(msg, style: GoogleFonts.poppins(color: Colors.white, fontSize: 13)),
         backgroundColor: error ? const Color(0xFFEF4444) : _blue,
         behavior: SnackBarBehavior.floating,
         margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        duration: const Duration(seconds: 3),
       ),
     );
   }
 
-  void _startTimer() {
-    _timer?.cancel();
-    _seconds = 60;
-    _timer = Timer.periodic(const Duration(seconds: 1), (t) {
-      if (!mounted || _seconds == 0) {
-        t.cancel();
-        return;
-      }
-      setState(() => _seconds--);
-    });
-  }
-
-  Future<void> _sendOtp() async {
+  Future<void> _createAccount() async {
     final name = _nameCtrl.text.trim();
     final phone = _phoneCtrl.text.trim();
+    final email = _emailCtrl.text.trim();
+    final password = _passwordCtrl.text;
+    final confirm = _confirmCtrl.text;
     if (name.length < 2) {
-      _showSnack("Please enter your full name", error: true);
+      _showSnack('Please enter your full name', error: true);
       return;
     }
     if (phone.length != 10) {
-      _showSnack("Enter a valid 10-digit phone number", error: true);
+      _showSnack('Enter a valid 10-digit phone number', error: true);
+      return;
+    }
+    if (password.length < 8) {
+      _showSnack('Password must be at least 8 characters', error: true);
+      return;
+    }
+    if (password != confirm) {
+      _showSnack('Passwords do not match', error: true);
       return;
     }
 
     setState(() => _loading = true);
-    _firebaseVerificationId = null;
-    await FirebaseOtpService.resetVerification();
-
-    bool firebaseSent = false;
-    String? firebaseError;
-    await FirebaseOtpService.sendOtp(
-      phoneNumber: "+91$phone",
-      onCodeSent: (verificationId) {
-        _firebaseVerificationId = verificationId;
-        firebaseSent = true;
-      },
-      onError: (error) {
-        firebaseError = error;
-      },
+    final res = await AuthService.registerWithPassword(
+      phone,
+      password,
+      name,
+      email: email.isEmpty ? null : email,
     );
-
     if (!mounted) return;
-
-    if (!firebaseSent) {
-      await FirebaseOtpService.sendOtp(
-        phoneNumber: "+91$phone",
-        forceResend: true,
-        onCodeSent: (verificationId) {
-          _firebaseVerificationId = verificationId;
-          firebaseSent = true;
-        },
-        onError: (error) {
-          firebaseError = error;
-        },
-      );
-    }
-
-    if (!mounted) return;
-
-    if (firebaseSent) {
-      setState(() {
-        _otpSent = true;
-        _loading = false;
-      });
-      _startTimer();
-      _showSnack("OTP sent to +91$phone");
-      return;
-    }
-
     setState(() => _loading = false);
-    _showSnack(firebaseError ?? "Failed to send OTP", error: true);
-  }
-
-  Future<void> _verifyAndCreateAccount() async {
-    final phone = _phoneCtrl.text.trim();
-    final otp = _otpCtrl.text.trim();
-    final name = _nameCtrl.text.trim();
-    if (otp.length != 6) {
-      _showSnack("Enter the 6-digit OTP", error: true);
-      return;
-    }
-    if (_firebaseVerificationId == null) {
-      _showSnack("OTP session expired. Please resend OTP.", error: true);
-      return;
-    }
-
-    setState(() => _loading = true);
-    try {
-      final idToken = await FirebaseOtpService.verifyOtp(
-        smsCode: otp,
-        verificationId: _firebaseVerificationId,
-      );
-      if (!mounted) return;
-      final authRes = await AuthService.verifyFirebaseToken(idToken, phone, "customer");
-      if (!mounted) return;
-      if (!(authRes["success"] == true || authRes["token"] != null)) {
-        throw Exception(authRes["message"] ?? "Account verification failed.");
-      }
-
-      final updateRes = await AuthService.updateProfile(
-        fullName: name,
-        email: _emailCtrl.text.trim().isEmpty ? null : _emailCtrl.text.trim(),
-      );
-      if (!mounted) return;
-      if (updateRes["success"] == false) {
-        throw Exception(updateRes["message"] ?? "Account created, but profile update failed.");
-      }
-
+    if (res['success'] == true || res['token'] != null) {
       Navigator.pushAndRemoveUntil(
         context,
         PageRouteBuilder(
@@ -173,12 +90,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
         ),
         (_) => false,
       );
-    } catch (e) {
-      if (!mounted) return;
-      _showSnack(e.toString().replaceAll("Exception: ", ""), error: true);
-    } finally {
-      if (mounted) setState(() => _loading = false);
+      return;
     }
+    _showSnack(res['message']?.toString() ?? 'Registration failed. Please try again.', error: true);
   }
 
   @override
@@ -195,10 +109,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
             icon: const Icon(Icons.arrow_back_ios_new_rounded, color: JT.textPrimary, size: 20),
             onPressed: () => Navigator.pop(context),
           ),
-          title: Text(
-            "Create Account",
-            style: GoogleFonts.poppins(color: _navy, fontWeight: FontWeight.w500, fontSize: 17),
-          ),
+          title: Text('Create Account', style: GoogleFonts.poppins(color: _navy, fontWeight: FontWeight.w500, fontSize: 17)),
           centerTitle: true,
         ),
         body: SingleChildScrollView(
@@ -207,112 +118,46 @@ class _RegisterScreenState extends State<RegisterScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const SizedBox(height: 4),
-              Text(
-                _otpSent ? "Verify Your Number" : "Join Jago Today",
-                style: GoogleFonts.poppins(fontSize: 26, fontWeight: FontWeight.w400, color: _navy),
-              ),
+              Text('Join Jago Today', style: GoogleFonts.poppins(fontSize: 26, fontWeight: FontWeight.w500, color: _navy)),
               const SizedBox(height: 4),
-              Text(
-                _otpSent
-                    ? "We sent a 6-digit code to +91 ${_phoneCtrl.text}"
-                    : "Create your account with Firebase Phone OTP",
-                style: GoogleFonts.poppins(fontSize: 13, color: const Color(0xFF94A3B8)),
-              ),
+              Text('Create a secure password account. No OTP required.', style: GoogleFonts.poppins(fontSize: 13, color: const Color(0xFF94A3B8))),
               const SizedBox(height: 28),
-              _buildLabel("Full Name"),
+              _label('Full Name'),
               const SizedBox(height: 8),
-              _buildInput(
-                controller: _nameCtrl,
-                hint: "Enter your full name",
-                icon: Icons.person_outline_rounded,
-                textCap: TextCapitalization.words,
-                enabled: !_otpSent,
-              ),
+              _input(_nameCtrl, 'Enter your full name', Icons.person_outline_rounded, textCap: TextCapitalization.words),
               const SizedBox(height: 16),
-              _buildLabel("Phone Number"),
+              _label('Phone Number'),
               const SizedBox(height: 8),
-              _buildPhoneInput(enabled: !_otpSent),
+              _phoneInput(),
               const SizedBox(height: 16),
-              _buildLabel("Email (Optional)"),
+              _label('Email (Optional)'),
               const SizedBox(height: 8),
-              _buildInput(
-                controller: _emailCtrl,
-                hint: "your@email.com",
-                icon: Icons.mail_outline_rounded,
-                keyboard: TextInputType.emailAddress,
-                enabled: !_otpSent,
-              ),
-              if (_otpSent) ...[
-                const SizedBox(height: 16),
-                _buildLabel("Enter OTP"),
-                const SizedBox(height: 8),
-                _buildInput(
-                  controller: _otpCtrl,
-                  hint: "6-digit code",
-                  icon: Icons.lock_outline_rounded,
-                  keyboard: TextInputType.number,
-                  inputFormatters: [
-                    FilteringTextInputFormatter.digitsOnly,
-                    LengthLimitingTextInputFormatter(6),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Center(
-                  child: _seconds > 0
-                      ? Text("Resend in ${_seconds}s", style: GoogleFonts.poppins(fontSize: 13, color: JT.textSecondary))
-                      : GestureDetector(
-                          onTap: _sendOtp,
-                          child: Text(
-                            "Resend OTP",
-                            style: GoogleFonts.poppins(color: JT.primary, fontWeight: FontWeight.w500, fontSize: 13),
-                          ),
-                        ),
-                ),
-              ],
+              _input(_emailCtrl, 'your@email.com', Icons.mail_outline_rounded, keyboard: TextInputType.emailAddress),
+              const SizedBox(height: 16),
+              _label('Password'),
+              const SizedBox(height: 8),
+              _passwordInput(_passwordCtrl, 'Minimum 8 characters'),
+              const SizedBox(height: 16),
+              _label('Confirm Password'),
+              const SizedBox(height: 8),
+              _passwordInput(_confirmCtrl, 'Re-enter password'),
               const SizedBox(height: 32),
               SizedBox(
                 width: double.infinity,
                 height: 58,
                 child: DecoratedBox(
                   decoration: BoxDecoration(
-                    gradient: _loading
-                        ? null
-                        : const LinearGradient(
-                            colors: [Color(0xFF56CCF2), Color(0xFF1A6FE0)],
-                            begin: Alignment.centerLeft,
-                            end: Alignment.centerRight,
-                          ),
+                    gradient: _loading ? null : const LinearGradient(colors: [Color(0xFF56CCF2), Color(0xFF1A6FE0)], begin: Alignment.centerLeft, end: Alignment.centerRight),
                     color: _loading ? _blue.withValues(alpha: 0.4) : null,
                     borderRadius: BorderRadius.circular(18),
-                    boxShadow: _loading
-                        ? []
-                        : [
-                            BoxShadow(
-                              color: _blue.withValues(alpha: 0.4),
-                              blurRadius: 20,
-                              offset: const Offset(0, 8),
-                            ),
-                          ],
+                    boxShadow: _loading ? [] : [BoxShadow(color: _blue.withValues(alpha: 0.4), blurRadius: 20, offset: const Offset(0, 8))],
                   ),
                   child: ElevatedButton(
-                    onPressed: _loading ? null : (_otpSent ? _verifyAndCreateAccount : _sendOtp),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.transparent,
-                      shadowColor: Colors.transparent,
-                      disabledBackgroundColor: Colors.transparent,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-                      elevation: 0,
-                    ),
+                    onPressed: _loading ? null : _createAccount,
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.transparent, shadowColor: Colors.transparent, disabledBackgroundColor: Colors.transparent, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)), elevation: 0),
                     child: _loading
-                        ? const SizedBox(
-                            width: 24,
-                            height: 24,
-                            child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5),
-                          )
-                        : Text(
-                            _otpSent ? "Verify & Create Account" : "Send OTP",
-                            style: GoogleFonts.poppins(fontSize: 17, fontWeight: FontWeight.w500, color: Colors.white),
-                          ),
+                        ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5))
+                        : Text('Create Account', style: GoogleFonts.poppins(fontSize: 17, fontWeight: FontWeight.w500, color: Colors.white)),
                   ),
                 ),
               ),
@@ -323,79 +168,56 @@ class _RegisterScreenState extends State<RegisterScreen> {
     );
   }
 
-  Widget _buildLabel(String label) {
-    return Text(
-      label,
-      style: GoogleFonts.poppins(fontSize: 13, fontWeight: FontWeight.w500, color: _navy),
-    );
-  }
+  Widget _label(String label) => Text(label, style: GoogleFonts.poppins(fontSize: 13, fontWeight: FontWeight.w500, color: _navy));
 
-  Widget _buildPhoneInput({required bool enabled}) {
-    return Container(
-      decoration: BoxDecoration(
-        color: const Color(0xFFF8FAFC),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
-      ),
-      child: Row(
-        children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
-            child: Text("+91", style: GoogleFonts.poppins(fontSize: 15, fontWeight: FontWeight.w500, color: _navy)),
-          ),
-          Container(width: 1, height: 24, color: const Color(0xFFE2E8F0)),
-          Expanded(
-            child: TextField(
-              controller: _phoneCtrl,
-              enabled: enabled,
-              keyboardType: TextInputType.phone,
-              inputFormatters: [
-                FilteringTextInputFormatter.digitsOnly,
-                LengthLimitingTextInputFormatter(10),
-              ],
-              style: GoogleFonts.poppins(fontSize: 15, fontWeight: FontWeight.w400, color: _navy),
-              decoration: InputDecoration(
-                hintText: "Enter 10-digit number",
-                hintStyle: GoogleFonts.poppins(color: const Color(0xFF94A3B8)),
-                border: InputBorder.none,
-                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _phoneInput() => _input(
+        _phoneCtrl,
+        'Enter 10-digit number',
+        Icons.phone_iphone_rounded,
+        keyboard: TextInputType.phone,
+        prefixText: '+91 ',
+        formatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(10)],
+      );
 
-  Widget _buildInput({
-    required TextEditingController controller,
-    required String hint,
-    required IconData icon,
+  Widget _passwordInput(TextEditingController controller, String hint) => _input(
+        controller,
+        hint,
+        Icons.lock_outline_rounded,
+        obscure: _hidePassword,
+        suffix: IconButton(
+          icon: Icon(_hidePassword ? Icons.visibility_off_outlined : Icons.visibility_outlined),
+          onPressed: () => setState(() => _hidePassword = !_hidePassword),
+        ),
+      );
+
+  Widget _input(
+    TextEditingController controller,
+    String hint,
+    IconData icon, {
     TextInputType keyboard = TextInputType.text,
     TextCapitalization textCap = TextCapitalization.none,
-    List<TextInputFormatter>? inputFormatters,
-    bool enabled = true,
+    List<TextInputFormatter>? formatters,
+    bool obscure = false,
+    Widget? suffix,
+    String? prefixText,
   }) {
-    return Container(
-      decoration: BoxDecoration(
-        color: const Color(0xFFF8FAFC),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
-      ),
-      child: TextField(
-        controller: controller,
-        enabled: enabled,
-        keyboardType: keyboard,
-        textCapitalization: textCap,
-        inputFormatters: inputFormatters,
-        style: GoogleFonts.poppins(fontSize: 15, fontWeight: FontWeight.w400, color: _navy),
-        decoration: InputDecoration(
-          hintText: hint,
-          hintStyle: GoogleFonts.poppins(color: const Color(0xFF94A3B8)),
-          prefixIcon: Icon(icon, color: JT.primary, size: 20),
-          border: InputBorder.none,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-        ),
+    return TextField(
+      controller: controller,
+      keyboardType: keyboard,
+      textCapitalization: textCap,
+      inputFormatters: formatters,
+      obscureText: obscure,
+      style: GoogleFonts.poppins(fontSize: 15, color: _navy),
+      decoration: InputDecoration(
+        hintText: hint,
+        prefixText: prefixText,
+        prefixIcon: Icon(icon, color: JT.primary, size: 20),
+        suffixIcon: suffix,
+        filled: true,
+        fillColor: const Color(0xFFF8FAFC),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: Color(0xFFE2E8F0))),
+        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: Color(0xFFE2E8F0))),
+        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: JT.primary, width: 1.4)),
       ),
     );
   }

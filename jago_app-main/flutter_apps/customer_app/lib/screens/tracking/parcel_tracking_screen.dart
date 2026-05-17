@@ -217,7 +217,7 @@ class _ParcelTrackingScreenState extends State<ParcelTrackingScreen> {
                             Container(
                               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                               decoration: BoxDecoration(
-                                color: _statusColor(_status).withOpacity(0.12),
+                                color: _statusColor(_status).withValues(alpha: 0.12),
                                 borderRadius: BorderRadius.circular(999),
                               ),
                               child: Text(

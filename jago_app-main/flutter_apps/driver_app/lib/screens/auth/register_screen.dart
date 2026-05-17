@@ -10,7 +10,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../config/api_config.dart';
 import '../../config/jago_theme.dart';
 import '../../services/auth_service.dart';
-import '../../services/firebase_otp_service.dart';
 import 'pending_verification_screen.dart';
 
 class RegisterScreen extends StatefulWidget {
@@ -31,13 +30,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
   DateTime? _dob;
   final _cityCtrl = TextEditingController();
 
-  // Step 2: Firebase OTP verification
-  final _otpCtrl = TextEditingController();
-  String? _firebaseVerificationId;
-  String? _firebaseIdToken;
-  bool _phoneVerified = false;
-  int _otpSeconds = 0;
-  Timer? _otpTimer;
+  // Step 2: Password setup
+  final _passwordCtrl = TextEditingController();
+  final _confirmPasswordCtrl = TextEditingController();
+  bool _accountCreated = false;
 
   // Step 3: Driving License
   final _licenseNumCtrl = TextEditingController();
@@ -80,12 +76,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
   void dispose() {
     _pageController.dispose();
     _nameCtrl.dispose(); _phoneCtrl.dispose(); _cityCtrl.dispose();
-    _otpCtrl.dispose();
+    _passwordCtrl.dispose(); _confirmPasswordCtrl.dispose();
     _licenseNumCtrl.dispose(); _vehicleBrandCtrl.dispose();
     _vehicleModelCtrl.dispose(); _vehicleColorCtrl.dispose();
     _vehicleYearCtrl.dispose(); _vehicleNumCtrl.dispose();
-    _otpTimer?.cancel();
-    FirebaseOtpService.resetVerification();
     super.dispose();
   }
 
@@ -97,108 +91,38 @@ class _RegisterScreenState extends State<RegisterScreen> {
     ));
   }
 
-  void _startOtpTimer() {
-    _otpTimer?.cancel();
-    _otpSeconds = 30;
-    _otpTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted || _otpSeconds == 0) {
-        timer.cancel();
-        return;
-      }
-      setState(() => _otpSeconds--);
-    });
-  }
-
-  Future<void> _sendFirebaseOtpForRegistration() async {
+  Future<void> _createDriverAccountForOnboarding() async {
     final phone = _phoneCtrl.text.trim();
+    final password = _passwordCtrl.text;
+    final confirmPassword = _confirmPasswordCtrl.text;
     if (phone.length != 10) {
       _showSnack('Enter a valid 10-digit phone number', error: true);
       return;
     }
+    if (password.length < 8) {
+      _showSnack('Password must be at least 8 characters', error: true);
+      return;
+    }
+    if (password != confirmPassword) {
+      _showSnack('Passwords do not match', error: true);
+      return;
+    }
     setState(() => _loading = true);
-    _firebaseVerificationId = null;
-    _firebaseIdToken = null;
-    _phoneVerified = false;
-    _otpCtrl.clear();
-    await FirebaseOtpService.resetVerification();
-
-    bool firebaseSent = false;
-    String? firebaseError;
-    await FirebaseOtpService.sendOtp(
-      phoneNumber: '+91$phone',
-      onCodeSent: (verificationId) {
-        _firebaseVerificationId = verificationId;
-        firebaseSent = true;
-      },
-      onError: (error) {
-        firebaseError = error;
-      },
+    final authRes = await AuthService.registerWithPassword(
+      phone,
+      password,
+      _nameCtrl.text.trim(),
+      vehicleNumber: _vehicleNumCtrl.text.trim().toUpperCase(),
+      vehicleModel: _vehicleModelCtrl.text.trim(),
     );
-
     if (!mounted) return;
-
-    if (!firebaseSent) {
-      await FirebaseOtpService.sendOtp(
-        phoneNumber: '+91$phone',
-        forceResend: true,
-        onCodeSent: (verificationId) {
-          _firebaseVerificationId = verificationId;
-          firebaseSent = true;
-        },
-        onError: (error) {
-          firebaseError = error;
-        },
-      );
-    }
-
-    if (!mounted) return;
-
-    if (firebaseSent) {
-      setState(() => _loading = false);
-      _startOtpTimer();
-      _showSnack('OTP sent to +91$phone');
-      return;
-    }
-
     setState(() => _loading = false);
-    _showSnack(firebaseError ?? 'Failed to send OTP', error: true);
-  }
-
-  Future<void> _verifyFirebaseOtpForRegistration() async {
-    final phone = _phoneCtrl.text.trim();
-    final otp = _otpCtrl.text.trim();
-    if (otp.length != 6) {
-      _showSnack('Enter the 6-digit OTP', error: true);
+    if (authRes['success'] == true || authRes['token'] != null) {
+      setState(() => _accountCreated = true);
+      _showSnack('Account created. Continue onboarding.');
       return;
     }
-    if (_firebaseVerificationId == null) {
-      _showSnack('OTP session expired. Please resend OTP.', error: true);
-      return;
-    }
-
-    setState(() => _loading = true);
-    try {
-      final idToken = await FirebaseOtpService.verifyOtp(
-        smsCode: otp,
-        verificationId: _firebaseVerificationId,
-      );
-      if (!mounted) return;
-      final authRes = await AuthService.verifyFirebaseToken(idToken, phone, 'driver');
-      if (!mounted) return;
-      if (!(authRes['success'] == true || authRes['token'] != null)) {
-        throw Exception(authRes['message'] ?? 'Phone verification failed');
-      }
-      setState(() {
-        _firebaseIdToken = idToken;
-        _phoneVerified = true;
-        _loading = false;
-      });
-      _showSnack('Phone verified successfully');
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _loading = false);
-      _showSnack(e.toString().replaceFirst('Exception: ', ''), error: true);
-    }
+    _showSnack(authRes['message']?.toString() ?? 'Could not create account', error: true);
   }
 
   Widget _requiredLabel(String label, {bool required = true}) {
@@ -529,23 +453,27 @@ class _RegisterScreenState extends State<RegisterScreen> {
   Future<void> _submit() async {
     setState(() => _loading = true);
     try {
-      // Ensure driver has a Firebase-verified backend session before submit.
+      // Ensure driver has a password-based backend session before submit.
       String? token = await AuthService.getToken();
       if (token == null || token.isEmpty) {
         final phone = _phoneCtrl.text.trim();
         if (phone.length != 10) throw Exception('Enter a valid 10-digit phone number');
-        if (!_phoneVerified || _firebaseIdToken == null) {
-          throw Exception('Verify your phone with Firebase OTP before submitting.');
-        }
         if (mounted) {
           setState(() {
-            _uploadStatusText = 'Restoring your account session...';
+            _uploadStatusText = 'Creating your driver account...';
           });
         }
-        final authRes = await AuthService.verifyFirebaseToken(_firebaseIdToken!, phone, 'driver');
+        final authRes = await AuthService.registerWithPassword(
+          phone,
+          _passwordCtrl.text,
+          _nameCtrl.text.trim(),
+          vehicleNumber: _vehicleNumCtrl.text.trim().toUpperCase(),
+          vehicleModel: _vehicleModelCtrl.text.trim(),
+        );
         if (!(authRes['success'] == true || authRes['token'] != null)) {
-          throw Exception(authRes['message'] ?? 'Session restore failed. Please verify OTP again.');
+          throw Exception(authRes['message'] ?? 'Could not create driver session.');
         }
+        _accountCreated = true;
         token = await AuthService.getToken();
         if (token == null || token.isEmpty) {
           throw Exception('Session expired. Please login again.');
@@ -575,49 +503,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       );
 
       if (profileRes.statusCode == 401 || profileRes.statusCode == 403) {
-        if (_firebaseIdToken != null) {
-          final relogin = await AuthService.verifyFirebaseToken(
-            _firebaseIdToken!,
-            _phoneCtrl.text.trim(),
-            'driver',
-          );
-          if (!(relogin['success'] == true || relogin['token'] != null)) {
-            throw Exception(relogin['message'] ?? 'Session expired. Please verify OTP again.');
-          }
-          final retriedHeaders = {
-            ...(await AuthService.getHeaders()),
-            'Content-Type': 'application/json',
-          };
-          final retriedProfileRes = await http.patch(
-            Uri.parse('${ApiConfig.baseUrl}/api/app/driver/update-registration'),
-            headers: retriedHeaders,
-            body: jsonEncode({
-              'name': _nameCtrl.text.trim(),
-              'dob': _dob?.toIso8601String(),
-              'city': _cityCtrl.text.trim(),
-              'licenseNumber': _licenseNumCtrl.text.trim(),
-              'licenseExpiry': _licenseExpiry?.toIso8601String(),
-              'vehicleBrand': _vehicleBrandCtrl.text.trim(),
-              'vehicleModel': _vehicleModelCtrl.text.trim(),
-              'vehicleColor': _vehicleColorCtrl.text.trim(),
-              'vehicleYear': int.tryParse(_vehicleYearCtrl.text.trim()),
-              'vehicleNumber': _vehicleNumCtrl.text.trim().toUpperCase(),
-              'vehicleType': _vehicleType,
-            }),
-          );
-          if (retriedProfileRes.statusCode != 200) {
-            String msg = 'Failed to update profile';
-            try {
-              if ((retriedProfileRes.headers['content-type'] ?? '').contains('application/json')) {
-                final decoded = jsonDecode(retriedProfileRes.body);
-                msg = decoded['message'] ?? msg;
-              }
-            } catch (_) {}
-            throw Exception(msg);
-          }
-        } else {
-          throw Exception('Session expired. Please verify OTP again.');
-        }
+        throw Exception('Session expired. Please login again.');
       } else if (profileRes.statusCode != 200) {
         String msg = 'Failed to update profile';
         try {
@@ -748,13 +634,18 @@ class _RegisterScreenState extends State<RegisterScreen> {
           Expanded(
             flex: 2,
             child: ElevatedButton(
-              onPressed: _loading ? null : () {
+              onPressed: _loading ? null : () async {
                 if (_currentStep == 0) {
                   if (_nameCtrl.text.trim().length < 2) { _showSnack('Enter your full name', error: true); return; }
                   if (_phoneCtrl.text.trim().length != 10) { _showSnack('Enter a valid 10-digit phone number', error: true); return; }
                 }
                 if (_currentStep == 1) {
-                  if (!_phoneVerified) { _showSnack('Verify your phone with Firebase OTP', error: true); return; }
+                  if (_passwordCtrl.text.length < 8) { _showSnack('Set a password with at least 8 characters', error: true); return; }
+                  if (_passwordCtrl.text != _confirmPasswordCtrl.text) { _showSnack('Passwords do not match', error: true); return; }
+                  if (!_accountCreated) {
+                    await _createDriverAccountForOnboarding();
+                    if (!_accountCreated) return;
+                  }
                 }
                 if (_currentStep == 2) {
                   if (_licenseNumCtrl.text.trim().isEmpty) { _showSnack('Enter your license number', error: true); return; }
@@ -811,53 +702,19 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   Widget _buildStep2() {
-    return _stepContainer('Phone Verification', 'Verify this driver number with Firebase OTP', [
-      _phoneInput(),
+    return _stepContainer('Password Setup', 'Create a secure driver account before document upload', [
+      Text('Mobile: +91 ${_phoneCtrl.text.trim()}', style: JT.body),
       const SizedBox(height: 16),
-      _input(
-        '6-Digit OTP',
-        _otpCtrl,
-        Icons.lock,
-        keyboard: TextInputType.number,
-        required: true,
-      ),
+      _input('Password', _passwordCtrl, Icons.lock, obscure: true, required: true),
+      const SizedBox(height: 16),
+      _input('Confirm Password', _confirmPasswordCtrl, Icons.lock_outline, obscure: true, required: true),
       const SizedBox(height: 12),
-      Row(
-        children: [
-          Expanded(
-            child: OutlinedButton(
-              onPressed: _loading ? null : _sendFirebaseOtpForRegistration,
-              style: OutlinedButton.styleFrom(
-                side: BorderSide(color: JT.primary),
-                foregroundColor: JT.primary,
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-              child: Text(_otpSeconds > 0 ? 'Resend in ${_otpSeconds}s' : 'Send OTP'),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: ElevatedButton(
-              onPressed: _loading ? null : _verifyFirebaseOtpForRegistration,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: JT.primary,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-              child: Text(_phoneVerified ? 'Verified' : 'Verify OTP'),
-            ),
-          ),
-        ],
+      Text(
+        _accountCreated
+            ? 'Account created. Continue onboarding and submit documents for admin approval.'
+            : 'Password must be at least 8 characters. OTP/Firebase verification is not used.',
+        style: JT.body.copyWith(color: _accountCreated ? JT.success : JT.textSecondary),
       ),
-      if (_phoneVerified) ...[
-        const SizedBox(height: 12),
-        Text(
-          'Phone verified. You can continue onboarding.',
-          style: JT.body.copyWith(color: JT.success),
-        ),
-      ],
     ]);
   }
 

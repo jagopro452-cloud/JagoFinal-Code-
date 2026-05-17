@@ -8458,11 +8458,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // -- PASSWORD-BASED REGISTER -----------------------------------------------
   app.post("/api/app/register", loginLimiter, async (req, res) => {
     try {
-      return res.status(410).json({
-        success: false,
-        code: "FIREBASE_OTP_REQUIRED",
-        message: "Password registration is disabled. Verify with Firebase Phone OTP and continue onboarding with the issued session.",
-      });
       const { phone, password, fullName, userType = "customer", email } = req.body;
       if (!phone || !password || !fullName) return res.status(400).json({ message: "Phone, password and name are required" });
       if (!['customer', 'driver'].includes(userType)) return res.status(400).json({ message: "Invalid user type" });
@@ -8470,7 +8465,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (phoneStr.length !== 10) return res.status(400).json({ message: "Enter a valid 10-digit phone number" });
       if (fullName.length > 100) return res.status(400).json({ message: "Name too long (max 100 chars)" });
       if (email && email.length > 200) return res.status(400).json({ message: "Email too long" });
-      if (password.length < 6) return res.status(400).json({ message: "Password must be at least 6 characters" });
+      if (password.length < 8) return res.status(400).json({ message: "Password must be at least 8 characters" });
       logRegistrationAudit("register.request", req.body, { phone: maskPhone(phoneStr) });
       const passwordHash = await hashPassword(password);
       const session = await rawDb.transaction(async (trx) =>
@@ -8512,11 +8507,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/app/login-password", loginLimiter, async (req, res) => {
     log(`Login request received for phone: ${req.body?.phone}`);
     try {
-      return res.status(410).json({
-        success: false,
-        code: "FIREBASE_OTP_REQUIRED",
-        message: "Password login is disabled. Use Firebase Phone OTP and verify-firebase-token.",
-      });
       const { phone, password, userType = "customer" } = req.body;
       if (!phone || !password) return res.status(400).json({ message: "Phone and password are required" });
       const phoneStr = normalizePhone(phone);
