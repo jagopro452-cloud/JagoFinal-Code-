@@ -31,7 +31,7 @@ export default function CityServices() {
   });
 
   const { data: allServices = [] } = useQuery<PlatformService[]>({
-    queryKey: ["/api/admin/all-platform-services"],
+    queryKey: ["/api/platform-services"],
     queryFn: async () => {
       const r = await fetch("/api/platform-services");
       if (!r.ok) return [];

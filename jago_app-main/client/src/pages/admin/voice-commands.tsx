@@ -36,7 +36,7 @@ export default function VoiceCommandsPage() {
 
   // ── Fetch AI config ───────────────────────────────────────────────────────
   useQuery({
-    queryKey: ["/api/admin/config/anthropic"],
+    queryKey: ["/api/admin/business-settings/anthropic_api_key"],
     queryFn: async () => {
       const token = localStorage.getItem("admin_token");
       const r = await fetch("/api/admin/business-settings/anthropic_api_key", {

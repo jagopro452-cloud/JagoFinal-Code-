@@ -127,6 +127,13 @@ import {
   SUPPORTED_UPI_PROVIDERS,
   loadRevenueSettings,
 } from "./revenue-engine";
+import {
+  getRuntimeConfigSnapshot,
+  initRuntimeConfigTables,
+  listRuntimeConfigAuditLogs,
+  rollbackRuntimeConfigAuditLog,
+  upsertRuntimeConfigEntries,
+} from "./runtime-config";
 import type { ServiceCategory, PaymentMethod } from "./revenue-engine";
 import {
   initDynamicServicesTables,
@@ -4961,6 +4968,185 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const settingsType = req.body.settingsType || "business_settings";
       const setting = await storage.upsertBusinessSetting(keyName, value, settingsType);
       res.json(setting);
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  // -- ADMIN: Runtime configuration control ---------------------------------
+  app.get("/api/admin/runtime-config", requireAdminAuth, async (_req, res) => {
+    try {
+      await initRuntimeConfigTables();
+      const snapshot = await getRuntimeConfigSnapshot(true);
+      res.json({ success: true, data: snapshot });
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  app.put("/api/admin/runtime-config", requireAdminAuth, requireAdminRole(["admin", "superadmin"]), async (req, res) => {
+    try {
+      await initRuntimeConfigTables();
+      const entries = Array.isArray(req.body?.entries) ? req.body.entries : [];
+      if (!entries.length) return res.status(400).json({ message: "At least one runtime config entry is required" });
+      const snapshot = await upsertRuntimeConfigEntries({
+        scopeType: req.body?.scopeType || "global",
+        scopeKey: req.body?.scopeKey || "default",
+        entries,
+        reason: req.body?.reason || "admin_runtime_update",
+        updatedBy: (req as any).adminUser?.email || "admin",
+      });
+      res.json({ success: true, data: snapshot });
+    } catch (e: any) { res.status(400).json({ message: safeErrMsg(e) }); }
+  });
+
+  app.get("/api/admin/runtime-config/audit", requireAdminAuth, async (req, res) => {
+    try {
+      await initRuntimeConfigTables();
+      const limit = Number(req.query.limit || 50);
+      const logs = await listRuntimeConfigAuditLogs(limit);
+      res.json({ success: true, data: logs });
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  app.post("/api/admin/runtime-config/rollback", requireAdminAuth, requireAdminRole(["admin", "superadmin"]), async (req, res) => {
+    try {
+      await initRuntimeConfigTables();
+      const auditLogId = String(req.body?.auditLogId || "");
+      if (!auditLogId) return res.status(400).json({ message: "auditLogId is required" });
+      const snapshot = await rollbackRuntimeConfigAuditLog({
+        auditLogId,
+        updatedBy: (req as any).adminUser?.email || "admin",
+      });
+      res.json({ success: true, data: snapshot });
+    } catch (e: any) { res.status(400).json({ message: safeErrMsg(e) }); }
+  });
+
+  async function ensureLocalPoolTables() {
+    await rawDb.execute(rawSql`
+      CREATE TABLE IF NOT EXISTS local_pool_rides (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        driver_id UUID,
+        vehicle_category_id UUID,
+        pickup_lat DOUBLE PRECISION,
+        pickup_lng DOUBLE PRECISION,
+        destination_lat DOUBLE PRECISION,
+        destination_lng DOUBLE PRECISION,
+        route_bearing_deg DOUBLE PRECISION,
+        pickup_address TEXT,
+        destination_address TEXT,
+        max_seats INTEGER DEFAULT 4,
+        booked_seats INTEGER DEFAULT 0,
+        fare_per_seat NUMERIC(10,2) DEFAULT 0,
+        distance_km DOUBLE PRECISION DEFAULT 0,
+        status VARCHAR(30) DEFAULT 'collecting',
+        collection_deadline TIMESTAMP,
+        zone_id UUID,
+        dispatch_trip_id UUID,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await rawDb.execute(rawSql`
+      CREATE TABLE IF NOT EXISTS local_pool_passengers (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        pool_ride_id UUID NOT NULL,
+        trip_request_id UUID,
+        customer_id UUID NOT NULL,
+        pickup_lat DOUBLE PRECISION,
+        pickup_lng DOUBLE PRECISION,
+        drop_lat DOUBLE PRECISION,
+        drop_lng DOUBLE PRECISION,
+        pickup_address TEXT,
+        drop_address TEXT,
+        seats_booked INTEGER DEFAULT 1,
+        fare_per_seat NUMERIC(10,2) DEFAULT 0,
+        total_fare NUMERIC(10,2) DEFAULT 0,
+        distance_km DOUBLE PRECISION DEFAULT 0,
+        payment_method VARCHAR(40) DEFAULT 'cash',
+        status VARCHAR(30) DEFAULT 'booked',
+        pickup_order INTEGER DEFAULT 1,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_local_pool_rides_status_created ON local_pool_rides(status, created_at DESC)`);
+    await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_local_pool_passengers_ride ON local_pool_passengers(pool_ride_id, status)`);
+  }
+
+  // -- ADMIN: Local pool monitoring -----------------------------------------
+  app.get("/api/admin/local-pool/stats", requireAdminAuth, async (_req, res) => {
+    try {
+      await ensureLocalPoolTables();
+      const r = await rawDb.execute(rawSql`
+        SELECT
+          COUNT(*)::int AS total_rides,
+          COUNT(*) FILTER (WHERE status='collecting')::int AS collecting,
+          COUNT(*) FILTER (WHERE status='dispatching')::int AS dispatching,
+          COUNT(*) FILTER (WHERE status IN ('accepted','started'))::int AS active,
+          COUNT(*) FILTER (WHERE status='completed')::int AS completed,
+          COUNT(*) FILTER (WHERE status='cancelled')::int AS cancelled,
+          COALESCE(SUM(booked_seats), 0)::int AS total_passengers,
+          COALESCE(SUM(booked_seats * fare_per_seat), 0)::numeric AS total_revenue
+        FROM local_pool_rides
+      `);
+      res.json(camelize((r.rows[0] as any) || {}));
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  app.get("/api/admin/local-pool/rides", requireAdminAuth, async (req, res) => {
+    try {
+      await ensureLocalPoolTables();
+      const status = String(req.query.status || "all");
+      const validStatus = ["collecting", "dispatching", "accepted", "started", "completed", "cancelled"].includes(status) ? status : "all";
+      const r = await rawDb.execute(rawSql`
+        SELECT
+          lpr.*,
+          u.full_name AS driver_name,
+          u.phone AS driver_phone,
+          COUNT(lpp.id)::int AS passenger_count,
+          COALESCE(SUM(lpp.total_fare), 0)::numeric AS total_revenue
+        FROM local_pool_rides lpr
+        LEFT JOIN users u ON u.id = lpr.driver_id
+        LEFT JOIN local_pool_passengers lpp ON lpp.pool_ride_id = lpr.id AND lpp.status <> 'cancelled'
+        ${validStatus !== "all" ? rawSql`WHERE lpr.status = ${validStatus}` : rawSql``}
+        GROUP BY lpr.id, u.full_name, u.phone
+        ORDER BY lpr.created_at DESC
+        LIMIT 500
+      `);
+      res.json({ success: true, data: camelize(r.rows) });
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  app.get("/api/admin/local-pool/rides/:rideId/passengers", requireAdminAuth, async (req, res) => {
+    try {
+      await ensureLocalPoolTables();
+      const r = await rawDb.execute(rawSql`
+        SELECT
+          lpp.*,
+          u.full_name AS customer_name,
+          u.phone AS customer_phone
+        FROM local_pool_passengers lpp
+        LEFT JOIN users u ON u.id = lpp.customer_id
+        WHERE lpp.pool_ride_id = ${req.params.rideId}::uuid
+        ORDER BY lpp.pickup_order ASC, lpp.created_at ASC
+      `);
+      res.json({ success: true, data: camelize(r.rows) });
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  app.patch("/api/admin/local-pool/settings", requireAdminAuth, requireAdminRole(["admin", "superadmin"]), async (req, res) => {
+    try {
+      const mode = String(req.body?.mode || "on").toLowerCase() === "off" ? "off" : "on";
+      const collectionSecs = Math.max(60, Math.min(600, Number(req.body?.collectionSecs || 300)));
+      const pairs = [
+        ["local_pool_mode", mode],
+        ["local_pool_collection_secs", String(collectionSecs)],
+      ];
+      for (const [key, value] of pairs) {
+        await rawDb.execute(rawSql`
+          INSERT INTO business_settings (key_name, value, settings_type)
+          VALUES (${key}, ${value}, 'pool_settings')
+          ON CONFLICT (key_name) DO UPDATE SET value=EXCLUDED.value, settings_type=EXCLUDED.settings_type, updated_at=NOW()
+        `);
+      }
+      res.json({ success: true, mode, collectionSecs });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
