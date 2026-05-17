@@ -1,5 +1,5 @@
 ﻿import { useLocation, Link } from "wouter";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { useTheme } from "@/components/theme-provider";
 import { Logo } from "@/components/Logo";
 
@@ -266,7 +266,14 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
   // Auth token injection is handled in queryClient.ts at module load time.
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    document.body.classList.add("admin-route");
+    return () => {
+      document.body.classList.remove("admin-route", "aside-folded", "aside-open");
+    };
+  }, []);
+
+  useLayoutEffect(() => {
     if (sidebarFolded) {
       document.body.classList.add("aside-folded");
     } else {
@@ -276,7 +283,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     catch (_) {}
   }, [sidebarFolded]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (mobileOpen) {
       document.body.classList.add("aside-open");
     } else {

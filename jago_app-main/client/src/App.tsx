@@ -40,6 +40,7 @@ function Router() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (window.location.hash) return;
+    if (location.startsWith("/admin/")) return;
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }, [location]);
 
