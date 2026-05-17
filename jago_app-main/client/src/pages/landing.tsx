@@ -495,6 +495,32 @@ export default function LandingPage() {
   }, [typeText, isDeleting, wordIdx]);
 
   const [selSvc, setSelSvc] = useState<null | any>(null);
+  const [svcModalVisible, setSvcModalVisible] = useState(false);
+
+  const openServiceModal = (service: any) => {
+    setSelSvc(service);
+    requestAnimationFrame(() => setSvcModalVisible(true));
+  };
+
+  const closeServiceModal = () => {
+    setSvcModalVisible(false);
+    window.setTimeout(() => setSelSvc(null), 240);
+  };
+
+  useEffect(() => {
+    if (!selSvc) return;
+    const previousOverflow = document.body.style.overflow;
+    const previousPaddingRight = document.body.style.paddingRight;
+    const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
+    document.body.style.overflow = "hidden";
+    if (scrollbarWidth > 0) {
+      document.body.style.paddingRight = `${scrollbarWidth}px`;
+    }
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.body.style.paddingRight = previousPaddingRight;
+    };
+  }, [selSvc]);
 
   useEffect(() => {
     const fn = () => setScrolled(window.scrollY > 30);
@@ -608,16 +634,19 @@ export default function LandingPage() {
           position:fixed;inset:0;background:rgba(68,56,90,0.4);
           backdrop-filter:blur(10px);z-index:1000;
           display:flex;align-items:center;justify-content:center;padding:24px;
-          animation:jg-fade-in .4s ease-out forwards;
+          opacity:0;transition:opacity .22s ease-out,backdrop-filter .22s ease-out;
+          overscroll-behavior:contain;
         }
-        @keyframes jg-fade-in{from{opacity:0}to{opacity:1}}
-        @keyframes jg-slide-up-modal{from{opacity:0;transform:translateY(30px) scale(0.95)}to{opacity:1;transform:translateY(0) scale(1)}}
+        .modal-overlay.open{opacity:1}
 
         .service-detail-card{
           background:#fff;border-radius:12px;width:100%;max-width:580px;
           position:relative;overflow:hidden;box-shadow:0 32px 80px rgba(182,109,255,0.25);
-          animation:jg-slide-up-modal .5s cubic-bezier(.16,1,.3,1) forwards;
+          opacity:0;transform:translate3d(0,24px,0) scale(.97);
+          transition:transform .28s cubic-bezier(.16,1,.3,1),opacity .22s ease-out,box-shadow .28s ease-out;
+          will-change:transform,opacity;
         }
+        .modal-overlay.open .service-detail-card{opacity:1;transform:translate3d(0,0,0) scale(1)}
       `}</style>
 
       <div style={{ background: C.cream, color: C.body, minHeight: "100vh" }}>
@@ -653,9 +682,9 @@ export default function LandingPage() {
 
         {/* ═══ SERVICE MODAL ═══ */}
         {selSvc && (
-          <div className="modal-overlay" onClick={() => setSelSvc(null)}>
+          <div className={`modal-overlay ${svcModalVisible ? "open" : ""}`} onClick={closeServiceModal}>
             <div className="service-detail-card" onClick={e => e.stopPropagation()} style={{ border: `1px solid ${C.border}` }}>
-              <button onClick={() => setSelSvc(null)} style={{ position: "absolute", top: 20, right: 20, background: "#f8effc", border: "none", width: 36, height: 36, borderRadius: 4, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: C.violet, zIndex: 10 }}>×</button>
+              <button onClick={closeServiceModal} style={{ position: "absolute", top: 20, right: 20, background: "#f8effc", border: "none", width: 36, height: 36, borderRadius: 4, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: C.violet, zIndex: 10 }}>×</button>
               
               <div style={{ padding: "40px" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 20, marginBottom: 28 }}>
@@ -686,7 +715,7 @@ export default function LandingPage() {
 
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                    <p style={{ textAlign: "center", fontSize: 11, color: C.bodyLight, margin: 0, fontWeight: 700, letterSpacing: 0.5 }}>READY TO MOVE BETTER?</p>
-                   <a href="#download" className="btn-primary" onClick={() => setSelSvc(null)} style={{
+                   <a href="#download" className="btn-primary" onClick={closeServiceModal} style={{
                       display: "flex", alignItems: "center", justifyContent: "center", gap: 12,
                       background: C.gradViolet, color: "#fff", padding: "18px", borderRadius: 8,
                       textDecoration: "none", fontFamily: ft, fontWeight: 800, fontSize: 16,
@@ -802,7 +831,7 @@ export default function LandingPage() {
                   { e: "🔄", t: "Rentals", d: "Hourly & daily vehicle rentals for every need.", longD: "Keep the ride as long as you need. With JAGO Rentals, you can book vehicles by the hour or day, perfect for shopping trips or multiple stops around the city.", tag: "Flexible", bg: "linear-gradient(140deg, #eef7ff 0%, #f0edff 100%)", c: "#60a5fa" },
                   { e: "🛣️", t: "Outstation", d: "Transparent long-distance rides with zero surge.", longD: "Plan your weekend getaway with confidence. Our outstation service offers fixed rates, expert drivers, and well-maintained vehicles for a stress-free travel experience.", tag: "Long-haul", bg: "linear-gradient(140deg, #fffdf9 0%, #fff3e0 100%)", c: "#f59e0b" },
                 ].map((s, i) => (
-                  <div key={i} onClick={() => setSelSvc(s)} className="premium-card svc-card" style={{ padding: 0, overflow: "hidden", cursor: "pointer", position: "relative" }}>
+                  <div key={i} onClick={() => openServiceModal(s)} className="premium-card svc-card" style={{ padding: 0, overflow: "hidden", cursor: "pointer", position: "relative" }}>
                     {/* Gradient left edge */}
                     <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: `linear-gradient(180deg, ${s.c}, transparent)`, borderRadius: "24px 0 0 24px" }} />
                     <div style={{ padding: "24px 24px", display: "flex", alignItems: "center", gap: 18, background: s.bg }}>
