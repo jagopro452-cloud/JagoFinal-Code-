@@ -225,6 +225,33 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any): void
 
   // ─── DRIVER: Start the trip (mark as active, set current location) ────────
 
+  app.get("/api/app/driver/outstation-pool/rides/:id/passengers", authApp, async (req: any, res: any) => {
+    try {
+      const driver = req.currentUser;
+      const rideId = String(req.params.id);
+      const ownRide = await rawDb.execute(rawSql`
+        SELECT id FROM outstation_pool_rides
+        WHERE id=${rideId}::uuid AND driver_id=${driver.id}::uuid
+        LIMIT 1
+      `);
+      if (!ownRide.rows.length) return res.status(404).json({ message: "Ride not found" });
+
+      const r = await rawDb.execute(rawSql`
+        SELECT opb.*,
+          u.full_name as passenger_name,
+          u.phone as passenger_phone
+        FROM outstation_pool_bookings opb
+        LEFT JOIN users u ON u.id = opb.customer_id
+        WHERE opb.ride_id=${rideId}::uuid
+          AND opb.status != 'cancelled'
+        ORDER BY COALESCE(opb.pickup_order, 1), opb.created_at ASC
+      `);
+      res.json({ passengers: r.rows });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.post("/api/app/driver/outstation-pool/rides/:id/start", authApp, async (req: any, res: any) => {
     try {
       const driver = req.currentUser;
@@ -308,14 +335,14 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any): void
           AND opr.driver_id = ${driver.id}::uuid
           AND opr.status = 'active'
           AND opb.status = 'confirmed'
-        RETURNING opb.customer_id, opb.drop_address, opb.to_city
+        RETURNING opb.customer_id, opb.dropoff_address, opb.to_city
       `);
       if (!r.rows.length) return res.status(404).json({ message: "Booking not found or not in confirmed state" });
 
       const b = r.rows[0] as any;
       io.to(`user:${b.customer_id}`).emit("outstation_pool:picked_up", {
         bookingId,
-        message: `You've been picked up! Drop: ${b.drop_address || b.to_city}`,
+        message: `You've been picked up! Drop: ${b.dropoff_address || b.to_city}`,
       });
 
       res.json({ success: true });

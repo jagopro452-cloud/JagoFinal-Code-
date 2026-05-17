@@ -153,8 +153,8 @@ const SLA_ESTIMATES: Record<string, { baseMinutes: number; perKmMinutes: number 
   tata_ace:      { baseMinutes: 30, perKmMinutes: 4 },
   pickup_truck:  { baseMinutes: 45, perKmMinutes: 5 },
   auto_parcel:   { baseMinutes: 20, perKmMinutes: 3.5 },
-  cargo_car:     { baseMinutes: 35, perKmMinutes: 4 },
   bolero_cargo:  { baseMinutes: 45, perKmMinutes: 5 },
+  tempo_407:     { baseMinutes: 55, perKmMinutes: 6 },
 };
 
 export function calculateExpectedDeliveryMinutes(
@@ -492,8 +492,8 @@ const PARCEL_VEHICLE_DRIVER_MAP: Record<string, string[]> = {
   auto_parcel:   ["auto"],
   tata_ace:      ["mini_truck", "tempo"],
   pickup_truck:  ["truck"],
-  cargo_car:     ["car"],
   bolero_cargo:  ["truck"],
+  tempo_407:     ["tempo"],
 };
 
 // 60s in-memory cache for parcel_key → vehicle_category_id[] resolution.

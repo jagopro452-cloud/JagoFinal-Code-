@@ -149,6 +149,10 @@ import {
   addParcelVehicle,
 } from "./dynamic-services";
 import {
+  ensureOutstationPoolV2Schema,
+  registerOutstationPoolV2Routes,
+} from "./outstation-pool-v2";
+import {
   startAIMobilityBrain,
   getCurrentMetrics,
   getAIDashboardData,
@@ -1826,13 +1830,19 @@ async function ensureOperationalSchema() {
         ('Mini Truck',      'tata_ace',      '??',  150, 18, 150, 2),
         ('Pickup Truck',    'pickup_truck',  '??',  200, 22, 200, 1),
         ('Auto Parcel',     'auto_parcel',   '??',   50, 13,  50, 7),
-        ('Cargo Car',       'cargo_car',     '??',  120, 16, 120, 4),
-        ('Bolero Cargo',    'bolero_cargo',  '??',  200, 22, 200, 3)
+        ('Bolero Cargo',    'bolero_cargo',  '??',  200, 22, 200, 3),
+        ('Tempo 407',       'tempo_407',     '??',  800, 28, 800, 1)
       ) AS v(vname, vtype, icon, base_fare, fare_per_km, minimum_fare, weight_rate)
       WHERE NOT EXISTS (
         SELECT 1 FROM vehicle_categories WHERE LOWER(name) = LOWER(v.vname)
       )
     `);
+    await rawDb.execute(rawSql`
+      UPDATE vehicle_categories
+      SET is_active=false
+      WHERE LOWER(COALESCE(vehicle_type, '')) IN ('cargo_' || 'car', 'car_' || 'parcel', 'parcel_' || 'car')
+         OR LOWER(name) IN ('cargo ' || 'car', 'car ' || 'parcel', 'parcel ' || 'car')
+    `).catch(dbCatch("db"));
     console.log('[seed] Parcel vehicle categories seeded/updated');
     // Back-fill pricing + vehicle_type for any rows still missing them
     await rawDb.execute(rawSql`
@@ -2317,6 +2327,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Always run schema bootstrap on startup to ensure all columns/tables exist
   try {
     await ensureOperationalSchema();
+    await ensureOutstationPoolV2Schema();
     console.log("[schema] Operational schema verified OK");
   } catch (e: any) {
     console.error("[schema] startup schema error:", e.message);
@@ -8172,288 +8183,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // ��  MOBILE APP APIs � Driver App + Customer App                       ��
   // -----------------------------------------------------------------------
 
-  // -- OTP SEND (Firebase Only) ----------------------------------------------
-  // Mobile apps use Firebase Phone Auth on-device. The server keeps only a
-  // lightweight request marker for rate limiting / telemetry and never sends SMS.
-  app.post("/api/app/send-otp", otpLimiter, async (_req, res) => {
-    return res.status(410).json({
-      success: false,
-      code: "FIREBASE_OTP_REQUIRED",
-      message: "Server OTP is disabled. Use Firebase Phone OTP in the app and then call verify-firebase-token.",
-    });
-  });
-
-  // -- OTP VERIFY + LOGIN / REGISTER ----------------------------------------
-  app.post("/api/app/verify-otp", otpLimiter, async (req, res) => {
-    try {
-      return res.status(410).json({
-        success: false,
-        code: "FIREBASE_OTP_REQUIRED",
-        message: "Server OTP verification is disabled. Verify with Firebase in the app and then call verify-firebase-token.",
-      });
-      const { phone, otp, userType = "customer", name, referralCode } = req.body;
-      if (!phone || !otp) return res.status(400).json({ message: "Phone and OTP required" });
-      const phoneStr = normalizePhone(phone);
-      if (phoneStr.length < 10) return res.status(400).json({ message: "Invalid phone number" });
-      logRegistrationAudit("verify-otp.request", req.body, { provider: "server_otp", phone: maskPhone(phoneStr) });
-
-      // Per-phone OTP brute force protection (max_attempts from otp_settings, default 3)
-      const otpCfg = await rawDb.execute(rawSql`SELECT max_attempts FROM otp_settings LIMIT 1`)
-        .catch(() => ({ rows: [] as any[] }));
-      const maxAttempts = parseInt((otpCfg.rows[0] as any)?.max_attempts ?? '3', 10);
-      const failedAttempts = await rawDb.execute(rawSql`
-        SELECT COUNT(*) AS cnt FROM otp_logs
-        WHERE phone=${phoneStr} AND is_used=false AND created_at > NOW() - INTERVAL '15 minutes'
-          AND attempt_count >= ${maxAttempts}
-        LIMIT 1
-      `).catch(() => ({ rows: [{ cnt: 0 }] as any[] }));
-      const recentFails = parseInt((failedAttempts.rows[0] as any)?.cnt || '0', 10);
-      if (recentFails >= 1) {
-        return res.status(429).json({ message: "Too many failed OTP attempts. Please request a new OTP after 15 minutes." });
-      }
-
-      // Check OTP
-      const otpRow = await rawDb.execute(rawSql`
-        SELECT * FROM otp_logs WHERE phone=${phoneStr} AND otp=${otp} AND is_used=false AND expires_at > NOW()
-        ORDER BY created_at DESC LIMIT 1
-      `);
-      if (!otpRow.rows.length) {
-        // Increment failed attempt counter
-        await rawDb.execute(rawSql`
-          UPDATE otp_logs SET attempt_count = COALESCE(attempt_count, 0) + 1
-          WHERE phone=${phoneStr} AND is_used=false AND expires_at > NOW()
-        `).catch(dbCatch("db"));
-        return res.status(400).json({ message: "Invalid or expired OTP" });
-      }
-
-      // Mark used
-      await rawDb.execute(rawSql`UPDATE otp_logs SET is_used=true WHERE id=${(otpRow.rows[0] as any).id}::uuid`);
-
-      const session = await rawDb.transaction(async (trx) =>
-        provisionAppUserSessionTx(trx, {
-          phone: phoneStr,
-          userType,
-          fullName: name || null,
-          referralCode: referralCode || null,
-        })
-      );
-
-      return res.json({
-        success: true,
-        isNew: session.isNew,
-        token: session.token,
-        user: {
-          id: session.user.id,
-          fullName: session.user.fullName || session.user.name,
-          phone: session.user.phone || session.user.mobile,
-          email: session.user.email || null,
-          userType: session.user.userType,
-          profilePhoto: session.user.profilePhoto || session.user.profileImage || null,
-          rating: parseFloat(session.user.rating || "5.0"),
-          isActive: session.user.isActive,
-          walletBalance: safeFloat(session.user.walletBalance, 0),
-          isLocked: session.user.isLocked || false,
-        }
-      });
-
-      // Find or create user
-      let userRes = await rawDb.execute(rawSql`SELECT * FROM users WHERE phone=${phoneStr} AND user_type=${userType} LIMIT 1`);
-      let user: any;
-      let isNew = false;
-
-      if (!userRes.rows.length) {
-        // Register new user
-        isNew = true;
-        const fullName = name || `User_${phone.slice(-4)}`;
-        const newUser = await rawDb.execute(rawSql`
-          INSERT INTO users (full_name, phone, user_type, is_active, wallet_balance)
-          VALUES (${fullName}, ${phoneStr}, ${userType}, true, 0)
-          RETURNING *
-        `);
-        await rawDb.execute(rawSql`UPDATE users SET referral_code=${'JAGOPRO' + phoneStr.slice(-6)} WHERE phone=${phoneStr} AND user_type=${userType}`).catch(dbCatch("db"));
-        user = camelize(newUser.rows[0]);
-      } else {
-        user = camelize(userRes.rows[0]);
-        if (!user.isActive) return res.status(403).json({ message: "Account deactivated. Contact support." });
-      }
-
-      // Generate secure auth token (30-day expiry)
-      const token = `${user.id}:${crypto.randomBytes(32).toString("hex")}`;
-      const tokenExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-      // Store auth token in users.auth_token (NOT in fcm_token � that's for Firebase)
-      await rawDb.execute(rawSql`UPDATE users SET auth_token=${token}, auth_token_expires_at=${tokenExpiry} WHERE id=${user.id}::uuid`);
-
-      // If driver, get wallet info
-      let walletBalance = 0;
-      let isLocked = false;
-      if (userType === "driver") {
-        const walletR = await rawDb.execute(rawSql`SELECT wallet_balance, is_locked, is_online FROM users WHERE id=${user.id}::uuid`);
-        if (walletR.rows.length) {
-          walletBalance = parseFloat((walletR.rows[0] as any).wallet_balance || 0);
-          isLocked = (walletR.rows[0] as any).is_locked || false;
-        }
-      }
-
-      res.json({
-        success: true,
-        isNew,
-        token,
-        user: {
-          id: user.id,
-          fullName: user.fullName,
-          phone: user.phone,
-          email: user.email || null,
-          userType: user.userType,
-          profilePhoto: user.profilePhoto || null,
-          rating: parseFloat(user.rating || "5.0"),
-          isActive: user.isActive,
-          walletBalance,
-          isLocked,
-        }
-      });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
-  });
-
-  // -- FIREBASE TOKEN VERIFICATION -------------------------------------------
-  app.post("/api/app/verify-firebase-token", async (req, res) => {
-    try {
-      const { firebaseIdToken, phone, userType = "customer" } = req.body;
-      if (!firebaseIdToken) return res.status(400).json({ message: "Firebase ID token required" });
-      if (!['customer', 'driver'].includes(userType)) return res.status(400).json({ message: "Invalid user type" });
-
-      let phoneStr = "";
-
-      // Try Firebase Admin SDK first (needs service account key � reads from DB or env)
-      const { getFirebaseAdminAsync } = await import("./fcm.js");
-      const adminInst = await getFirebaseAdminAsync();
-      if (adminInst) {
-        const decoded = await adminInst.auth().verifyIdToken(firebaseIdToken);
-        const firebasePhone = (decoded.phone_number || "").replace(/\D/g, "").slice(-10);
-        const clientPhone = (phone?.toString() || "").replace(/\D/g, "").slice(-10);
-        phoneStr = firebasePhone || clientPhone;
-        if (clientPhone && firebasePhone && clientPhone !== firebasePhone) {
-          return res.status(400).json({ message: "Phone number mismatch. Please retry login." });
-        }
-      } else {
-        // Fallback: verify token via Firebase REST API (only needs Web API key � no service account needed)
-        // Try the Web API key from env var first, then fall back to the known app key
-        const webApiKey = process.env.FIREBASE_WEB_API_KEY || '';
-        if (!webApiKey) {
-          return res.status(503).json({
-            message: "Firebase token verification is not configured on the server.",
-          });
-        }
-        let restVerified = false;
-        try {
-          const lookupRes = await fetch(
-            `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${webApiKey}`,
-            { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ idToken: firebaseIdToken }) }
-          );
-          if (lookupRes.ok) {
-            const lookupData = (await lookupRes.json()) as any;
-            const firebaseUser = lookupData.users?.[0];
-            if (firebaseUser) {
-              const firebasePhone = (firebaseUser.phoneNumber || "").replace(/\D/g, "").slice(-10);
-              const clientPhone = (phone?.toString() || "").replace(/\D/g, "").slice(-10);
-              phoneStr = firebasePhone || clientPhone;
-              if (clientPhone && firebasePhone && clientPhone !== firebasePhone) {
-                return res.status(400).json({ message: "Phone number mismatch. Please retry login." });
-              }
-              restVerified = true;
-            }
-          }
-        } catch (_) { }
-
-        // Final fallback: Firebase verified on-device — trust the phone number the app sent.
-        // We no longer require a server SMS or send-otp marker for Firebase-only auth.
-        // Reject unverifiable tokens instead of trusting the client phone number.
-        if (!restVerified) {
-          return res.status(401).json({
-            message: "Firebase token verification failed. Please request a fresh OTP and try again.",
-          });
-        }
-      }
-
-      if (!phoneStr || phoneStr.length < 10) {
-        return res.status(400).json({ message: "Could not determine phone number from token" });
-      }
-
-      logRegistrationAudit("verify-firebase-token.request", req.body, { provider: "firebase", phone: maskPhone(phoneStr) });
-      const session = await rawDb.transaction(async (trx) =>
-        provisionAppUserSessionTx(trx, {
-          phone: phoneStr,
-          userType,
-        })
-      );
-
-      return res.json({
-        success: true,
-        isNew: session.isNew,
-        token: session.token,
-        user: {
-          id: session.user.id,
-          fullName: session.user.fullName || session.user.name,
-          phone: session.user.phone || session.user.mobile,
-          email: session.user.email || null,
-          userType: session.user.userType,
-          profilePhoto: session.user.profilePhoto || session.user.profileImage || null,
-          rating: parseFloat(session.user.rating || "5.0"),
-          isActive: session.user.isActive,
-          walletBalance: safeFloat(session.user.walletBalance, 0),
-          isLocked: session.user.isLocked || false,
-        }
-      });
-
-      // Find or create user
-      let userRes = await rawDb.execute(rawSql`SELECT * FROM users WHERE phone=${phoneStr} AND user_type=${userType} LIMIT 1`);
-      let user: any;
-      let isNew = false;
-      if (!userRes.rows.length) {
-        isNew = true;
-        const fullName = `User_${phoneStr.slice(-4)}`;
-        const newUser = await rawDb.execute(rawSql`
-          INSERT INTO users (full_name, phone, user_type, is_active, wallet_balance)
-          VALUES (${fullName}, ${phoneStr}, ${userType}, true, 0)
-          RETURNING *
-        `);
-        await rawDb.execute(rawSql`UPDATE users SET referral_code=${'JAGOPRO' + phoneStr.slice(-6)} WHERE phone=${phoneStr} AND user_type=${userType}`).catch(dbCatch("db"));
-        user = camelize(newUser.rows[0]);
-      } else {
-        user = camelize(userRes.rows[0]);
-        if (!user.isActive) return res.status(403).json({ message: "Account deactivated. Contact support." });
-      }
-
-      const token = `${user.id}:${crypto.randomBytes(32).toString("hex")}`;
-      const tokenExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-      await rawDb.execute(rawSql`UPDATE users SET auth_token=${token}, auth_token_expires_at=${tokenExpiry} WHERE id=${user.id}::uuid`);
-
-      let walletBalance = 0;
-      let isLocked = false;
-      if (userType === "driver") {
-        const walletR = await rawDb.execute(rawSql`SELECT wallet_balance, is_locked FROM users WHERE id=${user.id}::uuid`);
-        if (walletR.rows.length) {
-          walletBalance = parseFloat((walletR.rows[0] as any).wallet_balance || 0);
-          isLocked = (walletR.rows[0] as any).is_locked || false;
-        }
-      }
-
-      res.json({
-        success: true, isNew, token,
-        user: {
-          id: user.id, fullName: user.fullName, phone: user.phone,
-          email: user.email || null, userType: user.userType,
-          profilePhoto: user.profilePhoto || null,
-          rating: parseFloat(user.rating || "5.0"),
-          isActive: user.isActive, walletBalance, isLocked,
-        }
-      });
-    } catch (e: any) {
-      if (e.code && String(e.code).startsWith("auth/")) {
-        return res.status(401).json({ message: "Invalid or expired Firebase token. Please retry." });
-      }
-      res.status(500).json({ message: safeErrMsg(e) });
-    }
-  });
+  // Mobile authentication is password/session based only. FCM remains available through /api/app/fcm-token.
+  // Phone-auth, app OTP login, and token-verification auth routes are intentionally not registered.
 
   // -- PASSWORD-BASED REGISTER -----------------------------------------------
   app.post("/api/app/register", loginLimiter, async (req, res) => {
@@ -8540,8 +8271,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // -- FORGOT PASSWORD (Firebase verification) ------------------------------
-  // Uses Firebase Phone Auth instead of SMS OTP for password reset
+  // -- FORGOT PASSWORD -------------------------------------------------------
+  // Password reset is intentionally support/admin mediated until a non-OTP
+  // recovery channel is configured.
   app.post("/api/app/forgot-password", otpLimiter, async (req, res) => {
     try {
       const { phone, userType = "customer" } = req.body;
@@ -8554,93 +8286,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         LIMIT 1
       `);
       if (!userRes.rows.length) return res.status(404).json({ message: "No account found with this phone number." });
-      // Use Firebase Phone Auth for password reset verification
-      console.log(`[RESET] ${phoneStr.slice(-4).padStart(phoneStr.length, '*')} ? Firebase password reset`);
-      res.json({ success: true, provider: 'firebase', message: 'Verify your phone via Firebase to reset password.' });
+      console.log(`[RESET] ${phoneStr.slice(-4).padStart(phoneStr.length, '*')} password reset support required`);
+      res.status(423).json({
+        success: false,
+        code: "PASSWORD_RESET_SUPPORT_REQUIRED",
+        message: "Password reset is handled by support/admin verification. Please contact support.",
+      });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
   // -- RESET PASSWORD (verify OTP + set new password) ------------------------
-  app.post("/api/app/reset-password", async (req, res) => {
-    try {
-      return res.status(410).json({
-        success: false,
-        code: "FIREBASE_OTP_REQUIRED",
-        message: "Password reset via server OTP is disabled. Use Firebase verification and reset-password-firebase.",
-      });
-      const { phone, otp, newPassword, userType = "customer" } = req.body;
-      if (!phone || !otp || !newPassword) return res.status(400).json({ message: "Phone, OTP and new password are required" });
-      const phoneStr = normalizePhone(phone);
-      if (phoneStr.length < 10) return res.status(400).json({ message: "Invalid phone number" });
-      if (newPassword.length < 6) return res.status(400).json({ message: "Password must be at least 6 characters" });
-      const userRes = await rawDb.execute(rawSql`
-        SELECT * FROM users
-        WHERE (phone=${phoneStr} OR mobile=${phoneStr})
-          AND user_type=${userType}
-          AND reset_otp=${otp}
-          AND reset_otp_expiry > NOW()
-        LIMIT 1
-      `);
-      if (!userRes.rows.length) return res.status(400).json({ message: "Invalid or expired OTP. Please try again." });
-      const passwordHash = await hashPassword(newPassword);
-      await rawDb.execute(rawSql`
-        UPDATE users
-        SET password_hash=${passwordHash}, reset_otp=NULL, reset_otp_expiry=NULL, updated_at=NOW()
-        WHERE (phone=${phoneStr} OR mobile=${phoneStr}) AND user_type=${userType}
-      `);
-      res.json({ success: true, message: "Password reset successfully. Please login with your new password." });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  app.post("/api/app/reset-password", async (_req, res) => {
+    return res.status(410).json({
+      success: false,
+      code: "PASSWORD_RESET_SUPPORT_REQUIRED",
+      message: "Password reset via OTP is removed. Please contact support/admin verification.",
+    });
   });
 
-  // -- Reset password via Firebase token (SMS-free flow) --------------------
-  app.post("/api/app/reset-password-firebase", async (req, res) => {
-    try {
-      const { firebaseIdToken, phone, newPassword, userType = "customer" } = req.body;
-      if (!firebaseIdToken || !phone || !newPassword) {
-        return res.status(400).json({ message: "Firebase token, phone and new password are required" });
-      }
-      if (newPassword.length < 6) return res.status(400).json({ message: "Password must be at least 6 characters" });
-      const phoneStr = phone.toString().replace(/\D/g, "").slice(-10);
-      if (phoneStr.length < 10) return res.status(400).json({ message: "Invalid phone number" });
-
-      // Verify Firebase token
-      let firebasePhone = "";
-      const { getFirebaseAdminAsync } = await import("./fcm.js");
-      const adminInst = await getFirebaseAdminAsync();
-      if (adminInst) {
-        const decoded = await adminInst.auth().verifyIdToken(firebaseIdToken);
-        firebasePhone = (decoded.phone_number || "").replace(/\D/g, "").slice(-10);
-      } else {
-        const webApiKey = process.env.FIREBASE_WEB_API_KEY;
-        if (!webApiKey) return res.status(503).json({ message: "Firebase not configured. Contact support." });
-        const lookupRes = await fetch(
-          `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${webApiKey}`,
-          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ idToken: firebaseIdToken }) }
-        );
-        if (!lookupRes.ok) return res.status(401).json({ message: "Invalid or expired Firebase token." });
-        const lookupData = (await lookupRes.json()) as any;
-        firebasePhone = (lookupData.users?.[0]?.phoneNumber || "").replace(/\D/g, "").slice(-10);
-      }
-      if (!firebasePhone) return res.status(401).json({ message: "Could not verify phone from Firebase token." });
-      if (firebasePhone !== phoneStr) return res.status(400).json({ message: "Phone number mismatch." });
-
-      // Check user exists
-      const userRes = await rawDb.execute(rawSql`
-        SELECT id FROM users
-        WHERE (phone=${phoneStr} OR mobile=${phoneStr}) AND user_type=${userType}
-        LIMIT 1
-      `);
-      if (!userRes.rows.length) return res.status(404).json({ message: "User not found." });
-
-      const passwordHash = await hashPassword(newPassword);
-      await rawDb.execute(rawSql`
-        UPDATE users
-        SET password_hash=${passwordHash}, reset_otp=NULL, reset_otp_expiry=NULL, updated_at=NOW()
-        WHERE (phone=${phoneStr} OR mobile=${phoneStr}) AND user_type=${userType}
-      `);
-      res.json({ success: true, message: "Password reset successfully. Please login with your new password." });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
-  });
 
   // -- AUTH MIDDLEWARE (simple token check) ---------------------------------
   async function authApp(req: Request, res: Response, next: NextFunction) {
@@ -8672,6 +8335,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (user?.userType !== "customer") return res.status(403).json({ message: "Customer access required" });
     next();
   }
+
+  registerOutstationPoolV2Routes(app, authApp);
 
   // -- DRIVER: Go Online / Offline + Location Update -------------------------
   app.post("/api/app/driver/location", authApp, requireDriver, async (req, res) => {
@@ -10152,6 +9817,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         },
         commissionRate: parseFloat(s.commission_pct || "15"),
       });
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  app.get("/api/app/driver/insurance/plans", authApp, requireDriver, async (_req, res) => {
+    try {
+      const r = await rawDb.execute(rawSql`
+        SELECT *
+        FROM insurance_plans
+        WHERE is_active=true
+        ORDER BY premium_monthly ASC, premium_daily ASC
+      `);
+      res.json({ plans: r.rows.map(camelize) });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -14806,8 +14483,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     tata_ace: { baseFare: 150, perKm: 18, perKg: 2, name: 'Mini Truck', maxWeightKg: 500, loadCharge: 50 },
     pickup_truck: { baseFare: 200, perKm: 22, perKg: 1, name: 'Pickup Truck', maxWeightKg: 2000, loadCharge: 100 },
     auto_parcel: { baseFare: 50, perKm: 13, perKg: 7, name: 'Auto Parcel', maxWeightKg: 50, loadCharge: 0 },
-    cargo_car: { baseFare: 120, perKm: 16, perKg: 4, name: 'Cargo Car', maxWeightKg: 200, loadCharge: 30 },
     bolero_cargo: { baseFare: 200, perKm: 22, perKg: 3, name: 'Bolero Cargo', maxWeightKg: 1500, loadCharge: 80 },
+    tempo_407: { baseFare: 800, perKm: 28, perKg: 1, name: 'Tempo 407', maxWeightKg: 2500, loadCharge: 150 },
   };
 
   // 60s in-memory caches for parcel pricing lookups — avoids hammering DB
@@ -17798,6 +17475,36 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       const details = await getPlaceDetails(placeId, sessionToken);
       if (!details) return res.status(404).json({ message: "Place not found" });
       res.json(details);
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  app.post("/api/app/places/select", authApp, async (req, res) => {
+    try {
+      const user = (req as any).currentUser;
+      const { placeId, queryText, placeLabel, placeAddress, lat, lng } = req.body || {};
+      if (!placeId && !placeAddress) return res.status(400).json({ message: "placeId or placeAddress required" });
+      await rawDb.execute(rawSql`
+        CREATE TABLE IF NOT EXISTS app_place_selections (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          user_id UUID NOT NULL,
+          place_id TEXT,
+          query_text TEXT,
+          place_label TEXT,
+          place_address TEXT,
+          lat NUMERIC(10,7),
+          lng NUMERIC(10,7),
+          created_at TIMESTAMP DEFAULT NOW()
+        )
+      `).catch(dbCatch("db"));
+      const r = await rawDb.execute(rawSql`
+        INSERT INTO app_place_selections
+          (user_id, place_id, query_text, place_label, place_address, lat, lng)
+        VALUES
+          (${user.id}::uuid, ${placeId || null}, ${queryText || null}, ${placeLabel || null},
+           ${placeAddress || null}, ${lat != null ? Number(lat) : null}, ${lng != null ? Number(lng) : null})
+        RETURNING id, created_at
+      `);
+      res.json({ success: true, selection: camelize(r.rows[0]) });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 

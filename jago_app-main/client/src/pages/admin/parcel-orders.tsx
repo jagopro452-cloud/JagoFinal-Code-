@@ -35,8 +35,9 @@ const VEHICLE_LABELS: Record<string, string> = {
   bike_parcel:  "Bike Parcel",
   auto_parcel:  "Auto Parcel",
   tata_ace:     "Tata Ace",
-  cargo_car:    "Cargo Car",
   bolero_cargo: "Bolero Cargo",
+  pickup_truck: "Pickup Truck",
+  tempo_407:    "Tempo 407",
 };
 
 interface DetailModalProps { order: ParcelOrder; onClose: () => void }

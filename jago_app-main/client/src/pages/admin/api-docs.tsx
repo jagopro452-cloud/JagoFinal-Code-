@@ -33,7 +33,7 @@ const BASE_URL = "https://jagopro.org";
 
 const API_SECTIONS: ApiSection[] = [
   {
-    title: "Authentication (OTP)",
+    title: "Authentication (Password)",
     icon: "bi-shield-lock-fill",
     color: "#1a73e8",
     bg: "#e8f0fe",
@@ -41,17 +41,17 @@ const API_SECTIONS: ApiSection[] = [
     endpoints: [
       {
         method: "POST",
-        path: "/api/app/send-otp",
-        desc: "Send OTP to phone number (works for both driver & customer)",
-        body: `{ "phone": "9876543210", "userType": "customer" | "driver" }`,
-        response: `{ "success": true, "message": "OTP sent", "otp": "123456" }`,
-        notes: "In development mode, OTP is returned in response. In production, send via SMS (Twilio/MSG91). OTP expires in 5 minutes.",
+        path: "/api/app/register",
+        desc: "Create account with password and return an app session token",
+        body: `{ "phone": "9876543210", "password": "StrongPass123", "fullName": "Raju", "userType": "customer" | "driver", "email": "optional@example.com" }`,
+        response: `{ "success": true, "isNew": true, "token": "uuid:hextoken", "user": { "id": "uuid", "fullName": "Raju", "phone": "...", "walletBalance": 0, "isLocked": false } }`,
+        notes: "Password is hashed server-side. Mobile phone-auth OTP login is removed.",
       },
       {
         method: "POST",
-        path: "/api/app/verify-otp",
-        desc: "Verify OTP → Login or auto-register new user → Returns auth token",
-        body: `{ "phone": "9876543210", "otp": "123456", "userType": "customer" | "driver", "name": "Raju" }`,
+        path: "/api/app/login-password",
+        desc: "Login with mobile number and password and return an app session token",
+        body: `{ "phone": "9876543210", "password": "StrongPass123", "userType": "customer" | "driver" }`,
         response: `{ "success": true, "isNew": false, "token": "uuid:hextoken", "user": { "id": "uuid", "fullName": "Raju", "phone": "...", "walletBalance": 0, "isLocked": false } }`,
         notes: "Token format: userId:randomHex. Store token in app and send as Authorization: Bearer <token> for all protected requests.",
       },
@@ -291,7 +291,7 @@ const FLOW_STEPS = [
     icon: "bi-car-front-fill",
     color: "#16a34a",
     steps: [
-      { n: 1, label: "OTP Login", api: "POST /api/app/send-otp → POST /api/app/verify-otp", detail: "Get token + user info" },
+      { n: 1, label: "Password Login", api: "POST /api/app/login-password", detail: "Get token + user info" },
       { n: 2, label: "Load Profile", api: "GET /api/app/driver/profile", detail: "Wallet balance, stats, rating" },
       { n: 3, label: "Go Online", api: "PATCH /api/app/driver/online-status { isOnline: true }", detail: "Checks wallet lock first" },
       { n: 4, label: "Send Location", api: "POST /api/app/driver/location (every 5s)", detail: "GPS coordinates + heading" },
@@ -308,7 +308,7 @@ const FLOW_STEPS = [
     icon: "bi-person-fill",
     color: "#7c3aed",
     steps: [
-      { n: 1, label: "OTP Login", api: "POST /api/app/send-otp → POST /api/app/verify-otp", detail: "Get token + user info" },
+      { n: 1, label: "Password Login", api: "POST /api/app/login-password", detail: "Get token + user info" },
       { n: 2, label: "Get Fare Estimate", api: "POST /api/app/customer/estimate-fare", detail: "Show price options by vehicle" },
       { n: 3, label: "View Nearby Drivers", api: "GET /api/app/nearby-drivers?lat=...&lng=...", detail: "Show cars on map" },
       { n: 4, label: "Book Ride", api: "POST /api/app/customer/book-ride", detail: "Auto-assigns nearest driver" },
@@ -367,8 +367,8 @@ function EndpointCard({ ep }: { ep: ApiEndpoint }) {
 
 const DRIVER_API_SUMMARY = [
   { when: "App launch",             api: "GET /api/app/configs",                    note: "Cache vehicle categories locally" },
-  { when: "OTP screen — send",      api: "POST /api/app/send-otp",                  note: "userType: 'driver'" },
-  { when: "OTP screen — verify",    api: "POST /api/app/verify-otp",                note: "Save returned token" },
+  { when: "Login screen",          api: "POST /api/app/login-password",           note: "userType: 'driver'" },
+  { when: "Register screen",       api: "POST /api/app/register",                 note: "Create password session" },
   { when: "Home screen load",       api: "GET /api/app/driver/profile",             note: "Show wallet, rating, online status" },
   { when: "Go Online / Offline",    api: "PATCH /api/app/driver/online-status",     note: "403 if wallet locked" },
   { when: "Every 5 seconds online", api: "POST /api/app/driver/location",           note: "Send lat/lng + heading" },
@@ -386,8 +386,8 @@ const DRIVER_API_SUMMARY = [
 
 const CUSTOMER_API_SUMMARY = [
   { when: "App launch",             api: "GET /api/app/configs",                    note: "Cache vehicle categories" },
-  { when: "OTP screen — send",      api: "POST /api/app/send-otp",                  note: "userType: 'customer'" },
-  { when: "OTP screen — verify",    api: "POST /api/app/verify-otp",                note: "Save returned token" },
+  { when: "Login screen",          api: "POST /api/app/login-password",           note: "userType: 'customer'" },
+  { when: "Register screen",       api: "POST /api/app/register",                 note: "Create password session" },
   { when: "Home screen load",       api: "GET /api/app/customer/profile",           note: "Show wallet balance, stats" },
   { when: "Home map screen",        api: "GET /api/app/nearby-drivers",             note: "?lat=&lng=&radius=5" },
   { when: "Pickup selected",        api: "POST /api/app/customer/estimate-fare",    note: "Show price options for each vehicle" },
@@ -409,7 +409,7 @@ const FLUTTER_FILES = [
     color: "#16a34a",
     bg: "#f0fdf4",
     files: [
-      { name: "api_service.dart",          path: "/flutter/driver_app/api_service.dart",          desc: "All API calls (OTP, location, trip management, wallet)" },
+      { name: "api_service.dart",          path: "/flutter/driver_app/api_service.dart",          desc: "All API calls (password auth, location, trip management, wallet)" },
       { name: "models.dart",               path: "/flutter/driver_app/models.dart",               desc: "DriverProfile, IncomingTrip, TripDetail, WalletInfo models" },
       { name: "notification_service.dart", path: "/flutter/driver_app/notification_service.dart", desc: "🔔 FCM push notifications + sound alerts setup" },
     ],
@@ -420,7 +420,7 @@ const FLUTTER_FILES = [
     color: "#7c3aed",
     bg: "#f5f3ff",
     files: [
-      { name: "api_service.dart", path: "/flutter/customer_app/api_service.dart", desc: "All API calls (OTP, booking, tracking, rating)" },
+      { name: "api_service.dart", path: "/flutter/customer_app/api_service.dart", desc: "All API calls (password auth, booking, tracking, rating)" },
       { name: "models.dart",      path: "/flutter/customer_app/models.dart",       desc: "CustomerProfile, FareOption, ActiveTrip, AppConfigs models" },
     ],
   },
@@ -631,7 +631,7 @@ export default function ApiDocsPage() {
       <div className="row g-3 mb-4">
         {[
           { label: "Base URL", val: BASE_URL, icon: "bi-globe", color: "#1a73e8", bg: "#e8f0fe" },
-          { label: "Auth Method", val: "Bearer Token (OTP-based)", icon: "bi-shield-lock-fill", color: "#16a34a", bg: "#f0fdf4" },
+          { label: "Auth Method", val: "Bearer Token (password session)", icon: "bi-shield-lock-fill", color: "#16a34a", bg: "#f0fdf4" },
           { label: "Token Format", val: "userId:randomHex64", icon: "bi-key-fill", color: "#d97706", bg: "#fefce8" },
           { label: "Content-Type", val: "application/json", icon: "bi-braces", color: "#7c3aed", bg: "#f5f3ff" },
         ].map((s, i) => (

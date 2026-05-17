@@ -67,6 +67,12 @@ const _kVehicles = [
     accentColor: Color(0xFF2F7BFF),
   ),
   _ParcelVehicle(
+    key: 'auto_parcel', name: 'Auto Parcel', subtitle: 'Medium 3-wheeler loads',
+    icon: 'auto', capacity: 'Up to 50 kg', maxKg: 50,
+    suitable: 'Medium boxes - Shop supplies - Small furniture',
+    accentColor: Color(0xFFF59E0B),
+  ),
+  _ParcelVehicle(
     key: 'tata_ace', name: 'Mini Truck', subtitle: 'Tata Ace · Medium goods',
     icon: 'mini_truck', capacity: 'Up to 500 kg', maxKg: 500,
     suitable: 'Furniture · Appliances · Bulk items · Shop stock',
@@ -78,13 +84,28 @@ const _kVehicles = [
     suitable: 'Heavy machinery · Construction · Business logistics',
     accentColor: Color(0xFF7C3AED),
   ),
+  _ParcelVehicle(
+    key: 'bolero_cargo', name: 'Bolero Cargo', subtitle: 'Heavy-duty pickup',
+    icon: 'pickup_truck', capacity: 'Up to 1,500 kg', maxKg: 1500,
+    suitable: 'Construction - Heavy equipment - Large shipments',
+    accentColor: Color(0xFF8B5CF6),
+  ),
+  _ParcelVehicle(
+    key: 'tempo_407', name: 'Tempo 407', subtitle: 'Large commercial loads',
+    icon: 'truck', capacity: 'Up to 2,500 kg', maxKg: 2500,
+    suitable: 'Factory goods - Full shifting - Large shipments',
+    accentColor: Color(0xFF0F766E),
+  ),
 ];
 
 const Map<String, String> _parcelVehicleImageUrls = {
   'bike_parcel': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_49_26_AM_gjbrxs',
+  'auto_parcel': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_49_26_AM_gjbrxs',
   'tata_ace': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_51_59_AM_jzd119',
   'mini_truck': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_51_59_AM_jzd119',
   'pickup_truck': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_54_02_AM_hicx7s',
+  'bolero_cargo': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_54_02_AM_hicx7s',
+  'tempo_407': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_54_02_AM_hicx7s',
 };
 
 // ── Static item types ─────────────────────────────────────────────────────────
@@ -247,7 +268,8 @@ class _ParcelBookingScreenState extends State<ParcelBookingScreen>
           return type == 'parcel' || cat == 'parcel' ||
               key.contains('parcel') || key.contains('tata') ||
               key.contains('pickup') || key.contains('truck') ||
-              key.contains('bike_parcel') || key.contains('mini');
+              key.contains('bike_parcel') || key.contains('mini') ||
+              key.contains('bolero') || key.contains('tempo');
         }
 
         final parsed = list
@@ -305,6 +327,9 @@ class _ParcelBookingScreenState extends State<ParcelBookingScreen>
 
   String _normalizedVehicleKey(String rawKey, String fallbackName) {
     final hay = '$rawKey $fallbackName'.toLowerCase();
+    if (hay.contains('tempo') || hay.contains('407')) return 'tempo_407';
+    if (hay.contains('bolero')) return 'bolero_cargo';
+    if (hay.contains('auto')) return 'auto_parcel';
     if (hay.contains('pickup')) return 'pickup_truck';
     if (hay.contains('tata') || hay.contains('mini')) return 'tata_ace';
     if (hay.contains('bike')) return 'bike_parcel';

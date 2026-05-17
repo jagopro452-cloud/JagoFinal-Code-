@@ -86,15 +86,20 @@ export async function initDynamicServicesTables(): Promise<void> {
        'Documents · Small boxes · Groceries · Medicine', '#2F7BFF', 40, 12, 4, 0, true, 1),
       ('auto_parcel', 'Cargo Auto', 'Medium loads in 3-wheeler', '🛺', 'Up to 50 kg', 50,
        'Medium boxes · Small furniture · Shop supplies', '#F59E0B', 50, 13, 7, 0, true, 2),
-      ('cargo_car', 'Cargo Car', 'Sedan-sized cargo transport', '🚗', 'Up to 200 kg', 200,
-       'Appliances · Large boxes · Business goods', '#10B981', 120, 16, 4, 30, true, 3),
       ('tata_ace', 'Mini Truck', 'Tata Ace · Medium goods', '🚛', 'Up to 500 kg', 500,
-       'Furniture · Appliances · Bulk items · Shop stock', '#FF6B35', 150, 18, 2, 50, true, 4),
+       'Furniture · Appliances · Bulk items · Shop stock', '#FF6B35', 150, 18, 2, 50, true, 3),
       ('bolero_cargo', 'Bolero Pickup', 'Heavy-duty pickup truck', '🚙', 'Up to 1,500 kg', 1500,
        'Construction · Heavy equipment · Large shipments', '#8B5CF6', 200, 22, 3, 80, true, 5),
       ('pickup_truck', 'Pickup Truck', 'Large heavy goods transport', '🛻', 'Up to 2,000 kg', 2000,
-       'Heavy machinery · Construction · Business logistics', '#7C3AED', 200, 22, 1, 100, true, 6)
+       'Heavy machinery · Construction · Business logistics', '#7C3AED', 200, 22, 1, 100, true, 4),
+      ('tempo_407', 'Tempo 407', 'Large commercial goods transport', '🚚', 'Up to 2,500 kg', 2500,
+       'Factory goods · Full shifting · Large shipments', '#0F766E', 800, 28, 1, 150, true, 6)
     ON CONFLICT (vehicle_key) DO NOTHING;
+  `).catch(() => {});
+  await rawDb.execute(rawSql`
+    UPDATE parcel_vehicle_types
+    SET is_active=false
+    WHERE vehicle_key IN ('cargo_' || 'car', 'car_' || 'parcel', 'parcel_' || 'car')
   `).catch(() => {});
 
   // ── Seed default cities ─────────────────────────────────────────────────
@@ -404,11 +409,8 @@ export async function getDriverEligibleServices(
       if (vehicleName.includes('auto') || vehicleCode === 'auto') {
         eligibleParcelKeys.push('auto_parcel');
       }
-      if (vehicleName.includes('car') || vehicleName.includes('sedan') || vehicleCode === 'car') {
-        eligibleParcelKeys.push('cargo_car');
-      }
       if (vehicleName.includes('truck') || vehicleName.includes('ace') || vehicleName.includes('bolero')) {
-        eligibleParcelKeys.push('tata_ace', 'bolero_cargo', 'pickup_truck');
+        eligibleParcelKeys.push('tata_ace', 'bolero_cargo', 'pickup_truck', 'tempo_407');
       }
     } else if (svc.category === 'carpool') {
       // Carpool available for car/sedan/suv
