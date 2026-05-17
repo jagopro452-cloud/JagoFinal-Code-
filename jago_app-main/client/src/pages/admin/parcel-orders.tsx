@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import AdminLayout from "./layout";
 
 interface ParcelOrder {
   id: string;
@@ -182,7 +181,6 @@ export default function ParcelOrdersPage() {
   };
 
   return (
-    <AdminLayout>
       <div style={{ padding: "28px 32px", maxWidth: 1200 }}>
 
         {/* Header */}
@@ -319,6 +317,5 @@ export default function ParcelOrdersPage() {
 
         {selectedOrder && <DetailModal order={selectedOrder} onClose={() => setSelectedOrder(null)} />}
       </div>
-    </AdminLayout>
   );
 }

@@ -1281,7 +1281,7 @@ export default function LandingPage() {
               ))}
             </div>
             <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 24, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 16 }}>
-              <p style={{ fontSize: 13, color: C.bodyLight, fontFamily: ft, margin: 0 }}>© 2025 JAGO Pro Mobility Pvt Ltd. All rights reserved.</p>
+              <p style={{ fontSize: 13, color: C.bodyLight, fontFamily: ft, margin: 0 }}>© 2025 JAGO Mobility Pvt Ltd. All rights reserved.</p>
               <p style={{ fontSize: 13, color: C.bodyLight, fontFamily: ft, margin: 0 }}>Made with 💜 in India</p>
             </div>
           </div>

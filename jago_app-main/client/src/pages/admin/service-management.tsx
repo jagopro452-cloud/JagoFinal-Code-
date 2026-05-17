@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import AdminLayout from "./layout";
 
 interface PlatformService {
   id: string;
@@ -87,7 +86,6 @@ export default function ServiceManagement() {
   }, {});
 
   return (
-    <AdminLayout>
       <div style={{ padding: "28px 32px", maxWidth: 1180 }}>
 
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 28, flexWrap: "wrap", gap: 16 }}>
@@ -97,7 +95,7 @@ export default function ServiceManagement() {
             </div>
             <div>
               <h4 style={{ fontWeight: 800, margin: 0, letterSpacing: -0.3, fontSize: 20 }}>Service Management</h4>
-              <p style={{ margin: 0, fontSize: 13, color: "#6B7280" }}>Activate/deactivate services · configure revenue model per service</p>
+              <p style={{ margin: 0, fontSize: 13, color: "#6B7280" }}>Activate/deactivate services ï¿½ configure revenue model per service</p>
             </div>
           </div>
           <div style={{ background: "linear-gradient(135deg,#060D1E,#0D1B3E)", borderRadius: 16, padding: "14px 20px", minWidth: 220, border: "1px solid rgba(47,123,255,0.2)" }}>
@@ -182,9 +180,9 @@ export default function ServiceManagement() {
                             <div style={{ marginBottom: 8 }}>
                               <label style={{ fontSize: 11, fontWeight: 700, color: "#374151", display: "block", marginBottom: 4 }}>Revenue Model</label>
                               <select value={modelForm.revenue_model} onChange={e => setModelForm(f => ({ ...f, revenue_model: e.target.value }))} style={{ width: "100%", padding: "6px 10px", borderRadius: 8, border: "1px solid #E5E7EB", fontSize: 13 }}>
-                                <option value="subscription">Subscription — drivers buy plans</option>
-                                <option value="commission">Commission — % deducted per trip</option>
-                                <option value="hybrid">Hybrid — both apply</option>
+                                <option value="subscription">Subscription ï¿½ drivers buy plans</option>
+                                <option value="commission">Commission ï¿½ % deducted per trip</option>
+                                <option value="hybrid">Hybrid ï¿½ both apply</option>
                               </select>
                             </div>
                             {modelForm.revenue_model !== "subscription" && (
@@ -195,7 +193,7 @@ export default function ServiceManagement() {
                             )}
                             <div style={{ display: "flex", gap: 8 }}>
                               <button onClick={() => modelMutation.mutate({ key: svc.service_key, ...modelForm })} disabled={modelMutation.isPending} style={{ flex: 1, padding: "7px 0", borderRadius: 8, border: "none", background: "linear-gradient(135deg,#2F7BFF,#4A90E2)", color: "#fff", fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
-                                {modelMutation.isPending ? "Saving…" : "Save"}
+                                {modelMutation.isPending ? "Savingï¿½" : "Save"}
                               </button>
                               <button onClick={() => setEditingModel(null)} style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #E5E7EB", background: "#fff", color: "#6B7280", fontSize: 12, cursor: "pointer" }}>Cancel</button>
                             </div>
@@ -241,6 +239,5 @@ export default function ServiceManagement() {
         </div>
 
       </div>
-    </AdminLayout>
   );
 }

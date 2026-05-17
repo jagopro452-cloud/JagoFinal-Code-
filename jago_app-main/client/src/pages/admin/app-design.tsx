@@ -749,7 +749,7 @@ export default function AppDesignPage() {
     { c: <C3_Home/>,   title: "Home",             sub: "Map + vehicle selector" },
     { c: <C4_Tracking/>, title: "Live Tracking",  sub: "Pilot ETA · OTP · Call" },
     { c: <C5_Rating/>, title: "Trip Rating",      sub: "5-star · Fare summary" },
-    { c: <C6_Wallet/>, title: "JAGO Pro Wallet",      sub: "Balance · Transactions" },
+    { c: <C6_Wallet/>, title: "JAGO Wallet",          sub: "Balance · Transactions" },
   ];
   const driverScreens = [
     { c: <D1_Splash/>,   title: "Splash Screen",  sub: "Dark navy · Glow rings" },
@@ -773,7 +773,7 @@ export default function AppDesignPage() {
             </div>
             <div>
               <div style={{ fontWeight: 900, fontSize: 22, color: "#0F172A", letterSpacing: -0.5 }}>
-                {isDriver ? "JAGO Pro Pilot" : "JAGO Pro"}&nbsp;
+                {isDriver ? "JAGO Pilot" : "JAGO"}&nbsp;
                 <span style={{ background: grad, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>App Screens</span>
               </div>
               <div style={{ fontSize: 12, color: "#94A3B8", marginTop: 3 }}>

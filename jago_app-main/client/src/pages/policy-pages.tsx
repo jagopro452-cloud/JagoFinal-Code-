@@ -4,7 +4,7 @@ import { Logo } from "@/components/Logo";
 import { Link } from "wouter";
 
 const COMPANY = "MindWhile IT Solutions Pvt Ltd";
-const BRAND   = "JAGO Pro";
+const BRAND   = "JAGO";
 const EMAIL   = "info@jagopro.org";
 const WEBSITE = "jagopro.org";
 const ADDRESS = "Hyderabad, Telangana, India";

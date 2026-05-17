@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import AdminLayout from "./layout";
 
 interface Language {
   id: string;
@@ -85,7 +84,6 @@ export default function LanguagesPage() {
   const availableToAdd = DEFAULT_LANGUAGES.filter((l) => !addedCodes.has(l.code));
 
   return (
-    <AdminLayout>
       <div className="p-6 max-w-4xl mx-auto">
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
@@ -346,6 +344,5 @@ export default function LanguagesPage() {
           </div>
         )}
       </div>
-    </AdminLayout>
   );
 }

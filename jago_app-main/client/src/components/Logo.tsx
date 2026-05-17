@@ -34,9 +34,9 @@ export function Logo({
   style = {},
 }: LogoProps) {
   const logoMap: Record<LogoVariant, string> = {
-    blue: '/jago-logo-blue.png',
-    white: '/jago-logo-white.png',
-    default: '/jago-logo.png',
+    blue: '/jago-logo-new.png',
+    white: '/jago-logo-new.png',
+    default: '/jago-logo-new.png',
     pilot: '/pilot-logo.png',
   };
 
@@ -46,7 +46,7 @@ export function Logo({
   const imgElement = (
     <img
       src={src}
-      alt="JAGO Pro"
+      alt="JAGO"
       className={`jl-logo-img ${className}`}
       style={{
         height: actualHeight,

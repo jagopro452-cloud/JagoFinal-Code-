@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import AdminLayout from "./layout";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Admin → Voice Commands
@@ -132,7 +131,6 @@ export default function VoiceCommandsPage() {
   };
 
   return (
-    <AdminLayout>
       <div style={{ padding: "24px 0", maxWidth: 1100 }}>
         {/* Header */}
         <div className="d-flex align-items-center gap-3 mb-4">
@@ -415,6 +413,5 @@ export default function VoiceCommandsPage() {
           </div>
         </div>
       </div>
-    </AdminLayout>
   );
 }

@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
-import AdminLayout from "./layout";
 import { useToast } from "@/hooks/use-toast";
 
 interface HealthData {
@@ -184,7 +183,6 @@ export default function SystemHealthPage() {
   const hasStaleTrips = (data?.trips.staleSearching ?? 0) > 0;
 
   return (
-    <AdminLayout>
       <div style={{ padding: "28px 32px", maxWidth: 1280, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
 
         {/* Header */}
@@ -559,6 +557,5 @@ export default function SystemHealthPage() {
           </>
         )}
       </div>
-    </AdminLayout>
   );
 }
