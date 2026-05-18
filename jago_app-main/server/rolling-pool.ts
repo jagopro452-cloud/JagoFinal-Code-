@@ -845,7 +845,15 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
         return res.status(400).json(poolResponse(false, "POOL_COORDS_REQUIRED", "Pickup and drop coordinates required"));
       }
 
-      const seats = Math.min(Math.max(parseInt(String(seatsRequested)) || 1, 1), 4);
+      const requestedSeats = parseInt(String(seatsRequested), 10) || 1;
+      if (requestedSeats < 1 || requestedSeats > 2) {
+        return res.status(400).json(poolResponse(
+          false,
+          "POOL_SEAT_LIMIT",
+          "You can book only 1 or 2 seats per pool booking",
+        ));
+      }
+      const seats = requestedSeats;
       const pLat = parseFloat(pickupLat);
       const pLng = parseFloat(pickupLng);
       const dLat = parseFloat(dropLat);

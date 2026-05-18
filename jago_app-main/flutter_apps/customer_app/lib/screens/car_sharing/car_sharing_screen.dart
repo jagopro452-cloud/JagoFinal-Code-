@@ -78,58 +78,200 @@ class _CarSharingScreenState extends State<CarSharingScreen>
     String from,
     String to,
     double seatPrice,
+    int availableSeats,
   ) async {
+    final maxSelectableSeats = availableSeats.clamp(1, 2);
+    var selectedSeats = 1;
     final res = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(
-          'Confirm Booking',
-          style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Route: $from -> $to',
-              style: GoogleFonts.poppins(fontWeight: FontWeight.w500),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          final totalFare = seatPrice * selectedSeats;
+          return AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+            titlePadding: const EdgeInsets.fromLTRB(22, 22, 22, 0),
+            contentPadding: const EdgeInsets.fromLTRB(22, 14, 22, 4),
+            actionsPadding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+            title: Text(
+              'Confirm Car Pool',
+              style: GoogleFonts.poppins(fontWeight: FontWeight.w700),
             ),
-            const SizedBox(height: 4),
-            Text(
-              'Fare: Rs ${seatPrice.toStringAsFixed(0)} / seat',
-              style: GoogleFonts.poppins(
-                color: _green,
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '$from -> $to',
+                  style: GoogleFonts.poppins(
+                    fontWeight: FontWeight.w600,
+                    color: JT.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [
+                        _poolAccent.withValues(alpha: 0.10),
+                        _green.withValues(alpha: 0.08),
+                      ],
+                    ),
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: _poolAccent.withValues(alpha: 0.14)),
+                  ),
+                  child: Row(
+                    children: [
+                      _vehicleArt('shared cab', size: 54),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Rs ${seatPrice.toStringAsFixed(0)} per seat',
+                              style: GoogleFonts.poppins(
+                                color: _green,
+                                fontSize: 15,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(height: 3),
+                            Text(
+                              'You can book up to 2 seats per trip',
+                              style: GoogleFonts.poppins(
+                                color: Colors.grey.shade600,
+                                fontSize: 11.5,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  'Select seats',
+                  style: GoogleFonts.poppins(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                    color: JT.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [1, 2].map((seatCount) {
+                    final enabled = seatCount <= maxSelectableSeats;
+                    final active = selectedSeats == seatCount;
+                    return Expanded(
+                      child: Padding(
+                        padding: EdgeInsets.only(right: seatCount == 1 ? 8 : 0),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(14),
+                          onTap: enabled
+                              ? () => setDialogState(() => selectedSeats = seatCount)
+                              : null,
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 180),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            decoration: BoxDecoration(
+                              color: active ? _blue : Colors.white,
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(
+                                color: active
+                                    ? _blue
+                                    : enabled
+                                        ? const Color(0xFFDCE9FF)
+                                        : Colors.grey.shade300,
+                              ),
+                              boxShadow: active
+                                  ? [
+                                      BoxShadow(
+                                        color: _blue.withValues(alpha: 0.22),
+                                        blurRadius: 12,
+                                        offset: const Offset(0, 5),
+                                      ),
+                                    ]
+                                  : null,
+                            ),
+                            child: Column(
+                              children: [
+                                Icon(
+                                  Icons.event_seat_rounded,
+                                  color: active
+                                      ? Colors.white
+                                      : enabled
+                                          ? _blue
+                                          : Colors.grey.shade400,
+                                  size: 19,
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  '$seatCount seat${seatCount == 1 ? '' : 's'}',
+                                  style: GoogleFonts.poppins(
+                                    color: active
+                                        ? Colors.white
+                                        : enabled
+                                            ? JT.textPrimary
+                                            : Colors.grey.shade400,
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Text(
+                      'Total',
+                      style: GoogleFonts.poppins(
+                        color: Colors.grey.shade600,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const Spacer(),
+                    Text(
+                      'Rs ${totalFare.toStringAsFixed(0)}',
+                      style: GoogleFonts.poppins(
+                        color: _green,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: Text('Cancel', style: GoogleFonts.poppins()),
               ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Amount will be deducted from your wallet.',
-              style: GoogleFonts.poppins(
-                color: Colors.grey.shade600,
-                fontSize: 12,
+              ElevatedButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: _green,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                ),
+                child: Text(
+                  'Book $selectedSeats',
+                  style: GoogleFonts.poppins(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
               ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: Text('Cancel', style: GoogleFonts.poppins()),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            style: ElevatedButton.styleFrom(backgroundColor: _green),
-            child: Text(
-              'Book 1 Seat',
-              style: GoogleFonts.poppins(
-                color: Colors.white,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-        ],
+            ],
+          );
+        },
       ),
     );
     if (res != true) return;
@@ -139,7 +281,7 @@ class _CarSharingScreenState extends State<CarSharingScreen>
       final bookRes = await http.post(
         Uri.parse('${ApiConfig.baseUrl}/api/app/customer/car-sharing/book'),
         headers: {...headers, 'Content-Type': 'application/json'},
-        body: jsonEncode({'rideId': rideId, 'seatsBooked': 1}),
+        body: jsonEncode({'rideId': rideId, 'seatsBooked': selectedSeats}),
       );
       final d = jsonDecode(bookRes.body);
       if (!mounted) return;
@@ -258,7 +400,7 @@ class _CarSharingScreenState extends State<CarSharingScreen>
     final to = d['toLocation'] ?? 'To';
     final driver = d['driverName'] ?? 'Driver';
     final vehicle = d['vehicleName'] ?? 'Shared cab';
-    final available = d['availableSeats'] ?? 0;
+    final available = int.tryParse('${d['availableSeats'] ?? 0}') ?? 0;
     final seatPrice = (d['seatPrice'] ?? 0).toDouble();
     final depTime = d['departureTime'] != null ? _fmt(d['departureTime']) : '--';
 
@@ -443,7 +585,8 @@ class _CarSharingScreenState extends State<CarSharingScreen>
                       width: double.infinity,
                       height: 42,
                       child: ElevatedButton(
-                        onPressed: () => _book(d['id'], from, to, seatPrice),
+                        onPressed: () =>
+                            _book(d['id'], from, to, seatPrice, available),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: _blue,
                           foregroundColor: Colors.white,

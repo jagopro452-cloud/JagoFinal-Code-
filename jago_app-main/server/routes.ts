@@ -14379,8 +14379,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       const { rideId, seatsBooked = 1 } = req.body;
       if (!rideId) return res.status(400).json({ message: 'rideId required' });
       const seats = parseInt(seatsBooked, 10);
-      if (!Number.isFinite(seats) || seats < 1 || seats > 6) {
-        return res.status(400).json({ message: 'seatsBooked must be between 1 and 6' });
+      if (!Number.isFinite(seats) || seats < 1 || seats > 2) {
+        return res.status(400).json({ message: 'You can book only 1 or 2 seats per booking' });
       }
       const rideRes = await rawDb.execute(rawSql`
         SELECT cs.*, COALESCE((SELECT SUM(b.seats_booked) FROM car_sharing_bookings b WHERE b.ride_id = cs.id AND b.status != 'cancelled'),0) as booked_count

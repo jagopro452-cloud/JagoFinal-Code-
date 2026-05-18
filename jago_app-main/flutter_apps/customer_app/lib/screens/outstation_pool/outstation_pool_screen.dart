@@ -446,6 +446,8 @@ class _BookBottomSheetState extends State<_BookBottomSheet> {
   final _dropCtrl = TextEditingController();
   bool _booking = false;
 
+  int get _maxSelectableSeats => widget.maxSeats < 2 ? widget.maxSeats : 2;
+
   double? _num(dynamic value) {
     if (value == null) return null;
     if (value is num) return value.toDouble();
@@ -460,9 +462,9 @@ class _BookBottomSheetState extends State<_BookBottomSheet> {
   }
 
   Future<void> _book() async {
-    if (_seats < 1 || _seats > widget.maxSeats) {
+    if (_seats < 1 || _seats > _maxSelectableSeats) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Choose a valid number of seats'),
+        content: Text('Choose 1 or 2 seats only'),
         behavior: SnackBarBehavior.floating,
       ));
       return;
@@ -577,7 +579,20 @@ class _BookBottomSheetState extends State<_BookBottomSheet> {
             const SizedBox(height: 20),
 
             // Seats selector
-            Text('Number of Seats', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w400, color: JT.textPrimary)),
+            Row(
+              children: [
+                Text('Number of Seats', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: JT.textPrimary)),
+                const Spacer(),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: JT.primary.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text('Max 2 per person', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w600, color: JT.primary)),
+                ),
+              ],
+            ),
             const SizedBox(height: 8),
             Row(
               children: [
@@ -589,7 +604,7 @@ class _BookBottomSheetState extends State<_BookBottomSheet> {
                   child: Text('$_seats', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w500, color: JT.textPrimary)),
                 ),
                 _seatBtn(Icons.add_rounded, () {
-                  if (_seats < widget.maxSeats) setState(() => _seats++);
+                  if (_seats < _maxSelectableSeats) setState(() => _seats++);
                 }),
                 const Spacer(),
                 Text(

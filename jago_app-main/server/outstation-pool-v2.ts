@@ -449,7 +449,11 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any): void
 
       if (!fromCity || !toCity) return res.status(400).json({ message: "fromCity and toCity required" });
 
-      const seatsN = Math.max(1, parseInt(String(seats)) || 1);
+      const requestedSeats = parseInt(String(seats), 10) || 1;
+      if (requestedSeats < 1 || requestedSeats > 2) {
+        return res.status(400).json({ message: "You can book only 1 or 2 seats per booking" });
+      }
+      const seatsN = requestedSeats;
       const pLat = pickupLat ? parseFloat(pickupLat) : null;
       const pLng = pickupLng ? parseFloat(pickupLng) : null;
       const dLat = dropLat   ? parseFloat(dropLat)   : null;
