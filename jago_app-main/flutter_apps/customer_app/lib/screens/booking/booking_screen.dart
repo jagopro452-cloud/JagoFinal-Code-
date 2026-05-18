@@ -97,12 +97,13 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         end: Alignment.bottomRight,
       );
 
-  String get _vehicleName => _fare?['vehicleCategoryName']?.toString() ?? _fare?['name']?.toString() ?? widget.vehicleCategoryName ?? 'Bike';
+  String get _vehicleName => _fareVehicleName(_fare ?? const <String, dynamic>{});
 
   String _fareVehicleName(Map<String, dynamic> fare) {
     return fare['vehicleCategoryName']?.toString() ??
         fare['vehicleName']?.toString() ??
         fare['name']?.toString() ??
+        widget.vehicleCategoryName ??
         'Bike';
   }
 
@@ -129,6 +130,35 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
       return raw.contains('premium') ? 'premium' : 'mini_car';
     }
     return raw.replaceAll(RegExp(r'[^a-z0-9]+'), '_').replaceAll(RegExp(r'^_+|_+$'), '');
+  }
+
+  Map<String, dynamic> _selectedVehiclePayload() {
+    final fare = _fare;
+    final vehicleId =
+        fare?['vehicleCategoryId']?.toString() ??
+        fare?['id']?.toString() ??
+        widget.vehicleCategoryId;
+    final vehicleType = _normalizedVehicleTypeForBooking(fare);
+    final vehicleName = fare?['vehicleCategoryName']?.toString() ??
+        fare?['vehicleName']?.toString() ??
+        fare?['name']?.toString() ??
+        widget.vehicleCategoryName;
+
+    return <String, dynamic>{
+      if (vehicleId != null && vehicleId.trim().isNotEmpty) ...{
+        'vehicleCategoryId': vehicleId.trim(),
+        'vehicle_category_id': vehicleId.trim(),
+        'vehicle_type_id': vehicleId.trim(),
+      },
+      if (vehicleType != null && vehicleType.trim().isNotEmpty) ...{
+        'vehicleType': vehicleType.trim(),
+        'vehicle_type': vehicleType.trim(),
+      },
+      if (vehicleName != null && vehicleName.trim().isNotEmpty) ...{
+        'vehicleCategoryName': vehicleName.trim(),
+        'vehicleName': vehicleName.trim(),
+      },
+    };
   }
 
   List<MapEntry<int, Map<String, dynamic>>> _visibleFareEntries(
@@ -278,7 +308,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
   Widget buildVehicleHero() {
     if (_allFares.isEmpty) return const SizedBox.shrink();
     final fare = _allFares[_selectedFareIndex];
-    final name = fare['vehicleCategoryName']?.toString() ?? fare['name']?.toString() ?? 'Bike';
+    final name = _fareVehicleName(fare);
     final emoji = _emojiForVehicle(name);
     final accent = _accentForVehicle(name);
     final fareVal = (fare['estimatedFare'] ?? 0).toDouble();
@@ -499,7 +529,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
             final cat = widget.category ?? 'ride';
             if (cat == 'parcel') {
               filtered = filtered.where((f) {
-                final vname = (f['vehicleCategoryName'] ?? f['name'] ?? '').toString().toLowerCase();
+                final vname = (f['vehicleCategoryName'] ?? f['vehicleName'] ?? f['name'] ?? '').toString().toLowerCase();
                 final vtype = (f['type'] ?? f['vehicleType'] ?? '').toString().toLowerCase();
                 return vtype == 'parcel' || vname.contains('parcel') ||
                     vname.contains('truck') || vname.contains('van') ||
@@ -507,7 +537,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
               }).toList();
             } else {
               filtered = filtered.where((f) {
-                final vname = (f['vehicleCategoryName'] ?? f['name'] ?? '').toString().toLowerCase();
+                final vname = (f['vehicleCategoryName'] ?? f['vehicleName'] ?? f['name'] ?? '').toString().toLowerCase();
                 final vtype = (f['type'] ?? f['vehicleType'] ?? '').toString().toLowerCase();
                 // Exclude parcel/cargo vehicles from ride
                 if (vtype == 'parcel' || vname.contains('parcel') || vname.contains('truck') || vname.contains('cargo')) return false;
@@ -525,7 +555,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
                 final fbName = fb['vehicleCategoryName'].toString();
                 // Add fallback if no similar category exists in server result
                 if (!_allFares.any((f) {
-                  final name = (f['vehicleCategoryName'] ?? f['name'] ?? '').toString().toLowerCase();
+                  final name = (f['vehicleCategoryName'] ?? f['vehicleName'] ?? f['name'] ?? '').toString().toLowerCase();
                   return name.contains(fbName.split(' ').first.toLowerCase());
                 })) {
                   _allFares.add(fb);
@@ -647,22 +677,15 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         if (_bookForSomeone && _noteCtrl.text.trim().isNotEmpty)
           'note': _noteCtrl.text.trim(),
       };
-      final vcId = _fare?['vehicleCategoryId']?.toString() ?? _fare?['id']?.toString() ?? widget.vehicleCategoryId;
-      if (vcId != null && vcId.isNotEmpty) body['vehicleCategoryId'] = vcId;
-      final vehicleType = _normalizedVehicleTypeForBooking(_fare);
-      if (vehicleType != null && vehicleType.isNotEmpty) {
-        body['vehicleType'] = vehicleType;
-      }
-      final vehicleName = _fare?['vehicleCategoryName']?.toString() ??
-          _fare?['vehicleName']?.toString() ??
-          _fare?['name']?.toString() ??
-          widget.vehicleCategoryName;
-      if (vehicleName != null && vehicleName.isNotEmpty) {
-        body['vehicleCategoryName'] = vehicleName;
-      }
+      final vehiclePayload = _selectedVehiclePayload();
+      body.addAll(vehiclePayload);
+      debugPrint('[BOOKING][submit] endpoint=${ApiConfig.bookRide} '
+          'selectedIndex=$_selectedFareIndex vehicle=$vehiclePayload '
+          'payment=$_paymentMethod fare=$_finalFare distance=$_distanceKm');
       final res = await http.post(Uri.parse(ApiConfig.bookRide),
         headers: headers,
         body: jsonEncode(body));
+      debugPrint('[BOOKING][response] status=${res.statusCode} body=${res.body}');
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
         final tripId = data['trip']?['id']?.toString() ?? '';
@@ -1574,6 +1597,9 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
             if (!isActive) return;
             HapticFeedback.selectionClick();
             setState(() => _selectedFareIndex = i);
+            debugPrint('[BOOKING][vehicle_select] index=$i name=$name '
+                'id=${f['vehicleCategoryId'] ?? f['id'] ?? 'missing'} '
+                'type=${f['vehicleType'] ?? f['type'] ?? 'missing'}');
           },
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 300),

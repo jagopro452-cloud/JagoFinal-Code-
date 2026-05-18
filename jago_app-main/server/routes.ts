@@ -10229,7 +10229,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         pickupShortName,
         destinationAddress, destAddress, destinationLat, destLat, destinationLng, destLng,
         destinationShortName,
-        vehicleCategoryId, vehicleType, vehicleCategoryName, vehicleName,
+        vehicleCategoryId, vehicle_category_id, vehicle_type_id, vehicleTypeId,
+        vehicleType, vehicle_type, vehicleSlug, vehicle_slug,
+        vehicleCategoryName, vehicleName,
         estimatedFare, estimatedDistance, distanceKm,
         paymentMethod, paymentMode, tripType = "normal", isScheduled = false, scheduledAt,
         // Book for someone else
@@ -10256,9 +10258,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const finalPayment = paymentMethod || paymentMode || "cash";
       const finalDistance = estimatedDistance || distanceKm || 0;
       const requestedVehicleName = vehicleCategoryName || vehicleName || null;
+      const requestedVehicleCategoryId =
+        vehicleCategoryId || vehicle_category_id || vehicle_type_id || vehicleTypeId || null;
+      const requestedVehicleType =
+        vehicleType || vehicle_type || vehicleSlug || vehicle_slug || null;
+      console.log("[BOOK_RIDE][incoming_vehicle]", JSON.stringify({
+        customerId: customer?.id || null,
+        vehicleCategoryId: requestedVehicleCategoryId,
+        vehicleType: requestedVehicleType,
+        vehicleName: requestedVehicleName,
+        rawKeys: Object.keys(req.body || {}).filter((key) => key.toLowerCase().includes("vehicle")),
+      }));
       const resolvedVehicle = await resolveBookingVehicleSelection({
-        vehicleCategoryId: vehicleCategoryId || null,
-        vehicleType: vehicleType || null,
+        vehicleCategoryId: requestedVehicleCategoryId,
+        vehicleType: requestedVehicleType,
         vehicleCategoryName: requestedVehicleName,
       });
       const bookingVehicleCategoryId = resolvedVehicle.vehicleCategoryId;
@@ -10266,12 +10279,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const bookingVehicleName = resolvedVehicle.vehicleCategoryName || requestedVehicleName || "";
 
       if (!bookingVehicleCategoryId || !bookingVehicleType) {
+        console.warn("[BOOK_RIDE][vehicle_validation_failed]", JSON.stringify({
+          customerId: customer?.id || null,
+          requestedVehicleCategoryId,
+          requestedVehicleType,
+          requestedVehicleName,
+          resolvedVehicle,
+        }));
         return res.status(400).json({
           message: "Please select a valid vehicle type before booking.",
           code: "VEHICLE_CATEGORY_REQUIRED",
         });
       }
       if (resolvedVehicle.typeMismatch) {
+        console.warn("[BOOK_RIDE][vehicle_type_mismatch]", JSON.stringify({
+          customerId: customer?.id || null,
+          requestedVehicleCategoryId,
+          requestedVehicleType,
+          requestedVehicleName,
+          resolvedVehicle,
+        }));
         return res.status(400).json({
           message: "Selected vehicle does not match the requested booking type.",
           code: "VEHICLE_TYPE_MISMATCH",
