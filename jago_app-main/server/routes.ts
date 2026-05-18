@@ -1310,6 +1310,7 @@ async function ensureOperationalSchema() {
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS cancel_reason TEXT;
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS cancelled_by VARCHAR(50);
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS rejected_driver_ids UUID[] DEFAULT '{}'::uuid[];
+      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 0;
 
       ALTER TABLE users ADD COLUMN IF NOT EXISTS vehicle_status VARCHAR(30) DEFAULT 'pending';
       ALTER TABLE users ADD COLUMN IF NOT EXISTS wallet_balance NUMERIC(12,2) DEFAULT 0;
@@ -2118,12 +2119,14 @@ async function ensureOperationalSchema() {
         payment_status VARCHAR(30) DEFAULT 'pending',
         notes TEXT DEFAULT '',
         cancelled_reason TEXT DEFAULT '',
+        version INTEGER NOT NULL DEFAULT 0,
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_parcel_orders_customer ON parcel_orders(customer_id);
       CREATE INDEX IF NOT EXISTS idx_parcel_orders_driver  ON parcel_orders(driver_id);
       CREATE INDEX IF NOT EXISTS idx_parcel_orders_status  ON parcel_orders(current_status);
+      ALTER TABLE parcel_orders ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 0;
     `).catch(dbCatch("db"));
 
     // -- FCM device registry: stores one push token per user ------------------
