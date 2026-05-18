@@ -25,6 +25,7 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
   bool _loading = true;
   bool _starting = false;
   bool _ending = false;
+  bool _updatingAccepting = false;
   int _maxSeats = 4;
   Map<String, dynamic>? _session;
   List<dynamic> _passengers = [];
@@ -148,6 +149,53 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
     }
   }
 
+  bool get _acceptingNewPassengers {
+    final seatEventValue = _seatState?['acceptingNewRequests'];
+    if (seatEventValue is bool) return seatEventValue;
+    final camel = _session?['acceptingNewRequests'];
+    if (camel is bool) return camel;
+    final snake = _session?['accepting_new_requests'];
+    if (snake is bool) return snake;
+    return true;
+  }
+
+  Future<void> _toggleAccepting(bool accepting) async {
+    setState(() => _updatingAccepting = true);
+    try {
+      final headers = await AuthService.getHeaders();
+      final res = await http.post(
+        Uri.parse(ApiConfig.localPoolSessionAccepting),
+        headers: headers,
+        body: jsonEncode({'acceptingNewRequests': accepting}),
+      ).timeout(const Duration(seconds: 12));
+      final body = jsonDecode(res.body);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(body['message']?.toString() ?? (accepting ? 'Accepting new passengers' : 'New passengers paused'))),
+      );
+      if (res.statusCode == 200) {
+        setState(() {
+          _seatState = {
+            ...?_seatState,
+            'acceptingNewRequests': accepting,
+          };
+          _session = {
+            ...?_session,
+            'accepting_new_requests': accepting,
+            'acceptingNewRequests': accepting,
+          };
+        });
+      }
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Network issue while updating pool mode')),
+      );
+    } finally {
+      if (mounted) setState(() => _updatingAccepting = false);
+    }
+  }
+
   Future<void> _pickupPassenger(String requestId) async {
     _otpCtrl.clear();
     final otp = await showDialog<String>(
@@ -233,6 +281,8 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
                     children: [
                       if (_session == null) _buildStarter() else ...[
                         _buildSessionHero(),
+                        const SizedBox(height: 14),
+                        _buildAcceptingControl(),
                         const SizedBox(height: 14),
                         _buildMetrics(),
                         const SizedBox(height: 14),
@@ -349,6 +399,49 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
           Expanded(child: _metric('Available', '${_seatState?['availableSeats'] ?? _session?['available_seats'] ?? 0}')),
           Expanded(child: _metric('Occupied', '${_seatState?['occupiedSeats'] ?? 0}')),
           Expanded(child: _metric('Onboard', '${_seatState?['onboardPassengers'] ?? 0}')),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAcceptingControl() {
+    final accepting = _acceptingNewPassengers;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(18), border: Border.all(color: _border)),
+      child: Row(
+        children: [
+          Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              color: (accepting ? const Color(0xFF16A34A) : const Color(0xFFF97316)).withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Icon(
+              accepting ? Icons.group_add_rounded : Icons.pause_circle_filled_rounded,
+              color: accepting ? const Color(0xFF16A34A) : const Color(0xFFF97316),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(accepting ? 'Accepting new passengers' : 'New passengers paused', style: GoogleFonts.poppins(fontWeight: FontWeight.w600, color: _textPri)),
+                const SizedBox(height: 2),
+                Text(
+                  accepting ? 'Matching is live while seats are available.' : 'Current passengers continue. No new pool requests will match.',
+                  style: GoogleFonts.poppins(fontSize: 12, color: _textSec),
+                ),
+              ],
+            ),
+          ),
+          Switch.adaptive(
+            value: accepting,
+            activeThumbColor: _primary,
+            onChanged: _updatingAccepting ? null : _toggleAccepting,
+          ),
         ],
       ),
     );

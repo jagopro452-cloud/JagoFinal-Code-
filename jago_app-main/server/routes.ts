@@ -153,6 +153,7 @@ import {
   ensureOutstationPoolV2Schema,
   registerOutstationPoolV2Routes,
 } from "./outstation-pool-v2";
+import { registerRollingPoolRoutes } from "./rolling-pool";
 import {
   startAIMobilityBrain,
   getCurrentMetrics,
@@ -5175,41 +5176,53 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // -- ADMIN: Local pool monitoring -----------------------------------------
   app.get("/api/admin/local-pool/stats", requireAdminAuth, async (_req, res) => {
     try {
-      await ensureLocalPoolTables();
       const r = await rawDb.execute(rawSql`
         SELECT
           COUNT(*)::int AS total_rides,
-          COUNT(*) FILTER (WHERE status='collecting')::int AS collecting,
-          COUNT(*) FILTER (WHERE status='dispatching')::int AS dispatching,
-          COUNT(*) FILTER (WHERE status IN ('accepted','started'))::int AS active,
-          COUNT(*) FILTER (WHERE status='completed')::int AS completed,
+          COUNT(*) FILTER (WHERE status='active')::int AS active,
+          COUNT(*) FILTER (WHERE status='active' AND accepting_new_requests=true)::int AS accepting,
+          COUNT(*) FILTER (WHERE status='active' AND accepting_new_requests=false)::int AS paused,
+          COUNT(*) FILTER (WHERE status='ended')::int AS completed,
           COUNT(*) FILTER (WHERE status='cancelled')::int AS cancelled,
-          COALESCE(SUM(booked_seats), 0)::int AS total_passengers,
-          COALESCE(SUM(booked_seats * fare_per_seat), 0)::numeric AS total_revenue
-        FROM local_pool_rides
+          COALESCE(SUM(total_passengers_served), 0)::int AS total_passengers,
+          COALESCE(SUM(total_earnings), 0)::numeric AS driver_earnings
+        FROM driver_pool_sessions
       `);
-      res.json(camelize((r.rows[0] as any) || {}));
+      const money = await rawDb.execute(rawSql`
+        SELECT
+          COALESCE(SUM(total_fare), 0)::numeric AS total_revenue,
+          COALESCE(SUM(commission_amount), 0)::numeric AS total_commission,
+          COALESCE(SUM(gst_amount), 0)::numeric AS total_gst
+        FROM pool_ride_requests
+        WHERE status IN ('matched','picked_up','dropped')
+      `).catch(() => ({ rows: [] as any[] }));
+      res.json(camelize({ ...((r.rows[0] as any) || {}), ...((money.rows[0] as any) || {}) }));
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
   app.get("/api/admin/local-pool/rides", requireAdminAuth, async (req, res) => {
     try {
-      await ensureLocalPoolTables();
       const status = String(req.query.status || "all");
-      const validStatus = ["collecting", "dispatching", "accepted", "started", "completed", "cancelled"].includes(status) ? status : "all";
+      const normalizedStatus = status === "completed" ? "ended" : status;
+      const validStatus = ["active", "ended", "cancelled"].includes(normalizedStatus) ? normalizedStatus : "all";
       const r = await rawDb.execute(rawSql`
         SELECT
-          lpr.*,
+          dps.*,
           u.full_name AS driver_name,
           u.phone AS driver_phone,
-          COUNT(lpp.id)::int AS passenger_count,
-          COALESCE(SUM(lpp.total_fare), 0)::numeric AS total_revenue
-        FROM local_pool_rides lpr
-        LEFT JOIN users u ON u.id = lpr.driver_id
-        LEFT JOIN local_pool_passengers lpp ON lpp.pool_ride_id = lpr.id AND lpp.status <> 'cancelled'
-        ${validStatus !== "all" ? rawSql`WHERE lpr.status = ${validStatus}` : rawSql``}
-        GROUP BY lpr.id, u.full_name, u.phone
-        ORDER BY lpr.created_at DESC
+          (dps.max_seats - dps.available_seats)::int AS booked_seats,
+          COUNT(prr.id) FILTER (WHERE prr.status <> 'cancelled')::int AS passenger_count,
+          COALESCE(AVG(prr.fare_per_seat), 0)::numeric AS fare_per_seat,
+          COALESCE(SUM(prr.total_fare), 0)::numeric AS total_revenue,
+          COALESCE(SUM(prr.commission_amount), 0)::numeric AS total_commission,
+          COALESCE(SUM(prr.gst_amount), 0)::numeric AS total_gst,
+          COALESCE(SUM(prr.driver_earnings), 0)::numeric AS total_driver_earnings
+        FROM driver_pool_sessions dps
+        LEFT JOIN users u ON u.id = dps.driver_id
+        LEFT JOIN pool_ride_requests prr ON prr.session_id = dps.id AND prr.status <> 'cancelled'
+        ${validStatus !== "all" ? rawSql`WHERE dps.status = ${validStatus}` : rawSql``}
+        GROUP BY dps.id, u.full_name, u.phone
+        ORDER BY dps.created_at DESC
         LIMIT 500
       `);
       res.json({ success: true, data: camelize(r.rows) });
@@ -5218,16 +5231,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.get("/api/admin/local-pool/rides/:rideId/passengers", requireAdminAuth, async (req, res) => {
     try {
-      await ensureLocalPoolTables();
       const r = await rawDb.execute(rawSql`
         SELECT
-          lpp.*,
+          prr.*,
+          prr.seats_requested AS seats_booked,
           u.full_name AS customer_name,
           u.phone AS customer_phone
-        FROM local_pool_passengers lpp
-        LEFT JOIN users u ON u.id = lpp.customer_id
-        WHERE lpp.pool_ride_id = ${req.params.rideId}::uuid
-        ORDER BY lpp.pickup_order ASC, lpp.created_at ASC
+        FROM pool_ride_requests prr
+        LEFT JOIN users u ON u.id = prr.customer_id
+        WHERE prr.session_id = ${req.params.rideId}::uuid
+        ORDER BY prr.pickup_order ASC NULLS LAST, prr.created_at ASC
       `);
       res.json({ success: true, data: camelize(r.rows) });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
@@ -8480,6 +8493,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }
 
   registerOutstationPoolV2Routes(app, authApp);
+  registerRollingPoolRoutes(app, authApp, requireAdminAuth);
 
   // -- DRIVER: Go Online / Offline + Location Update -------------------------
   app.post("/api/app/driver/location", authApp, requireDriver, async (req, res) => {

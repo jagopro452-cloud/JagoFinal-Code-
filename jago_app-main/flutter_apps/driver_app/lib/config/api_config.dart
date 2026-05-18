@@ -120,6 +120,7 @@ class ApiConfig {
   static String get revenueConfig => '$baseUrl/api/app/revenue-config';
   static String get localPoolSessionStart => '$baseUrl/api/app/driver/pool/session/start';
   static String get localPoolSessionActive => '$baseUrl/api/app/driver/pool/session/active';
+  static String get localPoolSessionAccepting => '$baseUrl/api/app/driver/pool/session/accepting';
   static String get localPoolSessionEnd => '$baseUrl/api/app/driver/pool/session/end';
   static String get localPoolLocation => '$baseUrl/api/app/driver/pool/location';
   static String localPoolPickup(String requestId) => '$baseUrl/api/app/driver/pool/passengers/$requestId/pickup';

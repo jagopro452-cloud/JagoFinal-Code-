@@ -4,19 +4,26 @@ import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 const STATUS_COLORS: Record<string, string> = {
-  collecting: "#d97706",
-  dispatching: "#7c3aed",
-  accepted: "#2563eb",
-  started: "#0891b2",
+  active: "#2563eb",
+  ended: "#16a34a",
   completed: "#16a34a",
   cancelled: "#dc2626",
+  matched: "#2563eb",
+  picked_up: "#0891b2",
+  dropped: "#16a34a",
+  searching: "#d97706",
 };
 
+function money(value: unknown, digits = 0) {
+  return `Rs ${Number(value || 0).toFixed(digits)}`;
+}
+
 function StatusBadge({ status }: { status: string }) {
-  const color = STATUS_COLORS[status] || "#64748b";
+  const normalized = status === "ended" ? "completed" : status;
+  const color = STATUS_COLORS[status] || STATUS_COLORS[normalized] || "#64748b";
   return (
     <span style={{ background: color + "18", color, border: `1px solid ${color}44`, borderRadius: 20, padding: "2px 10px", fontSize: "0.72rem", fontWeight: 600, textTransform: "capitalize" }}>
-      {status}
+      {normalized.replaceAll("_", " ")}
     </span>
   );
 }
@@ -28,9 +35,9 @@ function PassengersModal({ rideId, onClose }: { rideId: string; onClose: () => v
   const passengers = data?.data || [];
   return (
     <div className="modal-backdrop-jago">
-      <div className="modal-jago" style={{ maxWidth: 680 }}>
+      <div className="modal-jago" style={{ maxWidth: 920 }}>
         <div className="modal-jago-header">
-          <h5 className="modal-jago-title">Passengers in Pool Ride</h5>
+          <h5 className="modal-jago-title">Live Pool Passengers</h5>
           <button className="modal-jago-close" onClick={onClose}><i className="bi bi-x-lg"></i></button>
         </div>
         {isLoading ? (
@@ -48,6 +55,8 @@ function PassengersModal({ rideId, onClose }: { rideId: string; onClose: () => v
                   <th>Drop</th>
                   <th>Seats</th>
                   <th>Fare/Seat</th>
+                  <th>GST</th>
+                  <th>Commission</th>
                   <th>Total</th>
                   <th>Status</th>
                 </tr>
@@ -57,14 +66,16 @@ function PassengersModal({ rideId, onClose }: { rideId: string; onClose: () => v
                   <tr key={p.id}>
                     <td>{i + 1}</td>
                     <td>
-                      <div className="fw-semibold">{p.customerName || "—"}</div>
+                      <div className="fw-semibold">{p.customerName || "-"}</div>
                       <div className="text-muted" style={{ fontSize: "0.72rem" }}>{p.customerPhone}</div>
                     </td>
-                    <td style={{ maxWidth: 160 }}><span className="text-truncate d-block">{p.pickupAddress || `${p.pickupLat}, ${p.pickupLng}`}</span></td>
-                    <td style={{ maxWidth: 160 }}><span className="text-truncate d-block">{p.dropAddress || `${p.dropLat}, ${p.dropLng}`}</span></td>
-                    <td className="text-center">{p.seatsBooked}</td>
-                    <td>₹{Number(p.farePerSeat || 0).toFixed(2)}</td>
-                    <td className="fw-semibold">₹{Number(p.totalFare || 0).toFixed(2)}</td>
+                    <td style={{ maxWidth: 180 }}><span className="text-truncate d-block">{p.pickupAddress || `${p.pickupLat}, ${p.pickupLng}`}</span></td>
+                    <td style={{ maxWidth: 180 }}><span className="text-truncate d-block">{p.dropAddress || `${p.dropLat}, ${p.dropLng}`}</span></td>
+                    <td className="text-center">{p.seatsBooked || p.seatsRequested || 1}</td>
+                    <td>{money(p.farePerSeat, 2)}</td>
+                    <td>{money(p.gstAmount, 2)}</td>
+                    <td>{money(p.commissionAmount, 2)}</td>
+                    <td className="fw-semibold">{money(p.totalFare, 2)}</td>
                     <td><StatusBadge status={p.status || "booked"} /></td>
                   </tr>
                 ))}
@@ -94,18 +105,24 @@ export default function LocalPool() {
   });
   const rides = ridesData?.data || [];
 
-  const savSettings = useMutation({
+  const saveSettings = useMutation({
     mutationFn: (d: any) => apiRequest("PATCH", "/api/admin/local-pool/settings", d),
-    onSuccess: () => { toast({ title: "Settings saved" }); setSettingsOpen(false); qc.invalidateQueries({ queryKey: ["/api/admin/local-pool/stats"] }); },
+    onSuccess: () => {
+      toast({ title: "Settings saved" });
+      setSettingsOpen(false);
+      qc.invalidateQueries({ queryKey: ["/api/admin/local-pool/stats"] });
+    },
     onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
 
   const statCards = [
-    { label: "Total Rides", value: stats.totalRides ?? 0, icon: "bi-diagram-3-fill", color: "#2563eb" },
-    { label: "Collecting", value: stats.collecting ?? 0, icon: "bi-hourglass-split", color: "#d97706" },
-    { label: "Completed", value: stats.completed ?? 0, icon: "bi-check-circle-fill", color: "#16a34a" },
+    { label: "Total Sessions", value: stats.totalRides ?? 0, icon: "bi-diagram-3-fill", color: "#2563eb" },
+    { label: "Accepting", value: stats.accepting ?? 0, icon: "bi-broadcast-pin", color: "#d97706" },
+    { label: "Paused", value: stats.paused ?? 0, icon: "bi-pause-circle-fill", color: "#f97316" },
     { label: "Passengers", value: stats.totalPassengers ?? 0, icon: "bi-people-fill", color: "#7c3aed" },
-    { label: "Revenue", value: `₹${Number(stats.totalRevenue || 0).toFixed(0)}`, icon: "bi-currency-rupee", color: "#0891b2" },
+    { label: "Revenue", value: money(stats.totalRevenue), icon: "bi-currency-rupee", color: "#0891b2" },
+    { label: "GST", value: money(stats.totalGst), icon: "bi-receipt-cutoff", color: "#0f766e" },
+    { label: "Commission", value: money(stats.totalCommission), icon: "bi-graph-up-arrow", color: "#db2777" },
   ];
 
   return (
@@ -113,14 +130,13 @@ export default function LocalPool() {
       <div className="mb-4 d-flex justify-content-between align-items-start flex-wrap gap-2">
         <div>
           <h2 className="fs-22 mb-1">Local Pool Rides</h2>
-          <div className="fs-14 text-muted">On-demand city carpool — passengers share rides by direction matching</div>
+          <div className="fs-14 text-muted">Live rolling pool sessions, seat occupancy, GST and commission monitoring</div>
         </div>
         <button className="btn btn-outline-primary btn-sm" onClick={() => setSettingsOpen(true)}>
           <i className="bi bi-gear me-1"></i> Pool Settings
         </button>
       </div>
 
-      {/* Stats */}
       <div className="row g-3 mb-4">
         {statCards.map((s, i) => (
           <div key={i} className="col-6 col-md-4 col-lg-2-4" style={{ flex: "1 1 160px" }}>
@@ -142,8 +158,8 @@ export default function LocalPool() {
       <div className="card">
         <div className="card-body">
           <div className="d-flex flex-wrap gap-2 align-items-center mb-3">
-            <h5 className="mb-0 text-primary me-2">Pool Rides</h5>
-            {["all", "collecting", "dispatching", "accepted", "completed", "cancelled"].map(s => (
+            <h5 className="mb-0 text-primary me-2">Live Pool Sessions</h5>
+            {["all", "active", "completed", "cancelled"].map(s => (
               <button key={s} className={`btn btn-sm ${statusFilter === s ? "btn-primary" : "btn-outline-secondary"}`}
                 style={{ textTransform: "capitalize", padding: "3px 12px", fontSize: "0.78rem" }}
                 onClick={() => setStatusFilter(s)}>
@@ -161,11 +177,12 @@ export default function LocalPool() {
                 <tr>
                   <th>#</th>
                   <th>Driver</th>
-                  <th>Pickup</th>
-                  <th>Destination</th>
+                  <th>Accepting</th>
                   <th>Seats</th>
                   <th>Fare/Seat</th>
                   <th>Passengers</th>
+                  <th>GST</th>
+                  <th>Commission</th>
                   <th>Revenue</th>
                   <th>Status</th>
                   <th>Created</th>
@@ -175,13 +192,13 @@ export default function LocalPool() {
               <tbody>
                 {isLoading ? (
                   Array(5).fill(0).map((_, i) => (
-                    <tr key={i}>{Array(11).fill(0).map((_, j) => <td key={j}><div style={{ height: 14, background: "#f1f5f9", borderRadius: 4 }} /></td>)}</tr>
+                    <tr key={i}>{Array(12).fill(0).map((_, j) => <td key={j}><div style={{ height: 14, background: "#f1f5f9", borderRadius: 4 }} /></td>)}</tr>
                   ))
                 ) : rides.length === 0 ? (
-                  <tr><td colSpan={11}>
+                  <tr><td colSpan={12}>
                     <div className="d-flex flex-column align-items-center gap-2 py-5">
                       <i className="bi bi-people" style={{ fontSize: "2.5rem", color: "#94a3b8" }}></i>
-                      <p className="text-muted mb-0">No local pool rides found</p>
+                      <p className="text-muted mb-0">No local pool sessions found</p>
                     </div>
                   </td></tr>
                 ) : rides.map((r: any, i: number) => (
@@ -191,19 +208,22 @@ export default function LocalPool() {
                       <div className="fw-semibold">{r.driverName || <span className="text-muted">Unassigned</span>}</div>
                       <div className="text-muted" style={{ fontSize: "0.7rem" }}>{r.driverPhone}</div>
                     </td>
-                    <td style={{ maxWidth: 140 }}><span className="text-truncate d-block" title={r.pickupAddress}>{r.pickupAddress || `${r.pickupLat}, ${r.pickupLng}`}</span></td>
-                    <td style={{ maxWidth: 140 }}><span className="text-truncate d-block" title={r.destinationAddress}>{r.destinationAddress || `${r.destinationLat}, ${r.destinationLng}`}</span></td>
+                    <td>
+                      <span className={`badge ${r.acceptingNewRequests === false ? "bg-warning text-dark" : "bg-success"}`}>
+                        {r.acceptingNewRequests === false ? "Paused" : "Accepting"}
+                      </span>
+                    </td>
                     <td className="text-center">
                       <span style={{ fontWeight: 700 }}>{r.bookedSeats}</span>
                       <span className="text-muted">/{r.maxSeats}</span>
                     </td>
-                    <td>₹{Number(r.farePerSeat || 0).toFixed(2)}</td>
-                    <td className="text-center">
-                      <span style={{ fontWeight: 700, color: "#7c3aed" }}>{r.passengerCount ?? 0}</span>
-                    </td>
-                    <td className="fw-semibold">₹{Number(r.totalRevenue || 0).toFixed(0)}</td>
-                    <td><StatusBadge status={r.status || "collecting"} /></td>
-                    <td style={{ color: "#64748b" }}>{r.createdAt ? new Date(r.createdAt).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—"}</td>
+                    <td>{money(r.farePerSeat, 2)}</td>
+                    <td className="text-center"><span style={{ fontWeight: 700, color: "#7c3aed" }}>{r.passengerCount ?? 0}</span></td>
+                    <td>{money(r.totalGst)}</td>
+                    <td>{money(r.totalCommission)}</td>
+                    <td className="fw-semibold">{money(r.totalRevenue)}</td>
+                    <td><StatusBadge status={r.status || "active"} /></td>
+                    <td style={{ color: "#64748b" }}>{r.createdAt ? new Date(r.createdAt).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "-"}</td>
                     <td>
                       <button className="btn btn-sm btn-outline-primary" onClick={() => setViewPassengersRideId(r.id)}>
                         <i className="bi bi-people me-1"></i>Passengers
@@ -217,7 +237,6 @@ export default function LocalPool() {
         </div>
       </div>
 
-      {/* Settings Modal */}
       {settingsOpen && (
         <div className="modal-backdrop-jago">
           <div className="modal-jago" style={{ maxWidth: 420 }}>
@@ -232,18 +251,18 @@ export default function LocalPool() {
                   <option value="on">On (active)</option>
                   <option value="off">Off (disabled)</option>
                 </select>
-                <small className="text-muted">When off, customers cannot book local pool rides</small>
+                <small className="text-muted">When off, customers cannot book local pool rides.</small>
               </div>
               <div>
                 <label className="form-label-jago">Collection Window (seconds)</label>
                 <input type="number" className="form-control" value={settingsForm.collectionSecs} min="60" max="600" step="30"
                   onChange={e => setSettingsForm(f => ({ ...f, collectionSecs: e.target.value }))} />
-                <small className="text-muted">How long a pool ride waits for passengers before dispatching (default: 300s = 5 min)</small>
+                <small className="text-muted">Default: 300 seconds. Live rolling-pool sessions can pause accepting without ending the ride.</small>
               </div>
               <div className="d-flex gap-2 justify-content-end mt-2">
                 <button className="btn btn-outline-secondary" onClick={() => setSettingsOpen(false)}>Cancel</button>
-                <button className="btn btn-primary" onClick={() => savSettings.mutate(settingsForm)} disabled={savSettings.isPending}>
-                  {savSettings.isPending ? "Saving..." : "Save Settings"}
+                <button className="btn btn-primary" onClick={() => saveSettings.mutate(settingsForm)} disabled={saveSettings.isPending}>
+                  {saveSettings.isPending ? "Saving..." : "Save Settings"}
                 </button>
               </div>
             </div>

@@ -29,6 +29,7 @@ const MAX_MATCH_RADIUS_KM = 4;    // search for sessions within this radius
 const DIRECTION_TOLERANCE_DEG = 50; // bearing must match within ±50°
 const SEARCH_TIMEOUT_MIN = 5;     // cancel search if no match in 5 min
 const MATCHER_INTERVAL_MS = 20_000; // re-run matcher every 20s
+let matcherStarted = false;
 
 function poolResponse(
   success: boolean,
@@ -60,6 +61,7 @@ export async function ensureRollingPoolSchema(): Promise<void> {
       driver_id              UUID NOT NULL REFERENCES users(id),
       vehicle_category_id    UUID,
       status                 VARCHAR(20) NOT NULL DEFAULT 'active',
+      accepting_new_requests BOOLEAN NOT NULL DEFAULT true,
       max_seats              INTEGER NOT NULL DEFAULT 4,
       available_seats        INTEGER NOT NULL DEFAULT 4,
       current_lat            NUMERIC(10,7),
@@ -77,7 +79,8 @@ export async function ensureRollingPoolSchema(): Promise<void> {
 
   await rawDb.execute(rawSql`
     ALTER TABLE driver_pool_sessions
-    ADD COLUMN IF NOT EXISTS last_location_at TIMESTAMP
+    ADD COLUMN IF NOT EXISTS last_location_at TIMESTAMP,
+    ADD COLUMN IF NOT EXISTS accepting_new_requests BOOLEAN NOT NULL DEFAULT true
   `);
 
   await rawDb.execute(rawSql`
@@ -103,6 +106,11 @@ export async function ensureRollingPoolSchema(): Promise<void> {
       total_fare       NUMERIC(10,2) NOT NULL DEFAULT 0,
       distance_km      NUMERIC(10,2) NOT NULL DEFAULT 0,
       commission_amount NUMERIC(10,2) NOT NULL DEFAULT 0,
+      gst_amount       NUMERIC(10,2) NOT NULL DEFAULT 0,
+      insurance_amount NUMERIC(10,2) NOT NULL DEFAULT 0,
+      platform_deduction NUMERIC(10,2) NOT NULL DEFAULT 0,
+      revenue_model    VARCHAR(30) DEFAULT 'commission',
+      revenue_breakdown JSONB DEFAULT '{}',
       driver_earnings  NUMERIC(10,2) NOT NULL DEFAULT 0,
       payment_method   VARCHAR(20) NOT NULL DEFAULT 'cash',
       status           VARCHAR(20) NOT NULL DEFAULT 'searching',
@@ -127,6 +135,11 @@ export async function ensureRollingPoolSchema(): Promise<void> {
     ALTER TABLE pool_ride_requests
     ADD COLUMN IF NOT EXISTS vehicle_category_id UUID,
     ADD COLUMN IF NOT EXISTS commission_amount NUMERIC(10,2) NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS gst_amount NUMERIC(10,2) NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS insurance_amount NUMERIC(10,2) NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS platform_deduction NUMERIC(10,2) NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS revenue_model VARCHAR(30) DEFAULT 'commission',
+    ADD COLUMN IF NOT EXISTS revenue_breakdown JSONB DEFAULT '{}',
     ADD COLUMN IF NOT EXISTS driver_earnings NUMERIC(10,2) NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS drop_order INTEGER,
     ADD COLUMN IF NOT EXISTS boarding_otp VARCHAR(6),
@@ -202,22 +215,25 @@ function detourKm(
 
 // ── Fare calc ─────────────────────────────────────────────────────────────────
 
-function calcPoolFare(distKm: number, seats: number): { farePerSeat: number; totalFare: number } {
+function calcPoolFare(distKm: number, seats: number): { farePerSeat: number; subtotalFare: number; totalFare: number } {
   const BASE = 18;
   const PER_KM = 8;
   const MIN_FARE = 40;
   const raw = Math.max(MIN_FARE, BASE + PER_KM * distKm);
-  const seatDiscountFactor = seats >= 3 ? 0.70 : seats === 2 ? 0.73 : 0.76;
+  const seatDiscountFactor = seats === 2 ? 0.73 : 0.76;
   const poolPrice = Math.round(raw * seatDiscountFactor * 100) / 100;
+  const subtotalFare = Math.round(poolPrice * seats * 100) / 100;
   return {
     farePerSeat: poolPrice,
-    totalFare: Math.round(poolPrice * seats * 100) / 100,
+    subtotalFare,
+    totalFare: subtotalFare,
   };
 }
 
 async function emitSeatUpdate(sessionId: string): Promise<void> {
   const sessionR = await rawDb.execute(rawSql`
     SELECT dps.id, dps.driver_id, dps.max_seats, dps.available_seats, dps.status,
+           dps.accepting_new_requests,
            COUNT(prr.id) FILTER (WHERE prr.status IN ('matched', 'picked_up'))::int as active_passengers,
            COUNT(prr.id) FILTER (WHERE prr.status = 'picked_up')::int as onboard_passengers,
            COUNT(prr.id) FILTER (WHERE prr.status = 'matched')::int as pending_pickups
@@ -242,6 +258,7 @@ async function emitSeatUpdate(sessionId: string): Promise<void> {
     pendingPickups: parseInt(session.pending_pickups || 0),
     occupancyPercent: maxSeats > 0 ? Math.round(((maxSeats - availableSeats) / maxSeats) * 100) : 0,
     status: session.status,
+    acceptingNewRequests: session.accepting_new_requests !== false,
   };
 
   io.to(`user:${session.driver_id}`).emit("pool:seat_update", payload);
@@ -271,6 +288,7 @@ async function findBestSession(
            dps.vehicle_category_id
     FROM driver_pool_sessions dps
     WHERE dps.status = 'active'
+      AND dps.accepting_new_requests = true
       AND dps.available_seats >= ${seatsNeeded}
       AND dps.current_lat IS NOT NULL
       AND dps.current_lng IS NOT NULL
@@ -336,7 +354,7 @@ async function matchRequest(requestId: string): Promise<boolean> {
     // Re-check session still has seats (FOR UPDATE prevents race)
     const lockR = await txClient.query(
       `SELECT available_seats FROM driver_pool_sessions
-       WHERE id = $1 AND status = 'active' AND available_seats >= $2
+       WHERE id = $1 AND status = 'active' AND accepting_new_requests = true AND available_seats >= $2
        FOR UPDATE`,
       [match.sessionId, parseInt(req.seats_requested)],
     );
@@ -440,6 +458,8 @@ async function matchRequest(requestId: string): Promise<boolean> {
 // ── Background matcher ────────────────────────────────────────────────────────
 
 export function startRollingPoolMatcher(): void {
+  if (matcherStarted) return;
+  matcherStarted = true;
   setInterval(runMatcher, MATCHER_INTERVAL_MS);
   console.log("[ROLLING-POOL] matcher started");
 }
@@ -480,6 +500,9 @@ async function runMatcher(): Promise<void> {
 // ── Route registration ────────────────────────────────────────────────────────
 
 export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdminAuth?: any): void {
+  ensureRollingPoolSchema()
+    .then(() => startRollingPoolMatcher())
+    .catch((e) => console.error("[ROLLING-POOL] schema init failed", e?.message));
 
   // ─── DRIVER: Start pool session ───────────────────────────────────────────
 
@@ -505,11 +528,11 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
 
       const r = await rawDb.execute(rawSql`
         INSERT INTO driver_pool_sessions
-          (driver_id, vehicle_category_id, status, max_seats, available_seats, current_lat, current_lng)
+          (driver_id, vehicle_category_id, status, accepting_new_requests, max_seats, available_seats, current_lat, current_lng)
         VALUES
           (${driver.id}::uuid,
            ${vehicleCategoryId || null}${vehicleCategoryId ? rawSql`::uuid` : rawSql``},
-           'active', ${seatsN}, ${seatsN},
+           'active', true, ${seatsN}, ${seatsN},
            ${loc?.current_lat || null}, ${loc?.current_lng || null})
         RETURNING *
       `);
@@ -575,6 +598,33 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
   });
 
   // ─── DRIVER: Get active session + current passenger queue ─────────────────
+
+  app.post("/api/app/driver/pool/session/accepting", authApp, async (req: any, res: any) => {
+    try {
+      const driver = req.currentUser;
+      const accepting = req.body?.acceptingNewRequests !== false;
+      const r = await rawDb.execute(rawSql`
+        UPDATE driver_pool_sessions
+        SET accepting_new_requests = ${accepting}, updated_at = NOW()
+        WHERE driver_id = ${driver.id}::uuid AND status = 'active'
+        RETURNING id, accepting_new_requests
+      `);
+      if (!r.rows.length) {
+        return res.status(404).json(poolResponse(false, "POOL_SESSION_NOT_FOUND", "No active pool session found"));
+      }
+      const session = r.rows[0] as any;
+      await emitSeatUpdate(String(session.id));
+      io.to(`user:${driver.id}`).emit("pool:accepting_update", {
+        sessionId: String(session.id),
+        acceptingNewRequests: session.accepting_new_requests !== false,
+      });
+      res.json(poolResponse(true, "POOL_ACCEPTING_UPDATED", accepting ? "New passenger requests enabled" : "New passenger requests paused", {
+        acceptingNewRequests: session.accepting_new_requests !== false,
+      }));
+    } catch (e: any) {
+      res.status(500).json(poolResponse(false, "POOL_ACCEPTING_UPDATE_FAILED", e.message || "Could not update pool accepting mode", {}, true));
+    }
+  });
 
   app.get("/api/app/driver/pool/session/active", authApp, async (req: any, res: any) => {
     try {
@@ -743,6 +793,19 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
         driverEarnings = breakdown.driverEarnings;
         newWalletBalance = settlement.newWalletBalance;
 
+        await rawDb.execute(rawSql`
+          UPDATE pool_ride_requests
+          SET commission_amount = ${breakdown.commission},
+              gst_amount = ${breakdown.gst},
+              insurance_amount = ${breakdown.insurance},
+              platform_deduction = ${breakdown.total},
+              revenue_model = ${breakdown.model},
+              revenue_breakdown = ${JSON.stringify(breakdown)}::jsonb,
+              driver_earnings = ${breakdown.driverEarnings},
+              updated_at = NOW()
+          WHERE id = ${requestId}::uuid
+        `);
+
         // Update total_earnings on session
         await rawDb.execute(rawSql`
           UPDATE driver_pool_sessions
@@ -792,7 +855,7 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
       const pendingR = await rawDb.execute(rawSql`
         UPDATE pool_ride_requests
         SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW(),
-            refund_amount = CASE WHEN status = 'picked_up' THEN COALESCE(fare, 0) ELSE 0 END,
+            refund_amount = CASE WHEN status = 'picked_up' THEN COALESCE(total_fare, 0) ELSE 0 END,
             cancel_reason = CASE WHEN status = 'picked_up' THEN 'Driver ended session mid-ride' ELSE 'Driver ended pool session' END
         WHERE session_id = ${sessionId}::uuid AND status IN ('matched', 'picked_up')
         RETURNING customer_id, status, refund_amount
@@ -845,6 +908,14 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
         return res.status(400).json(poolResponse(false, "POOL_COORDS_REQUIRED", "Pickup and drop coordinates required"));
       }
 
+      const modeR = await rawDb.execute(rawSql`
+        SELECT value FROM business_settings WHERE key_name = 'local_pool_mode' LIMIT 1
+      `).catch(() => ({ rows: [] as any[] }));
+      const poolMode = String((modeR.rows[0] as any)?.value || "on").toLowerCase();
+      if (poolMode === "off") {
+        return res.status(503).json(poolResponse(false, "POOL_DISABLED", "Local pool is temporarily unavailable"));
+      }
+
       const requestedSeats = parseInt(String(seatsRequested), 10) || 1;
       if (requestedSeats < 1 || requestedSeats > 2) {
         return res.status(400).json(poolResponse(
@@ -859,9 +930,19 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
       const dLat = parseFloat(dropLat);
       const dLng = parseFloat(dropLng);
       const distKm = haversineKmPool(pLat, pLng, dLat, dLng);
-      const { farePerSeat, totalFare } = calcPoolFare(distKm, seats);
-      const commissionAmount = Math.round(totalFare * 0.15 * 100) / 100;
-      const driverEarnings = Math.round((totalFare - commissionAmount) * 100) / 100;
+      const { farePerSeat, subtotalFare, totalFare } = calcPoolFare(distKm, seats);
+      let revenuePreview: any = null;
+      try {
+        revenuePreview = await calculateRevenueBreakdown(totalFare, "city_pool");
+      } catch {
+        revenuePreview = null;
+      }
+      const commissionAmount = Math.round(Number(revenuePreview?.commission ?? totalFare * 0.10) * 100) / 100;
+      const gstAmount = Math.round(Number(revenuePreview?.gst ?? 0) * 100) / 100;
+      const insuranceAmount = Math.round(Number(revenuePreview?.insurance ?? 0) * 100) / 100;
+      const platformDeduction = Math.round(Number(revenuePreview?.total ?? (commissionAmount + gstAmount + insuranceAmount)) * 100) / 100;
+      const driverEarnings = Math.round(Number(revenuePreview?.driverEarnings ?? (totalFare - platformDeduction)) * 100) / 100;
+      const revenueModel = String(revenuePreview?.model ?? "commission");
       const boardingOtp = generateBoardingOtp();
       const clusterKey = [
         Math.round(pLat * 100) / 100,
@@ -875,14 +956,16 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
         INSERT INTO pool_ride_requests
           (customer_id, vehicle_category_id, pickup_lat, pickup_lng, drop_lat, drop_lng,
            pickup_address, drop_address, seats_requested,
-           fare_per_seat, total_fare, distance_km, commission_amount, driver_earnings,
+           fare_per_seat, total_fare, distance_km, commission_amount, gst_amount,
+           insurance_amount, platform_deduction, revenue_model, revenue_breakdown, driver_earnings,
            payment_method, status, searched_at, boarding_otp, cluster_key)
         VALUES
           (${customer.id}::uuid,
            ${vehicleCategoryId || null}${vehicleCategoryId ? rawSql`::uuid` : rawSql``},
            ${pLat}, ${pLng}, ${dLat}, ${dLng},
            ${pickupAddress || null}, ${dropAddress || null}, ${seats},
-           ${farePerSeat}, ${totalFare}, ${distKm}, ${commissionAmount}, ${driverEarnings},
+           ${farePerSeat}, ${totalFare}, ${distKm}, ${commissionAmount}, ${gstAmount},
+           ${insuranceAmount}, ${platformDeduction}, ${revenueModel}, ${JSON.stringify(revenuePreview || {})}::jsonb, ${driverEarnings},
            ${paymentMethod}, 'searching', NOW(), ${boardingOtp}, ${clusterKey})
         RETURNING id
       `);
@@ -902,8 +985,15 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
         fareBreakdown: {
           perSeatFare: farePerSeat,
           seatsBooked: seats,
+          subtotalFare,
           totalFare,
           commissionAmount,
+          commissionPerSeat: Math.round((commissionAmount / seats) * 100) / 100,
+          gstAmount,
+          gstPerSeat: Math.round((gstAmount / seats) * 100) / 100,
+          insuranceAmount,
+          platformDeduction,
+          revenueModel,
           driverEarnings,
           note: `Dynamic pool fare — Rs ${farePerSeat.toFixed(0)}/seat x ${seats} = Rs ${totalFare.toFixed(0)}`,
         },
