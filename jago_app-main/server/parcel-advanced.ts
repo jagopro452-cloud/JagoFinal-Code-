@@ -488,8 +488,8 @@ export function emitParcelLifecycle(
  * with no mapping is rejected outright.
  */
 const PARCEL_VEHICLE_DRIVER_MAP: Record<string, string[]> = {
-  bike_parcel:   ["bike", "bike_parcel", "bike parcel"],
-  auto_parcel:   ["auto", "auto_parcel", "auto parcel"],
+  bike_parcel:   ["bike_parcel", "bike parcel", "parcel_bike", "bike_delivery"],
+  auto_parcel:   ["auto_parcel", "auto parcel", "parcel_auto", "auto_delivery", "mini_cargo_auto"],
   tata_ace:      ["tata_ace", "tata ace"],
   pickup_truck:  ["pickup_truck", "pickup truck"],
   bolero_cargo:  ["bolero_cargo", "bolero pickup", "bolero cargo"],

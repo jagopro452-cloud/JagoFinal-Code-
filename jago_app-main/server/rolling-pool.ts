@@ -32,6 +32,30 @@ const MATCHER_INTERVAL_MS = 20_000; // re-run matcher every 20s
 let matcherStarted = false;
 const DRIVER_ACCEPT_TIMEOUT_SEC = 45;
 
+function normalizePoolKey(value: unknown): string {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function isPoolVehicleCategory(row: any): boolean {
+  const key = normalizePoolKey(row?.vehicle_type || row?.slug || row?.name);
+  const serviceType = normalizePoolKey(row?.service_type || row?.type);
+  return Boolean(row) && (
+    row.is_carpool === true ||
+    row.is_carpool === "true" ||
+    serviceType === "pool" ||
+    serviceType === "carpool" ||
+    key === "car_pool_4" ||
+    key === "car_pool_6" ||
+    key === "carpool" ||
+    key.includes("pool")
+  );
+}
+
 async function getPoolSettingNumber(key: string, fallback: number): Promise<number> {
   const r = await rawDb.execute(rawSql`
     SELECT value FROM business_settings WHERE key_name = ${key} LIMIT 1
@@ -633,6 +657,35 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
     try {
       const driver = req.currentUser;
       const { vehicleCategoryId, maxSeats = 4 } = req.body;
+      const driverCategoryR = await rawDb.execute(rawSql`
+        SELECT vehicle_category_id
+        FROM driver_details
+        WHERE user_id = ${driver.id}::uuid
+        LIMIT 1
+      `).catch(() => ({ rows: [] as any[] }));
+      const driverVehicleCategoryId = (driverCategoryR.rows[0] as any)?.vehicle_category_id
+        ? String((driverCategoryR.rows[0] as any).vehicle_category_id)
+        : null;
+      const requestedVehicleCategoryId = vehicleCategoryId ? String(vehicleCategoryId) : null;
+      const resolvedVehicleCategoryId = requestedVehicleCategoryId || driverVehicleCategoryId;
+
+      if (!resolvedVehicleCategoryId) {
+        return res.status(403).json(poolResponse(false, "POOL_DRIVER_NOT_ELIGIBLE", "Driver has no pool-enabled vehicle category assigned"));
+      }
+      if (requestedVehicleCategoryId && driverVehicleCategoryId && requestedVehicleCategoryId !== driverVehicleCategoryId) {
+        return res.status(403).json(poolResponse(false, "POOL_DRIVER_CATEGORY_MISMATCH", "Requested pool vehicle category does not match driver's approved vehicle"));
+      }
+
+      const vcR = await rawDb.execute(rawSql`
+        SELECT id, name, slug, type, service_type, vehicle_type, is_carpool, total_seats
+        FROM vehicle_categories
+        WHERE id = ${resolvedVehicleCategoryId}::uuid
+        LIMIT 1
+      `).catch(() => ({ rows: [] as any[] }));
+      const vc = vcR.rows[0] as any;
+      if (!isPoolVehicleCategory(vc)) {
+        return res.status(403).json(poolResponse(false, "POOL_DRIVER_NOT_ELIGIBLE", "Only approved pool-enabled drivers can start rolling pool"));
+      }
 
       // End any existing active session first
       await rawDb.execute(rawSql`
@@ -642,23 +695,10 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
       `);
 
       const requestedSeats = parseInt(String(maxSeats)) || 4;
-      const seatsN = requestedSeats >= 6 ? 6 : 4;
+      const categorySeats = parseInt(String(vc?.total_seats || 0));
+      const cappedSeats = categorySeats > 0 ? Math.min(requestedSeats, categorySeats) : requestedSeats;
+      const seatsN = cappedSeats >= 6 ? 6 : 4;
       const poolVehicleType = seatsN === 6 ? "car_pool_6" : "car_pool_4";
-
-      if (vehicleCategoryId) {
-        const vcR = await rawDb.execute(rawSql`
-          SELECT id, vehicle_type, is_carpool, total_seats
-          FROM vehicle_categories
-          WHERE id = ${vehicleCategoryId}::uuid
-          LIMIT 1
-        `).catch(() => ({ rows: [] as any[] }));
-        const vc = vcR.rows[0] as any;
-        const vType = String(vc?.vehicle_type || "").toLowerCase();
-        const isAllowedPool = vc && (vc.is_carpool === true || vc.is_carpool === "true" || ["car_pool_4", "car_pool_6", "carpool"].includes(vType));
-        if (!isAllowedPool) {
-          return res.status(400).json(poolResponse(false, "POOL_VEHICLE_INVALID", "Only car pool 4-seat or 6-seat vehicles can start rolling pool"));
-        }
-      }
 
       // Get driver's current location
       const locR = await rawDb.execute(rawSql`
@@ -671,7 +711,7 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
           (driver_id, vehicle_category_id, status, accepting_new_requests, pool_vehicle_type, max_seats, available_seats, current_lat, current_lng)
         VALUES
           (${driver.id}::uuid,
-           ${vehicleCategoryId || null}${vehicleCategoryId ? rawSql`::uuid` : rawSql``},
+           ${resolvedVehicleCategoryId}::uuid,
            'active', true, ${poolVehicleType}, ${seatsN}, ${seatsN},
            ${loc?.current_lat || null}, ${loc?.current_lng || null})
         RETURNING *

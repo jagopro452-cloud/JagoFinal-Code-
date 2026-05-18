@@ -2201,6 +2201,21 @@ async function ensureOperationalSchema() {
       ALTER TABLE notification_logs ALTER COLUMN notification_type DROP NOT NULL;
       ALTER TABLE notification_logs ALTER COLUMN notification_type SET DEFAULT 'broadcast';
     `).catch(dbCatch("db"));
+    await rawDb.execute(rawSql`
+      CREATE TABLE IF NOT EXISTS notification_log (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID NOT NULL,
+        title VARCHAR(255) NOT NULL,
+        message TEXT NOT NULL,
+        type VARCHAR(80) DEFAULT 'broadcast',
+        data JSONB DEFAULT '{}'::jsonb,
+        is_read BOOLEAN DEFAULT false,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_notification_log_user_created ON notification_log(user_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_notification_log_user_unread ON notification_log(user_id, is_read);
+    `).catch(dbCatch("db"));
 
     // -- Driver payment ledger: records every commission debt/payment ----------
     await rawDb.execute(rawSql`
@@ -3093,12 +3108,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const pwHash = await hashPassword("Test@123");
       // Fetch vehicle categories for driver assignment
-      const vcRes = await rawDb.execute(rawSql`SELECT id, name FROM vehicle_categories ORDER BY created_at ASC`);
+      const vcRes = await rawDb.execute(rawSql`SELECT id, name, vehicle_type, slug FROM vehicle_categories ORDER BY created_at ASC`);
       const vcRows = vcRes.rows as any[];
       const bikeVc = vcRows.find((v: any) => v.name?.toLowerCase() === 'bike') || vcRows[0];
       const autoVc = vcRows.find((v: any) => v.name?.toLowerCase().includes('auto')) || vcRows[1] || bikeVc;
       const cabVc = vcRows.find((v: any) => v.name?.toLowerCase().includes('cab') || v.name?.toLowerCase().includes('sedan')) || vcRows[2] || bikeVc;
-      const parcelVc = vcRows.find((v: any) => v.name?.toLowerCase().includes('bike delivery') || v.name?.toLowerCase().includes('bike_parcel')) || bikeVc;
+      const parcelVc = vcRows.find((v: any) => {
+        const blob = `${v.name || ""} ${(v as any).vehicle_type || ""} ${(v as any).slug || ""}`.toLowerCase();
+        return blob.includes("bike_parcel") || blob.includes("bike delivery") || (blob.includes("bike") && blob.includes("parcel"));
+      });
 
       const customers = [
         { name: 'Test Customer 1', phone: '9000000001' },
@@ -3116,7 +3134,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         { name: 'Test Driver 7 (Auto)', phone: '9100000007', vc: autoVc, vNum: 'TS09AC5003', vModel: 'TVS King' },
         { name: 'Test Driver 8 (Cab)', phone: '9100000008', vc: cabVc, vNum: 'TS07CD8001', vModel: 'Swift Dzire' },
         { name: 'Test Driver 9 (Cab)', phone: '9100000009', vc: cabVc, vNum: 'TS07CD8002', vModel: 'Maruti WagonR' },
-        { name: 'Test Driver 10 (Parcel)', phone: '9100000010', vc: parcelVc, vNum: 'TS01AB1010', vModel: 'Hero Splendor' },
+        ...(parcelVc ? [{ name: 'Test Driver 10 (Parcel)', phone: '9100000010', vc: parcelVc, vNum: 'TS01AB1010', vModel: 'Hero Splendor' }] : []),
       ];
 
       const createdCustomers: any[] = [];
@@ -6469,29 +6487,52 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const target = safeLogValue(req.body?.target, "all");
       const title = String(req.body?.title || "").trim();
       const message = String(req.body?.message || "").trim();
-      const userType = ["all", "customer", "driver"].includes(String(req.body?.userType || "all"))
-        ? String(req.body?.userType || "all")
+      const requestedUserType = String(req.body?.userType || "all").toLowerCase();
+      const userType = ["all", "customer", "driver"].includes(requestedUserType)
+        ? requestedUserType
         : "all";
       if (!title || !message) return res.status(400).json({ message: "title and message required" });
+      const audienceWhere = userType === "driver"
+        ? rawSql`AND (
+            LOWER(COALESCE(NULLIF(u.user_type, ''), NULLIF(u.role, ''), '')) IN ('driver', 'pilot')
+            OR LOWER(COALESCE(u.role, '')) IN ('driver', 'pilot')
+          )`
+        : userType === "customer"
+          ? rawSql`AND (
+              LOWER(COALESCE(NULLIF(u.user_type, ''), NULLIF(u.role, ''), 'customer')) IN ('customer', 'user')
+              OR LOWER(COALESCE(u.role, '')) IN ('customer', 'user')
+            )`
+          : rawSql`AND (
+              LOWER(COALESCE(NULLIF(u.user_type, ''), NULLIF(u.role, ''), 'customer')) IN ('customer', 'user', 'driver', 'pilot')
+              OR LOWER(COALESCE(u.role, '')) IN ('customer', 'user', 'driver', 'pilot')
+            )`;
 
       // Fetch FCM tokens for matching active users
-      let fcmRows: any[] = [];
-      const audienceTypes =
-        userType === "driver" ? ["driver", "pilot"] :
-        userType === "customer" ? ["customer", "user"] :
-        ["customer", "user", "driver", "pilot"];
       const devRes = await rawDb.execute(rawSql`
-        SELECT DISTINCT TRIM(ud.fcm_token) AS fcm_token
-        FROM user_devices ud
-        INNER JOIN users u ON u.id = ud.user_id
+        SELECT DISTINCT
+          u.id AS user_id,
+          TRIM(COALESCE(ud.fcm_token, u.fcm_token)) AS fcm_token
+        FROM users u
+        LEFT JOIN user_devices ud ON ud.user_id = u.id
         WHERE COALESCE(u.is_active, true) = true
-          AND ud.fcm_token IS NOT NULL
-          AND LENGTH(TRIM(ud.fcm_token)) > 20
-          AND LOWER(COALESCE(u.user_type, 'customer')) = ANY(${audienceTypes}::text[])
-      `);
-      fcmRows = devRes.rows;
+          ${audienceWhere}
+          AND COALESCE(ud.fcm_token, u.fcm_token) IS NOT NULL
+          AND LENGTH(TRIM(COALESCE(ud.fcm_token, u.fcm_token))) > 20
+      `).catch((tokenErr: any) => {
+        console.error("[Notification] token query failed:", tokenErr?.message || tokenErr);
+        return { rows: [] as any[] };
+      });
+      const fcmRows = devRes.rows as any[];
+      const targetUsersRes = await rawDb.execute(rawSql`
+        SELECT DISTINCT u.id
+        FROM users u
+        WHERE COALESCE(u.is_active, true) = true
+          ${audienceWhere}
+      `).catch(() => ({ rows: [] as any[] }));
+      const targetUserIds = (targetUsersRes.rows as any[]).map((row) => String(row.id)).filter(Boolean);
 
       const recipientCount = fcmRows.length;
+      const targetedUserCount = targetUserIds.length;
 
       // Fire FCM pushes (non-blocking � best effort)
       let deliveredCount = 0;
@@ -6504,7 +6545,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
               fcmToken: r.fcm_token,
               title,
               body: message,
-              data: { type: "broadcast", target, userType },
+              data: { type: "broadcast", target, userType, title, message },
               channelId: "general_alerts",
               sound: "default",
             });
@@ -6535,6 +6576,40 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       try {
         await rawDb.execute(rawSql`
+          INSERT INTO notification_log (user_id, title, message, type, data, is_read, created_at, updated_at)
+          SELECT
+            u.id,
+            ${title.slice(0, 240)},
+            ${message},
+            'broadcast',
+            ${JSON.stringify({ target, userType, source: "admin", status })}::jsonb,
+            false,
+            NOW(),
+            NOW()
+          FROM users u
+          WHERE COALESCE(u.is_active, true) = true
+            ${audienceWhere}
+        `);
+      } catch (appLogErr: any) {
+        console.error("[Notification] app notification insert failed:", appLogErr?.message || appLogErr);
+      }
+      for (const userId of targetUserIds) {
+        try {
+          io?.to(`user:${userId}`).emit("notification:broadcast", {
+            title,
+            message,
+            type: "broadcast",
+            target,
+            userType,
+            createdAt: new Date().toISOString(),
+          });
+        } catch (socketErr: any) {
+          console.warn("[Notification] socket broadcast failed:", socketErr?.message || socketErr);
+        }
+      }
+
+      try {
+        await rawDb.execute(rawSql`
           INSERT INTO notification_logs (
             title, message, target, user_type, recipient_count, delivered_count,
             status, notification_type, fcm_result, error_message, sent_at
@@ -6550,19 +6625,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       } catch (logErr: any) {
         console.error("[Notification] history insert failed:", logErr?.message || logErr);
         await rawDb.execute(rawSql`
-          INSERT INTO notification_logs (title, message, target, user_type, recipient_count, delivered_count, status, sent_at)
-          VALUES (${title.slice(0, 190)}, ${message}, 'all', ${userType}, ${recipientCount}, ${deliveredCount}, ${status}, NOW())
-        `);
+          INSERT INTO notification_logs (title, message, target, user_type, recipient_count, status, sent_at)
+          VALUES (${title.slice(0, 190)}, ${message}, ${target}, ${userType}, ${recipientCount}, ${status}, NOW())
+        `).catch((fallbackErr: any) => {
+          console.error("[Notification] fallback history insert failed:", fallbackErr?.message || fallbackErr);
+        });
       }
       const statusMessage = status === "sent"
         ? "Notification sent"
         : status === "partial"
           ? "Notification sent with partial device delivery"
           : status === "no_devices"
-            ? "Notification saved. No registered app devices matched this audience."
-            : "Notification saved. Devices will receive it after token refresh.";
-      console.log(`[Notification] To=${target}/${userType} Title=${title} Recipients=${recipientCount} Delivered=${deliveredCount} Failed=${failedCount}`);
-      res.json({ success: true, message: statusMessage, recipientCount, deliveredCount, failedCount, status, pushWarning: status !== "sent" });
+            ? "Notification saved in app. No registered push devices matched this audience."
+            : "Notification saved in app. Devices will receive push after token refresh.";
+      console.log(`[Notification] To=${target}/${userType} Users=${targetedUserCount} Devices=${recipientCount} Delivered=${deliveredCount} Failed=${failedCount}`);
+      res.json({ success: true, message: statusMessage, recipientCount, targetedUserCount, deliveredCount, failedCount, status, pushWarning: status !== "sent" });
     } catch (e: any) {
       console.error("[Notification] send failed:", e?.message || e);
       res.status(500).json({ message: safeErrMsg(e) });
@@ -10386,12 +10463,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       // -- Service activation gate -------------------------------------------
+      const bookingVehicleMeta = await getVehicleCategoryMeta(bookingVehicleCategoryId);
+      const bookingServiceKey = getPlatformServiceKeyForCategory(bookingVehicleMeta) || "bike_ride";
       const rideGate = await rawDb.execute(rawSql`
-        SELECT service_status FROM platform_services WHERE service_key = 'bike_ride' LIMIT 1
+        SELECT service_status FROM platform_services WHERE service_key = ${bookingServiceKey} LIMIT 1
       `).catch(() => ({ rows: [] as any[] }));
       // Only block if the record explicitly says inactive (if table missing, allow through)
       if (rideGate.rows.length && (rideGate.rows[0] as any).service_status !== 'active') {
-        return res.status(503).json({ message: "Bike Ride service is currently unavailable. Please try again later.", code: "SERVICE_INACTIVE" });
+        return res.status(503).json({ message: `${bookingVehicleName || "Selected ride"} service is currently unavailable. Please try again later.`, code: "SERVICE_INACTIVE", serviceKey: bookingServiceKey });
       }
 
       // -- Server-side fare calculation (fallback when client sends 0 or missing) --
@@ -14806,8 +14885,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   function parcelDriverToken(value: unknown): string {
     const v = String(value || "").trim().toLowerCase();
     if (!v) return "";
-    if (v === "bike" || (v.includes("bike") && !v.includes("car"))) return "bike_parcel";
-    if (v === "auto" || v.includes("auto")) return "auto_parcel";
+    if ((v.includes("bike") && (v.includes("parcel") || v.includes("delivery"))) || v === "bike_parcel") return "bike_parcel";
+    if ((v.includes("auto") && (v.includes("parcel") || v.includes("delivery") || v.includes("cargo"))) || v === "auto_parcel" || v === "mini_cargo_auto") return "auto_parcel";
     if (v.includes("tata") || v.includes("ace") || v.includes("mini truck")) return "tata_ace";
     if (v.includes("bolero")) return "bolero_cargo";
     if (v.includes("tempo") || v.includes("407")) return "tempo_407";
@@ -14851,6 +14930,23 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     `).catch(() => ({ rows: [] as any[] }));
     const row = (r.rows as any[])[0];
     if (!row || row.current_trip_id) return false;
+    const serviceType = String(row.category_service_type || "").toLowerCase();
+    const categoryBlob = [
+      row.category_vehicle_type,
+      row.category_name,
+      row.category_slug,
+    ].map((v) => String(v || "").toLowerCase()).join(" ");
+    const explicitParcelCategory =
+      serviceType === "parcel" ||
+      categoryBlob.includes("parcel") ||
+      categoryBlob.includes("cargo") ||
+      categoryBlob.includes("truck") ||
+      categoryBlob.includes("pickup") ||
+      categoryBlob.includes("tempo") ||
+      categoryBlob.includes("tata") ||
+      categoryBlob.includes("bolero") ||
+      ["bike_parcel", "auto_parcel", "tata_ace", "pickup_truck", "bolero_cargo", "tempo_407", "mini_cargo_auto"].some((key) => categoryBlob.includes(key));
+    if (!explicitParcelCategory) return false;
     const tokens = [
       parcelDriverToken(row.driver_vehicle_type),
       parcelDriverToken(row.category_vehicle_type),

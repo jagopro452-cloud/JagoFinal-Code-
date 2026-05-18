@@ -23,6 +23,30 @@ const MIN_FARE_PER_BOOKING = 50;              // minimum ₹50 per booking
 const ROUTE_CORRIDOR_KM = 15;                 // pickup/drop must be within 15km of route line
 const DIRECTION_TOLERANCE_DEG = 45;           // bearing tolerance for "on route" check
 
+function normalizePoolKey(value: unknown): string {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function isPoolVehicleCategory(row: any): boolean {
+  const key = normalizePoolKey(row?.vehicle_type || row?.slug || row?.name);
+  const serviceType = normalizePoolKey(row?.service_type || row?.type);
+  return Boolean(row) && (
+    row.is_carpool === true ||
+    row.is_carpool === "true" ||
+    serviceType === "pool" ||
+    serviceType === "carpool" ||
+    key === "car_pool_4" ||
+    key === "car_pool_6" ||
+    key === "carpool" ||
+    key.includes("pool")
+  );
+}
+
 // ── Schema migration (safe — all IF NOT EXISTS / ADD COLUMN IF NOT EXISTS) ──
 
 export async function ensureOutstationPoolV2Schema(): Promise<void> {
@@ -38,6 +62,7 @@ export async function ensureOutstationPoolV2Schema(): Promise<void> {
     `ALTER TABLE outstation_pool_rides ADD COLUMN IF NOT EXISTS accepting_new_requests BOOLEAN NOT NULL DEFAULT true`,
     `ALTER TABLE outstation_pool_rides ADD COLUMN IF NOT EXISTS state_version INTEGER NOT NULL DEFAULT 1`,
     `ALTER TABLE outstation_pool_rides ADD COLUMN IF NOT EXISTS route_plan JSONB NOT NULL DEFAULT '[]'`,
+    `ALTER TABLE outstation_pool_rides ADD COLUMN IF NOT EXISTS vehicle_category_id UUID`,
   ];
   for (const sql of rideAlters) {
     await rawDb.execute(rawSql.raw(sql)).catch(() => undefined);
@@ -191,18 +216,46 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any): void
       const toLngN   = parseFloat(toLng);
       const routeKm  = haversineKm(fromLatN, fromLngN, toLatN, toLngN);
       const pkmps    = parseFloat(String(pricePerKmPerSeat)) || DEFAULT_PRICE_PER_KM_PER_SEAT;
-      const seats    = Math.min(Math.max(parseInt(String(totalSeats)) || 4, 1), 8);
+
+      const driverCategoryR = await rawDb.execute(rawSql`
+        SELECT
+          dd.vehicle_category_id,
+          vc.id,
+          vc.name,
+          vc.slug,
+          vc.type,
+          vc.service_type,
+          vc.vehicle_type,
+          vc.is_carpool,
+          vc.total_seats
+        FROM driver_details dd
+        LEFT JOIN vehicle_categories vc ON vc.id = dd.vehicle_category_id
+        WHERE dd.user_id = ${driver.id}::uuid
+        LIMIT 1
+      `).catch(() => ({ rows: [] as any[] }));
+      const driverCategory = driverCategoryR.rows[0] as any;
+      if (!isPoolVehicleCategory(driverCategory)) {
+        return res.status(403).json({
+          message: "Only approved pool-enabled drivers can create outstation pool rides",
+          code: "OUTSTATION_POOL_DRIVER_NOT_ELIGIBLE",
+        });
+      }
+
+      const requestedSeats = Math.min(Math.max(parseInt(String(totalSeats)) || 4, 1), 8);
+      const categorySeats = parseInt(String(driverCategory?.total_seats || 0));
+      const seats = categorySeats > 0 ? Math.min(requestedSeats, categorySeats) : requestedSeats;
       // Legacy fare_per_seat = full-route fare for reference
       const farePerSeat = Math.round(Math.max(MIN_FARE_PER_BOOKING, pkmps * routeKm) * 100) / 100;
 
       const r = await rawDb.execute(rawSql`
         INSERT INTO outstation_pool_rides
-          (driver_id, from_city, to_city, from_lat, from_lng, to_lat, to_lng,
+          (driver_id, vehicle_category_id, from_city, to_city, from_lat, from_lng, to_lat, to_lng,
            route_km, departure_date, departure_time,
            total_seats, available_seats, vehicle_number, vehicle_model,
            fare_per_seat, price_per_km_per_seat, note, status, is_active)
         VALUES
           (${driver.id}::uuid,
+           ${String(driverCategory.vehicle_category_id || driverCategory.id)}::uuid,
            ${fromCity}, ${toCity},
            ${fromLatN}, ${fromLngN}, ${toLatN}, ${toLngN},
            ${routeKm}, ${departureDate || null}, ${departureTime || null},

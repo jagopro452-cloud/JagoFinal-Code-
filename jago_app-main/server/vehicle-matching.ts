@@ -76,6 +76,21 @@ export function normalizeBookingVehicleType(value: string | null | undefined): s
   }
 
   if (
+    key === "car_pool_4" ||
+    key === "car_pool_6" ||
+    key === "pool_mini" ||
+    key === "pool_sedan" ||
+    key === "pool_suv" ||
+    key === "carpool" ||
+    key === "city_pool" ||
+    key === "local_pool" ||
+    key === "intercity_pool" ||
+    key === "outstation_pool"
+  ) {
+    return key;
+  }
+
+  if (
     key === "car" ||
     key === "cab" ||
     key === "cab_ride" ||
@@ -83,14 +98,7 @@ export function normalizeBookingVehicleType(value: string | null | undefined): s
     key === "mini_car" ||
     key === "sedan" ||
     key === "suv" ||
-    key === "suv_xl" ||
-    key === "pool_mini" ||
-    key === "pool_sedan" ||
-    key === "pool_suv" ||
-    key === "carpool" ||
-    key === "city_pool" ||
-    key === "intercity_pool" ||
-    key === "outstation_pool"
+    key === "suv_xl"
   ) {
     return "car";
   }
@@ -307,17 +315,21 @@ function allowedVehicleKeys(meta: VehicleCategoryMeta): string[] {
 
   if (serviceType === "pool" || meta.isCarpool || key.includes("pool") || key.includes("carpool") || key.includes("share")) {
     switch (key) {
+      case "car_pool_4":
+      case "car_pool_6":
+        return [key];
       case "pool_mini":
-        return ["pool_mini", "mini_car"];
+        return ["pool_mini"];
       case "pool_sedan":
-        return ["pool_sedan", "sedan"];
+        return ["pool_sedan"];
       case "pool_suv":
-        return ["pool_suv", "suv"];
+        return ["pool_suv"];
       case "carpool":
       case "city_pool":
+      case "local_pool":
       case "intercity_pool":
       case "outstation_pool":
-        return ["carpool", "pool_mini", "pool_sedan", "pool_suv", "mini_car", "sedan", "suv"];
+        return ["carpool", "city_pool", "local_pool", "intercity_pool", "outstation_pool", "car_pool_4", "car_pool_6", "pool_mini", "pool_sedan", "pool_suv"];
       default:
         return [key];
     }
