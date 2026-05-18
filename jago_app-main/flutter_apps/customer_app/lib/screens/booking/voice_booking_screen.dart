@@ -269,7 +269,7 @@ class _VoiceBookingScreenState extends State<VoiceBookingScreen>
     if (key.isEmpty) return null;
     if (key.contains('bike parcel')) return 'bike_parcel';
     if (key.contains('parcel auto')) return 'auto_parcel';
-    if (key.contains('mini truck') || key.contains('tata ace')) return 'mini_truck';
+    if (key.contains('mini truck') || key.contains('tata ace')) return 'tata_ace';
     if (key.contains('pickup')) return 'pickup_truck';
     if (key.contains('tempo')) return 'tempo_407';
     if (key.contains('bike')) return 'bike';

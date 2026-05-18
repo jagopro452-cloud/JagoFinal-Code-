@@ -74,7 +74,7 @@ const _kVehicles = [
   ),
   _ParcelVehicle(
     key: 'tata_ace', name: 'Mini Truck', subtitle: 'Tata Ace · Medium goods',
-    icon: 'mini_truck', capacity: 'Up to 500 kg', maxKg: 500,
+    icon: 'truck', capacity: 'Up to 500 kg', maxKg: 500,
     suitable: 'Furniture · Appliances · Bulk items · Shop stock',
     accentColor: Color(0xFFC29763),
   ),
@@ -102,10 +102,18 @@ const Map<String, String> _parcelVehicleImageUrls = {
   'bike_parcel': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_49_26_AM_gjbrxs',
   'auto_parcel': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_49_26_AM_gjbrxs',
   'tata_ace': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_51_59_AM_jzd119',
-  'mini_truck': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_51_59_AM_jzd119',
   'pickup_truck': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_54_02_AM_hicx7s',
   'bolero_cargo': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_54_02_AM_hicx7s',
   'tempo_407': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_54_02_AM_hicx7s',
+};
+
+const _allowedParcelVehicleKeys = {
+  'bike_parcel',
+  'auto_parcel',
+  'tata_ace',
+  'pickup_truck',
+  'bolero_cargo',
+  'tempo_407',
 };
 
 // ── Static item types ─────────────────────────────────────────────────────────
@@ -260,27 +268,24 @@ class _ParcelBookingScreenState extends State<ParcelBookingScreen>
       if (r.statusCode == 200) {
         final data = jsonDecode(r.body) as Map<String, dynamic>;
         final list = (data['vehicles'] as List<dynamic>?) ?? [];
-        // Filter to only parcel-relevant vehicle types
+        // Filter to the production parcel whitelist only; legacy aliases are
+        // normalized before rendering so stale backend rows cannot leak into UI.
         bool _isParcelVehicle(Map<String, dynamic> m) {
           final key = (m['vehicle_key']?.toString() ?? '').toLowerCase();
-          final type = (m['type']?.toString() ?? '').toLowerCase();
-          final cat = (m['category']?.toString() ?? '').toLowerCase();
-          return type == 'parcel' || cat == 'parcel' ||
-              key.contains('parcel') || key.contains('tata') ||
-              key.contains('pickup') || key.contains('truck') ||
-              key.contains('bike_parcel') || key.contains('mini') ||
-              key.contains('bolero') || key.contains('tempo');
+          final name = (m['display_name']?.toString() ?? m['name']?.toString() ?? '').toLowerCase();
+          return _allowedParcelVehicleKeys.contains(_normalizedVehicleKey(key, name));
         }
 
         final parsed = list
             .where((v) => _isParcelVehicle(v as Map<String, dynamic>))
-            .map<_ParcelVehicle>((v) {
+            .map<_ParcelVehicle?>((v) {
           final m = v as Map<String, dynamic>;
           final colorStr = m['color']?.toString() ?? '#2F7BFF';
           final colorVal = int.tryParse(colorStr.replaceFirst('#', '0xFF')) ?? 0xFF2F7BFF;
           final rawKey = m['vehicle_key']?.toString() ?? '';
           final rawName = m['display_name']?.toString() ?? rawKey;
           final normalizedKey = _normalizedVehicleKey(rawKey, rawName);
+          if (!_allowedParcelVehicleKeys.contains(normalizedKey)) return null;
           return _ParcelVehicle(
             key: normalizedKey,
             name: rawName,
@@ -291,7 +296,7 @@ class _ParcelBookingScreenState extends State<ParcelBookingScreen>
             suitable: m['suitable_items']?.toString() ?? '',
             accentColor: Color(colorVal),
           );
-        }).toList();
+        }).whereType<_ParcelVehicle>().toList();
         if (mounted && parsed.isNotEmpty) {
           setState(() => _dynamicVehicles = parsed);
           // Re-align initial vehicle selection
@@ -333,7 +338,7 @@ class _ParcelBookingScreenState extends State<ParcelBookingScreen>
     if (hay.contains('pickup')) return 'pickup_truck';
     if (hay.contains('tata') || hay.contains('mini')) return 'tata_ace';
     if (hay.contains('bike')) return 'bike_parcel';
-    return rawKey.trim().isNotEmpty ? rawKey : 'bike_parcel';
+    return '';
   }
 
   Widget _buildVehicleImage(String key, {double width = 56, double height = 56}) {

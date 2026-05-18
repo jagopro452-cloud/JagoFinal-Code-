@@ -747,7 +747,21 @@ class _RegisterScreenState extends State<RegisterScreen> {
       const SizedBox(height: 16),
       _input('Vehicle Number', _vehicleNumCtrl, Icons.numbers),
       const SizedBox(height: 16),
-      _dropdown('Vehicle Type', _vehicleType, ['bike', 'auto', 'car', 'mini', 'sedan', 'suv', 'xl'], (v) => setState(() => _vehicleType = v!)),
+      _dropdown('Vehicle Type', _vehicleType, [
+        'bike',
+        'auto',
+        'car',
+        'mini',
+        'sedan',
+        'suv',
+        'xl',
+        'bike_parcel',
+        'auto_parcel',
+        'tata_ace',
+        'pickup_truck',
+        'bolero_cargo',
+        'tempo_407',
+      ], (v) => setState(() => _vehicleType = v!)),
     ]);
   }
 

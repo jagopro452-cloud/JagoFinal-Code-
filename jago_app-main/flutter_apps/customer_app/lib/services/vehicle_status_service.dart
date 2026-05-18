@@ -34,10 +34,12 @@ class VehicleStatusService {
     VehicleStatus(key: 'auto', name: 'Auto', active: true),
     VehicleStatus(key: 'cab', name: 'Cab', active: true),
     VehicleStatus(key: 'premium', name: 'Premium', active: true),
-    VehicleStatus(key: 'parcel_bike', name: 'Parcel Bike', active: true),
-    VehicleStatus(key: 'parcel_auto', name: 'Parcel Auto', active: true),
-    VehicleStatus(key: 'mini_truck', name: 'Mini Truck', active: true),
-    VehicleStatus(key: 'pickup_van', name: 'Pickup Van', active: true),
+    VehicleStatus(key: 'bike_parcel', name: 'Bike Parcel', active: true),
+    VehicleStatus(key: 'auto_parcel', name: 'Auto Parcel', active: true),
+    VehicleStatus(key: 'tata_ace', name: 'Tata Ace', active: true),
+    VehicleStatus(key: 'pickup_truck', name: 'Pickup Truck', active: true),
+    VehicleStatus(key: 'bolero_cargo', name: 'Bolero Cargo', active: true),
+    VehicleStatus(key: 'tempo_407', name: 'Tempo 407', active: true),
     VehicleStatus(key: 'local_pool', name: 'Local Pool', active: true),
     VehicleStatus(key: 'outstation_pool', name: 'Outstation Pool', active: true),
   ];
@@ -75,11 +77,13 @@ class VehicleStatusService {
 
   static String keyForVehicleName(String value) {
     final name = value.toLowerCase();
-    if (name.contains('bike') && name.contains('parcel')) return 'parcel_bike';
-    if (name.contains('auto') && name.contains('parcel')) return 'parcel_auto';
-    if (name.contains('mini') && name.contains('truck')) return 'mini_truck';
-    if (name.contains('tata') && name.contains('ace')) return 'mini_truck';
-    if (name.contains('pickup')) return 'pickup_van';
+    if (name.contains('bike') && name.contains('parcel')) return 'bike_parcel';
+    if (name.contains('auto') && name.contains('parcel')) return 'auto_parcel';
+    if (name.contains('mini') && name.contains('truck')) return 'tata_ace';
+    if (name.contains('tata') && name.contains('ace')) return 'tata_ace';
+    if (name.contains('bolero')) return 'bolero_cargo';
+    if (name.contains('tempo') || name.contains('407')) return 'tempo_407';
+    if (name.contains('pickup')) return 'pickup_truck';
     if (name.contains('outstation') && name.contains('pool')) return 'outstation_pool';
     if ((name.contains('local') || name.contains('city') || name.contains('carpool')) &&
         name.contains('pool')) {

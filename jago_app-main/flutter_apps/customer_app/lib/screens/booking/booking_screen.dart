@@ -232,20 +232,24 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     'auto': 'https://res.cloudinary.com/kits/image/upload/q_auto/f_auto/v1775125550/ChatGPT_Image_Apr_2_2026_03_55_30_PM_ywb7fj.png',
     'cab': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_27_28_AM_w0rcnh',
     'premium': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_31_05_AM_kavp5e',
-    'parcel_bike': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_49_26_AM_gjbrxs',
-    'parcel_auto': 'https://oyster-app-9e9cd.ondigitalocean.app/static/vehicles/parcel_auto.png',
-    'mini_truck':  'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_51_59_AM_jzd119',
-    'pickup_van':  'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_54_02_AM_hicx7s',
+    'bike_parcel': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_49_26_AM_gjbrxs',
+    'auto_parcel': 'https://oyster-app-9e9cd.ondigitalocean.app/static/vehicles/parcel_auto.png',
+    'tata_ace':  'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_51_59_AM_jzd119',
+    'pickup_truck':  'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_54_02_AM_hicx7s',
+    'bolero_cargo':  'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_54_02_AM_hicx7s',
+    'tempo_407':  'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_54_02_AM_hicx7s',
   };
 
   static String? _vehicleImageKey(String name) {
     final n = name.toLowerCase();
     if (n.contains('premium')) return 'premium';
-    if (n.contains('pickup van') || n.contains('pickup')) return 'pickup_van';
-    if (n.contains('mini truck') || n.contains('tata ace')) return 'mini_truck';
-    if (n.contains('parcel bike') || n.contains('bike parcel')) return 'parcel_bike';
-    if (n.contains('parcel auto')) return 'parcel_auto';
-    if (n.contains('parcel')) return 'parcel_bike';
+    if (n.contains('bolero')) return 'bolero_cargo';
+    if (n.contains('tempo') || n.contains('407')) return 'tempo_407';
+    if (n.contains('pickup van') || n.contains('pickup')) return 'pickup_truck';
+    if (n.contains('mini truck') || n.contains('tata ace')) return 'tata_ace';
+    if (n.contains('parcel bike') || n.contains('bike parcel')) return 'bike_parcel';
+    if (n.contains('parcel auto')) return 'auto_parcel';
+    if (n.contains('parcel')) return 'bike_parcel';
     if (n.contains('bike')) return 'bike';
     if (n.contains('auto')) return 'auto';
     if (n.contains('cab') || n.contains('car') || n.contains('suv')) return 'cab';

@@ -35,9 +35,12 @@ class _ModernHomeScreenState extends State<ModernHomeScreen> {
   ];
 
   final List<VehicleOption> _parcelOptions = [
-    VehicleOption(id: 'parcel_bike', title: '2-Wheeler', icon: Icons.local_mall),
-    VehicleOption(id: 'mini_truck', title: 'Mini Truck', icon: Icons.local_shipping),
-    VehicleOption(id: 'van', title: 'Van', icon: Icons.airport_shuttle),
+    VehicleOption(id: 'bike_parcel', title: '2-Wheeler', icon: Icons.local_mall),
+    VehicleOption(id: 'auto_parcel', title: 'Auto Parcel', icon: Icons.electric_rickshaw),
+    VehicleOption(id: 'tata_ace', title: 'Mini Truck', icon: Icons.local_shipping),
+    VehicleOption(id: 'pickup_truck', title: 'Pickup Truck', icon: Icons.fire_truck),
+    VehicleOption(id: 'bolero_cargo', title: 'Bolero Cargo', icon: Icons.local_shipping),
+    VehicleOption(id: 'tempo_407', title: 'Tempo 407', icon: Icons.fire_truck),
   ];
 
   @override
@@ -74,7 +77,7 @@ class _ModernHomeScreenState extends State<ModernHomeScreen> {
                           // Reset vehicle selection when category changes
                           _selectedVehicleId = category == ServiceCategory.ride
                               ? 'bike'
-                              : 'parcel_bike';
+                              : 'bike_parcel';
                         });
                       },
                     ),

@@ -488,12 +488,12 @@ export function emitParcelLifecycle(
  * with no mapping is rejected outright.
  */
 const PARCEL_VEHICLE_DRIVER_MAP: Record<string, string[]> = {
-  bike_parcel:   ["bike"],
-  auto_parcel:   ["auto"],
-  tata_ace:      ["mini_truck", "tempo"],
-  pickup_truck:  ["truck"],
-  bolero_cargo:  ["truck"],
-  tempo_407:     ["tempo"],
+  bike_parcel:   ["bike", "bike_parcel", "bike parcel"],
+  auto_parcel:   ["auto", "auto_parcel", "auto parcel"],
+  tata_ace:      ["tata_ace", "tata ace"],
+  pickup_truck:  ["pickup_truck", "pickup truck"],
+  bolero_cargo:  ["bolero_cargo", "bolero pickup", "bolero cargo"],
+  tempo_407:     ["tempo_407", "tempo 407", "tata 407 / tempo"],
 };
 
 // 60s in-memory cache for parcel_key → vehicle_category_id[] resolution.
@@ -513,6 +513,7 @@ async function resolveAllowedCategoryIds(parcelKey: string): Promise<string[]> {
     SELECT id FROM vehicle_categories
     WHERE LOWER(name) = ANY(${lowered})
        OR LOWER(slug) = ANY(${lowered})
+       OR LOWER(COALESCE(vehicle_type, '')) = ANY(${lowered})
   `).catch(() => ({ rows: [] as any[] }));
 
   const ids = (r.rows as any[]).map((row) => String(row.id));

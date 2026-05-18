@@ -53,6 +53,7 @@ import {
   type TripMeta,
 } from "./dispatch";
 import { diagnoseDispatch, TripNotFoundError } from "./dispatch-diag";
+import { activeDriverEligibilitySql } from "./driver-state";
 import { getPlatformServiceKeyForCategory, getVehicleCategoryMeta, resolveBookingVehicleSelection } from "./vehicle-matching";
 import {
   computeDemandHeatmap,
@@ -2759,27 +2760,32 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         },
         // PARCEL / PORTER-style services
         {
-          name: "Bike Delivery", type: "motor_bike", vehicle_type: "bike_parcel", icon: "/vehicles/parcel_bike.svg",
+          name: "Bike Delivery", type: "parcel", vehicle_type: "bike_parcel", icon: "/vehicles/parcel_bike.svg",
           base_fare: 70, fare_per_km: 8, minimum_fare: 70, waiting_charge_per_min: 0.5, service_type: "parcel",
           description: "Upto 10 kg � 0.3 CBM � Small packages, documents"
         },
         {
-          name: "3-Wheeler / Auto", type: "auto", vehicle_type: "auto_parcel", icon: "/vehicles/parcel_auto.svg",
+          name: "3-Wheeler / Auto", type: "parcel", vehicle_type: "auto_parcel", icon: "/vehicles/parcel_auto.svg",
           base_fare: 140, fare_per_km: 12, minimum_fare: 140, waiting_charge_per_min: 1, service_type: "parcel",
           description: "Upto 150 kg � 1.5 CBM � Medium goods, household items"
         },
         {
-          name: "Tata Ace", type: "car", vehicle_type: "tata_ace", icon: "/vehicles/tata_ace.svg",
+          name: "Tata Ace", type: "parcel", vehicle_type: "tata_ace", icon: "/vehicles/tata_ace.svg",
           base_fare: 350, fare_per_km: 18, minimum_fare: 350, waiting_charge_per_min: 2, service_type: "parcel",
           description: "Upto 750 kg � 6 CBM � Furniture, appliances, bulk goods"
         },
         {
-          name: "Bolero Pickup", type: "car", vehicle_type: "bolero_pickup", icon: "/vehicles/bolero.svg",
+          name: "Pickup Truck", type: "parcel", vehicle_type: "pickup_truck", icon: "/vehicles/pickup_truck.svg",
+          base_fare: 450, fare_per_km: 20, minimum_fare: 450, waiting_charge_per_min: 2.25, service_type: "parcel",
+          description: "Upto 2000 kg - commercial pickup goods"
+        },
+        {
+          name: "Bolero Pickup", type: "parcel", vehicle_type: "bolero_cargo", icon: "/vehicles/bolero.svg",
           base_fare: 500, fare_per_km: 22, minimum_fare: 500, waiting_charge_per_min: 2.5, service_type: "parcel",
           description: "Upto 1500 kg � 10 CBM � Heavy goods, office shifting"
         },
         {
-          name: "Tata 407 / Tempo", type: "car", vehicle_type: "tempo_407", icon: "/vehicles/tempo_407.svg",
+          name: "Tata 407 / Tempo", type: "parcel", vehicle_type: "tempo_407", icon: "/vehicles/tempo_407.svg",
           base_fare: 800, fare_per_km: 28, minimum_fare: 800, waiting_charge_per_min: 3, service_type: "parcel",
           description: "Upto 2500 kg � 20 CBM � Large loads, factory goods, full shifting"
         },
@@ -4233,11 +4239,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           RETURNING *
         `);
         const driver = inserted.rows[0] as any;
+        const resolvedVehicleCategoryId = vehicleCategoryId
+          ? String(vehicleCategoryId)
+          : await resolveVehicleCategoryIdForType(String(vehicleType || "bike"));
         await upsertDriverDetailsRow(
           trx,
           String(driver.id),
           String(vehicleType || "bike"),
-          vehicleCategoryId ? String(vehicleCategoryId) : null,
+          resolvedVehicleCategoryId,
         );
         await trx.execute(rawSql`
           UPDATE users
@@ -5529,7 +5538,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const flags: Record<string, boolean> = {};
       (r.rows as any[]).forEach(row => { flags[row.key] = row.enabled; });
       res.json({ flags });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+    } catch (e: any) { res.status(e?.statusCode || 500).json({ message: safeErrMsg(e), code: e?.code, allowed: e?.allowed }); }
   });
 
   app.get("/api/app/runtime-config", async (_req, res) => {
@@ -9963,7 +9972,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ORDER BY premium_monthly ASC, premium_daily ASC
       `);
       res.json({ plans: r.rows.map(camelize) });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+    } catch (e: any) { res.status(e?.statusCode || 500).json({ message: safeErrMsg(e), code: e?.code, allowed: e?.allowed }); }
   });
 
   app.post("/api/app/driver/subscription/create-order", authApp, requireDriver, paymentOrderLimiter, async (req, res) => {
@@ -13108,7 +13117,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             updated_at = NOW()
           WHERE id = ${user.id}::uuid
         `);
-        await upsertDriverDetailsRow(trx, user.id, vehicleType || null);
+        const vehicleCategoryId = await resolveVehicleCategoryIdForType(vehicleType || null);
+        await upsertDriverDetailsRow(trx, user.id, vehicleType || null, vehicleCategoryId);
         await upsertVehicleRow(trx, user.id, {
           vehicleType: vehicleType || null,
           vehicleBrand: vehicleBrand || null,
@@ -14683,6 +14693,105 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   // 60s in-memory caches for parcel pricing lookups — avoids hammering DB
   // on every quote/booking (parcel_vehicle_types + parcel_fares + platform_services
   // + zones.surge_factor are otherwise 4 queries per call).
+  const ALLOWED_PARCEL_KEYS = new Set(Object.keys(PARCEL_VEHICLES));
+  const PARCEL_KEY_ALIASES: Record<string, string> = {
+    parcel_bike: "bike_parcel",
+    bike_delivery: "bike_parcel",
+    parcel_auto: "auto_parcel",
+    auto_delivery: "auto_parcel",
+    mini_truck: "tata_ace",
+    tata_ace: "tata_ace",
+    pickup_van: "pickup_truck",
+    pickup_truck: "pickup_truck",
+    bolero_pickup: "bolero_cargo",
+    bolero_cargo: "bolero_cargo",
+    tempo: "tempo_407",
+    tempo_407: "tempo_407",
+  };
+
+  function normalizeParcelVehicleKey(input: unknown): string {
+    const raw = String(input || "").trim().toLowerCase();
+    if (!raw) return "";
+    const direct = PARCEL_KEY_ALIASES[raw] || raw;
+    if (ALLOWED_PARCEL_KEYS.has(direct)) return direct;
+    if (raw.includes("bike") && raw.includes("parcel")) return "bike_parcel";
+    if (raw.includes("auto") && raw.includes("parcel")) return "auto_parcel";
+    if (raw.includes("tata") || raw.includes("ace") || raw.includes("mini truck")) return "tata_ace";
+    if (raw.includes("bolero")) return "bolero_cargo";
+    if (raw.includes("tempo") || raw.includes("407")) return "tempo_407";
+    if (raw.includes("pickup")) return "pickup_truck";
+    return direct;
+  }
+
+  function assertAllowedParcelVehicle(input: unknown): string {
+    const key = normalizeParcelVehicleKey(input);
+    if (!ALLOWED_PARCEL_KEYS.has(key)) {
+      const err: any = new Error("Unsupported parcel vehicle category");
+      err.statusCode = 400;
+      err.code = "INVALID_PARCEL_VEHICLE";
+      err.allowed = Array.from(ALLOWED_PARCEL_KEYS);
+      throw err;
+    }
+    return key;
+  }
+
+  function parcelDriverToken(value: unknown): string {
+    const v = String(value || "").trim().toLowerCase();
+    if (!v) return "";
+    if (v === "bike" || (v.includes("bike") && !v.includes("car"))) return "bike_parcel";
+    if (v === "auto" || v.includes("auto")) return "auto_parcel";
+    if (v.includes("tata") || v.includes("ace") || v.includes("mini truck")) return "tata_ace";
+    if (v.includes("bolero")) return "bolero_cargo";
+    if (v.includes("tempo") || v.includes("407")) return "tempo_407";
+    if (v.includes("pickup")) return "pickup_truck";
+    return normalizeParcelVehicleKey(v);
+  }
+
+  async function resolveVehicleCategoryIdForType(vehicleType?: string | null): Promise<string | null> {
+    if (!vehicleType) return null;
+    const key = normalizeParcelVehicleKey(vehicleType);
+    const r = await rawDb.execute(rawSql`
+      SELECT id FROM vehicle_categories
+      WHERE LOWER(COALESCE(vehicle_type, '')) = LOWER(${key || vehicleType})
+         OR LOWER(COALESCE(slug, '')) = LOWER(${key || vehicleType})
+         OR LOWER(COALESCE(name, '')) = LOWER(${vehicleType})
+      ORDER BY CASE WHEN LOWER(COALESCE(vehicle_type, '')) = LOWER(${key || vehicleType}) THEN 0 ELSE 1 END
+      LIMIT 1
+    `).catch(() => ({ rows: [] as any[] }));
+    return (r.rows[0] as any)?.id ? String((r.rows[0] as any).id) : null;
+  }
+
+  async function isDriverEligibleForParcel(driverId: string, parcelVehicle: unknown): Promise<boolean> {
+    const parcelKey = assertAllowedParcelVehicle(parcelVehicle);
+    const r = await rawDb.execute(rawSql`
+      SELECT
+        u.id,
+        u.current_trip_id,
+        u.verification_status,
+        dd.vehicle_type AS driver_vehicle_type,
+        vc.vehicle_type AS category_vehicle_type,
+        vc.name AS category_name,
+        vc.slug AS category_slug,
+        vc.service_type AS category_service_type
+      FROM users u
+      JOIN driver_details dd ON dd.user_id = u.id
+      LEFT JOIN vehicle_categories vc ON vc.id = dd.vehicle_category_id
+      WHERE u.id = ${driverId}::uuid
+        AND u.user_type = 'driver'
+        AND ${activeDriverEligibilitySql("u")}
+      LIMIT 1
+    `).catch(() => ({ rows: [] as any[] }));
+    const row = (r.rows as any[])[0];
+    if (!row || row.current_trip_id) return false;
+    const tokens = [
+      parcelDriverToken(row.driver_vehicle_type),
+      parcelDriverToken(row.category_vehicle_type),
+      parcelDriverToken(row.category_name),
+      parcelDriverToken(row.category_slug),
+    ].filter(Boolean);
+    return tokens.includes(parcelKey);
+  }
+
   const PARCEL_CACHE_TTL_MS = 60_000;
   type CacheEntry<T> = { value: T; expiresAt: number };
   const parcelVehicleCache = new Map<string, CacheEntry<any>>();
@@ -14709,17 +14818,24 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     pickupLat?: number | null,
     pickupLng?: number | null,
   ) {
+    vehicleCategory = assertAllowedParcelVehicle(vehicleCategory);
     // 1. Vehicle row from DB (cached)
     let pv = cacheGet<any>(parcelVehicleCache, vehicleCategory);
     if (pv === undefined) {
       const pvRes = await rawDb.execute(rawSql`
-        SELECT vehicle_key, name, max_weight_kg, base_fare, per_km, per_kg, load_charge
-        FROM parcel_vehicle_types WHERE vehicle_key = ${vehicleCategory} AND is_active = true LIMIT 1
+        SELECT vehicle_key, name, max_weight_kg, base_fare, per_km, per_kg, load_charge, is_active
+        FROM parcel_vehicle_types WHERE vehicle_key = ${vehicleCategory} LIMIT 1
       `).catch(() => ({ rows: [] as any[] }));
       pv = pvRes.rows[0] || null;
       cacheSet(parcelVehicleCache, vehicleCategory, pv);
     }
-    const hc = PARCEL_VEHICLES[vehicleCategory] || PARCEL_VEHICLES.bike_parcel;
+    if (pv && pv.is_active === false) {
+      const err: any = new Error(`${pv.name || vehicleCategory} is currently unavailable.`);
+      err.statusCode = 503;
+      err.code = "PARCEL_VEHICLE_INACTIVE";
+      throw err;
+    }
+    const hc = PARCEL_VEHICLES[vehicleCategory];
     const vehicleName = pv?.name || hc.name;
     const maxWeightKg = safeFloat(pv?.max_weight_kg ?? hc.maxWeightKg, 10);
     const vcBaseFare = safeFloat(pv?.base_fare ?? hc.baseFare, 30);
@@ -14825,11 +14941,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     try {
       const { vehicleCategory = 'bike_parcel', dropLocations = [], weightKg = 1,
         totalDistanceKm, pickupLat, pickupLng } = req.body;
+      const parcelVehicleCategory = assertAllowedParcelVehicle(vehicleCategory);
       const wt = Math.max(0.1, safeFloat(weightKg, 1));
       const dist = Math.max(0.5, safeFloat(totalDistanceKm, 5));
 
       const f = await resolveParcelFare(
-        vehicleCategory, dist, wt,
+        parcelVehicleCategory, dist, wt,
         pickupLat ? parseFloat(pickupLat) : null,
         pickupLng ? parseFloat(pickupLng) : null,
       );
@@ -14843,7 +14960,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       }
 
       res.json({
-        vehicleCategory,
+        vehicleCategory: parcelVehicleCategory,
         vehicleName: f.vehicleName,
         maxWeightKg: f.maxWeightKg,
         baseFare: f.baseFare,
@@ -14898,6 +15015,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         declaredValue = 0, isFragile = false, insuranceEnabled = false,
         parcelDescription = '',
       } = req.body;
+      const parcelVehicleCategory = assertAllowedParcelVehicle(vehicleCategory);
       if (!pickupAddress) return res.status(400).json({ message: 'pickupAddress required' });
       if (!(dropLocations as any[]).length) return res.status(400).json({ message: 'At least one drop location required' });
 
@@ -14922,7 +15040,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
       // Zone-aware fare resolution
       const f = await resolveParcelFare(
-        vehicleCategory, dist, wt,
+        parcelVehicleCategory, dist, wt,
         pickupLat ? parseFloat(pickupLat) : null,
         pickupLng ? parseFloat(pickupLng) : null,
       );
@@ -14948,7 +15066,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       const commPct = f.commPct;
       const commAmt = f.commAmt;
       const pickupOtp = Math.floor(100000 + Math.random() * 900000).toString();
-      const expectedMinutes = calculateExpectedDeliveryMinutes(vehicleCategory, dist);
+      const expectedMinutes = calculateExpectedDeliveryMinutes(parcelVehicleCategory, dist);
 
       // Check if customer already has an active/searching parcel order
       const activeParcel = await rawDb.execute(rawSql`
@@ -14980,7 +15098,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
            declared_value, is_fragile, insurance_enabled, insurance_premium,
            parcel_description, expected_delivery_minutes, load_charge)
         VALUES
-          (${customerId}::uuid, ${vehicleCategory}, ${pickupAddress},
+          (${customerId}::uuid, ${parcelVehicleCategory}, ${pickupAddress},
            ${pickupLat ?? null}, ${pickupLng ?? null},
            ${pickupContactName ?? ''}, ${pickupContactPhone ?? ''},
            ${JSON.stringify(dropsWithOtp)},
@@ -15008,7 +15126,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
           for (const r of PARCEL_DISPATCH_RADII) {
             const match = await findParcelCapableDriversDetailed(
-              Number(pickupLat), Number(pickupLng), r, vehicleCategory, [], 10
+              Number(pickupLat), Number(pickupLng), r, parcelVehicleCategory, [], 10
             );
             finalRadiusUsed = r;
             lastExcludedSummary = match.excludedSummary;
@@ -15022,20 +15140,20 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
           if (!parcelDrivers.length) {
             console.warn(
-              `[PARCEL_DISPATCH_FAIL] orderId=${order.id} parcelKey=${vehicleCategory} ` +
+              `[PARCEL_DISPATCH_FAIL] orderId=${order.id} parcelKey=${parcelVehicleCategory} ` +
               `radiusTried=${finalRadiusUsed}km mappingRejected=${mappingRejected} ` +
               `excludedSummary=${JSON.stringify(lastExcludedSummary)}`
             );
           } else {
             console.log(
-              `[PARCEL_MATCH] orderId=${order.id} parcelKey=${vehicleCategory} ` +
+              `[PARCEL_MATCH] orderId=${order.id} parcelKey=${parcelVehicleCategory} ` +
               `found=${parcelDrivers.length} radius=${finalRadiusUsed}km`
             );
           }
 
           const payload = {
             orderId: order.id,
-            vehicleCategory,
+            vehicleCategory: parcelVehicleCategory,
             pickupAddress,
             pickupLat, pickupLng,
             totalFare,
@@ -15053,7 +15171,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
                 pickupAddress: String(pickupAddress || ''),
                 totalFare: Number(totalFare) || 0,
                 orderId: order.id,
-                vehicleCategory: vehicleCategory as string,
+                vehicleCategory: parcelVehicleCategory,
               }).catch(dbCatch("db"));
             }
           }
@@ -15069,13 +15187,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           orderId: order.id,
           companyId: b2bCompanyId,
           timestamp: new Date().toISOString(),
-          data: { vehicleCategory, totalFare, drops: dropsWithOtp.length },
+          data: { vehicleCategory: parcelVehicleCategory, totalFare, drops: dropsWithOtp.length },
         }).catch(dbCatch("db"));
       }
 
       // Emit parcel lifecycle event
       emitParcelLifecycle(order.id, customerId, null, "new_order", {
-        vehicleCategory, totalFare, pickupAddress, drops: dropsWithOtp.length,
+        vehicleCategory: parcelVehicleCategory, totalFare, pickupAddress, drops: dropsWithOtp.length,
       });
 
       res.json({
@@ -15092,7 +15210,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         insurancePremium: insurancePremium || 0,
         expectedDeliveryMinutes: expectedMinutes,
       });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+    } catch (e: any) { res.status(e?.statusCode || 500).json({ message: safeErrMsg(e), code: e?.code, allowed: e?.allowed }); }
   });
 
   // Customer: get active/recent parcel orders
@@ -15148,31 +15266,67 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   });
 
   // Driver: get pending parcel requests nearby
-  app.get("/api/app/driver/parcel/pending", authApp, async (req, res) => {
+  app.get("/api/app/driver/parcel/pending", authApp, requireDriver, async (req, res) => {
     try {
+      const driverId = (req as any).currentUser?.id;
       const r = await rawDb.execute(rawSql`
         SELECT * FROM parcel_orders
         WHERE current_status = 'searching'
         ORDER BY created_at ASC
-        LIMIT 20
+        LIMIT 50
       `);
-      res.json({ orders: r.rows });
+      const eligibleOrders: any[] = [];
+      for (const order of r.rows as any[]) {
+        if (await isDriverEligibleForParcel(driverId, order.vehicle_category)) {
+          eligibleOrders.push(order);
+        }
+        if (eligibleOrders.length >= 20) break;
+      }
+      res.json({ orders: eligibleOrders });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
   // Driver: accept a parcel order
-  app.post("/api/app/driver/parcel/:id/accept", authApp, async (req, res) => {
+  app.post("/api/app/driver/parcel/:id/accept", authApp, requireDriver, async (req, res) => {
     try {
       const driverId = (req as any).currentUser?.id;
+      const existing = await rawDb.execute(rawSql`
+        SELECT id, vehicle_category, current_status, driver_id
+        FROM parcel_orders
+        WHERE id=${req.params.id}::uuid
+        LIMIT 1
+      `);
+      const existingOrder = (existing.rows as any[])[0];
+      if (!existingOrder) return res.status(404).json({ message: 'Order not found' });
+      if (existingOrder.current_status !== 'searching' || existingOrder.driver_id) {
+        return res.status(409).json({ message: 'Already assigned' });
+      }
+      const eligible = await isDriverEligibleForParcel(driverId, existingOrder.vehicle_category);
+      if (!eligible) {
+        return res.status(403).json({ message: 'Driver is not eligible for this parcel vehicle category', code: 'PARCEL_DRIVER_NOT_ELIGIBLE' });
+      }
       const r = await rawDb.execute(rawSql`
         UPDATE parcel_orders
-        SET driver_id=${driverId}::uuid, current_status='driver_assigned', updated_at=NOW()
+        SET driver_id=${driverId}::uuid, current_status='driver_assigned', version=COALESCE(version, 0)+1, updated_at=NOW()
         WHERE id=${req.params.id}::uuid AND current_status='searching'
           AND driver_id IS NULL
         RETURNING *
       `);
       if (!(r.rows as any[]).length) return res.status(409).json({ message: 'Already assigned' });
       const order = (r.rows as any[])[0];
+      const lockDriver = await rawDb.execute(rawSql`
+        UPDATE users SET current_trip_id=${order.id}::uuid, updated_at=NOW()
+        WHERE id=${driverId}::uuid AND current_trip_id IS NULL
+        RETURNING id
+      `).catch(dbCatch("db"));
+      if (!(lockDriver as any)?.rows?.length) {
+        await rawDb.execute(rawSql`
+          UPDATE parcel_orders
+          SET driver_id=NULL, current_status='searching', updated_at=NOW()
+          WHERE id=${order.id}::uuid AND driver_id=${driverId}::uuid
+        `).catch(dbCatch("db"));
+        return res.status(409).json({ message: 'Driver already has an active trip' });
+      }
       if (io) io.to(`user:${order.customer_id}`).emit('parcel:driver_assigned', { orderId: order.id, driverId });
       // B2B webhook: driver_assigned
       if (order.is_b2b && order.b2b_company_id) {
@@ -15190,20 +15344,21 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   });
 
   // Driver: verify pickup OTP ? start delivery
-  app.post("/api/app/driver/parcel/:id/pickup-otp", authApp, async (req, res) => {
+  app.post("/api/app/driver/parcel/:id/pickup-otp", authApp, requireDriver, async (req, res) => {
     try {
       const driverId = (req as any).currentUser?.id;
       const { otp } = req.body;
       const r = await rawDb.execute(rawSql`
-        SELECT id, pickup_otp, current_status, customer_id, drop_locations, is_b2b, b2b_company_id
+        SELECT id, pickup_otp, current_status, customer_id, driver_id, drop_locations, is_b2b, b2b_company_id
         FROM parcel_orders WHERE id=${req.params.id}::uuid
       `);
       const order = (r.rows as any[])[0];
       if (!order) return res.status(404).json({ message: 'Order not found' });
+      if (String(order.driver_id || '') !== String(driverId || '')) return res.status(403).json({ message: 'This parcel is assigned to another driver' });
       if (order.current_status !== 'driver_assigned') return res.status(400).json({ message: 'Invalid order state' });
       if (String(order.pickup_otp) !== String(otp)) return res.status(400).json({ message: 'Invalid OTP' });
       await rawDb.execute(rawSql`
-        UPDATE parcel_orders SET current_status='in_transit', updated_at=NOW() WHERE id=${req.params.id}::uuid
+        UPDATE parcel_orders SET current_status='in_transit', version=COALESCE(version, 0)+1, updated_at=NOW() WHERE id=${req.params.id}::uuid
       `);
 
       // Get driver name for notifications
@@ -15231,7 +15386,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   });
 
   // Driver: verify delivery OTP for a specific drop stop
-  app.post("/api/app/driver/parcel/:id/drop-otp", authApp, async (req, res) => {
+  app.post("/api/app/driver/parcel/:id/drop-otp", authApp, requireDriver, async (req, res) => {
     try {
       const driverId = (req as any).currentUser?.id;
       const { dropIndex, otp } = req.body;
@@ -15241,6 +15396,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       `);
       const order = (r.rows as any[])[0];
       if (!order) return res.status(404).json({ message: 'Order not found' });
+      if (String(order.driver_id || '') !== String(driverId || '')) return res.status(403).json({ message: 'This parcel is assigned to another driver' });
       if (order.current_status !== 'in_transit') return res.status(400).json({ message: 'Order not in transit' });
       const drops: any[] = typeof order.drop_locations === 'string'
         ? JSON.parse(order.drop_locations) : order.drop_locations;
@@ -15264,6 +15420,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
             current_drop_index = ${nextIdx},
             current_status = ${allDelivered ? 'completed' : 'in_transit'},
             sla_breached = ${slaBreached},
+            version = COALESCE(version, 0)+1,
             updated_at = NOW()
         WHERE id = ${req.params.id}::uuid
       `);
@@ -15312,6 +15469,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           totalFare, breakdown: parcelBreakdown,
         });
         if (io) io.to(`user:${order.customer_id}`).emit('parcel:completed', { orderId: order.id });
+        await rawDb.execute(rawSql`
+          UPDATE users SET current_trip_id=NULL, updated_at=NOW()
+          WHERE id=${order.driver_id}::uuid AND current_trip_id=${order.id}::uuid
+        `).catch(dbCatch("db"));
 
         // B2B webhook
         if (order.is_b2b && order.b2b_company_id) {
@@ -15670,6 +15831,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       const companyId = req.params.companyId as string;
       const { customerId, vehicleCategory = 'bike_parcel', pickupAddress, pickupLat, pickupLng,
         pickupContactName, pickupContactPhone, deliveries = [], weightKg = 1, notes = '' } = req.body;
+      const parcelVehicleCategory = assertAllowedParcelVehicle(vehicleCategory);
       if (!pickupAddress) return res.status(400).json({ message: 'pickupAddress required' });
       if (!(deliveries as any[]).length) return res.status(400).json({ message: 'deliveries array required' });
 
@@ -15681,7 +15843,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       const company = compR.rows[0] as any;
       if (company.status === 'suspended') return res.status(403).json({ message: 'Company account is suspended' });
 
-      const vc = PARCEL_VEHICLES[vehicleCategory] || PARCEL_VEHICLES.bike_parcel;
+      const vc = PARCEL_VEHICLES[parcelVehicleCategory];
       const wt = safeFloat(weightKg, 1);
 
       // Pre-calculate total cost to validate wallet balance
@@ -15742,7 +15904,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
              total_fare, commission_amt, commission_pct, current_status,
              pickup_otp, payment_method, is_b2b, b2b_company_id, notes)
           VALUES
-            (${customerId ?? null}, ${vehicleCategory}, ${pickupAddress},
+            (${customerId ?? null}, ${parcelVehicleCategory}, ${pickupAddress},
              ${pickupLat ?? null}, ${pickupLng ?? null},
              ${pickupContactName ?? ''}, ${pickupContactPhone ?? ''},
              ${JSON.stringify(drops)},
@@ -16241,6 +16403,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           AND current_trip_id NOT IN (
             SELECT id FROM trip_requests WHERE current_status IN ('accepted','arrived','on_the_way')
           )
+          AND current_trip_id NOT IN (
+            SELECT id FROM parcel_orders WHERE current_status IN ('driver_assigned','in_transit')
+          )
       `);
       if ((freedDrivers as any).rowCount > 0) {
         console.log(`[CLEANUP] Freed ${(freedDrivers as any).rowCount} driver(s) from stale trip assignments`);
@@ -16255,10 +16420,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     { key: "auto", name: "Auto", active: true, icon: "auto" },
     { key: "cab", name: "Cab", active: false, icon: "car" },
     { key: "premium", name: "Premium", active: false, icon: "premium" },
-    { key: "parcel_bike", name: "Parcel Bike", active: true, icon: "bike" },
-    { key: "parcel_auto", name: "Parcel Auto", active: true, icon: "auto" },
-    { key: "mini_truck", name: "Mini Truck", active: true, icon: "truck" },
-    { key: "pickup_van", name: "Pickup Van", active: true, icon: "van" },
+    { key: "bike_parcel", name: "Bike Parcel", active: true, icon: "bike" },
+    { key: "auto_parcel", name: "Auto Parcel", active: true, icon: "auto" },
+    { key: "tata_ace", name: "Tata Ace", active: true, icon: "truck" },
+    { key: "pickup_truck", name: "Pickup Truck", active: true, icon: "truck" },
+    { key: "bolero_cargo", name: "Bolero Cargo", active: true, icon: "truck" },
+    { key: "tempo_407", name: "Tempo 407", active: true, icon: "truck" },
     { key: "local_pool", name: "Local Pool", active: true, icon: "pool" },
     { key: "outstation_pool", name: "Outstation Pool", active: true, icon: "pool" },
   ];
@@ -16266,11 +16433,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   function normalizeVehicleKey(value: string | string[] | null | undefined) {
     const raw = Array.isArray(value) ? value[0] : value;
     const v = String(raw || "").trim().toLowerCase();
-    if (v.includes("bike") && v.includes("parcel")) return "parcel_bike";
-    if (v.includes("auto") && v.includes("parcel")) return "parcel_auto";
-    if (v.includes("mini") && v.includes("truck")) return "mini_truck";
-    if (v.includes("tata") && v.includes("ace")) return "mini_truck";
-    if (v.includes("pickup")) return "pickup_van";
+    if (v.includes("bike") && v.includes("parcel")) return "bike_parcel";
+    if (v.includes("auto") && v.includes("parcel")) return "auto_parcel";
+    if (v.includes("mini") && v.includes("truck")) return "tata_ace";
+    if (v.includes("tata") && v.includes("ace")) return "tata_ace";
+    if (v.includes("bolero")) return "bolero_cargo";
+    if (v.includes("tempo") || v.includes("407")) return "tempo_407";
+    if (v.includes("pickup")) return "pickup_truck";
     if (v.includes("outstation") && v.includes("pool")) return "outstation_pool";
     if ((v.includes("local") || v.includes("city") || v.includes("carpool")) && v.includes("pool")) return "local_pool";
     if (v.includes("bike")) return "bike";
@@ -17505,6 +17674,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       const customerId = (req as any).currentUser?.id;
       const { vehicleCategory = 'bike_parcel', pickupAddress, pickupLat, pickupLng,
         pickupContactName, pickupContactPhone } = req.body;
+      const parcelVehicleCategory = assertAllowedParcelVehicle(vehicleCategory);
 
       if (!req.file) return res.status(400).json({ message: "CSV file required" });
       if (!pickupAddress) return res.status(400).json({ message: "pickupAddress required" });
@@ -17516,7 +17686,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         return res.status(400).json({ message: "CSV parsing failed", errors: parseErrors });
       }
 
-      const vc = PARCEL_VEHICLES[vehicleCategory] || PARCEL_VEHICLES.bike_parcel;
+      const vc = PARCEL_VEHICLES[parcelVehicleCategory];
       const results: any[] = [];
       const errors: string[] = [...parseErrors];
 
@@ -17558,7 +17728,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
                pickup_otp, is_b2b, b2b_company_id, parcel_description,
                declared_value, insurance_premium, load_charge)
             VALUES
-              (${customerId}::uuid, ${vehicleCategory}, ${pickupAddress},
+              (${customerId}::uuid, ${parcelVehicleCategory}, ${pickupAddress},
                ${pickupLat ?? null}, ${pickupLng ?? null},
                ${pickupContactName ?? ''}, ${pickupContactPhone ?? ''},
                ${JSON.stringify(drops)}, ${dist}, ${wt}, ${baseFare}, ${distF}, ${wtF},
@@ -17764,7 +17934,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         RETURNING id, created_at
       `);
       res.json({ success: true, selection: camelize(r.rows[0]) });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+    } catch (e: any) { res.status(e?.statusCode || 500).json({ message: safeErrMsg(e), code: e?.code, allowed: e?.allowed }); }
   });
 
   // -- Reverse Geocode -----------------------------------------------------
