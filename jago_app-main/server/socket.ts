@@ -1119,6 +1119,10 @@ export async function notifyNearbyDriversNewTrip(
 ) {
   if (!io) return;
   try {
+    if (!vehicleCategoryId) {
+      console.error(`[SOCKET] Refusing unfiltered trip broadcast for trip=${tripId}: missing vehicleCategoryId`);
+      return;
+    }
     const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const safeIds = excludeDriverIds.filter((id) => uuidRe.test(id));
     const excludeClause = safeIds.length > 0

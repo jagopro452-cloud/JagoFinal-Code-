@@ -959,6 +959,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, 
       } catch (_) {}
     }
     if (!mounted) return;
+    if (accepted) {
+      _socket.setActiveTrip(tripId);
+    }
 
     Map<String, dynamic>? fullTrip;
     try {

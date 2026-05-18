@@ -540,8 +540,8 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
   /// no fares. Formula: Total = Base + (Distance × Per-KM Rate) + 5% GST.
   List<Map<String, dynamic>> _buildFallbackFares() {
     final dist = _distanceKm;
-    Map<String, dynamic> make(
-        String name, double base, double perKm, double minFareVal, int eta) {
+    Map<String, dynamic> make(String name, String vehicleType, double base,
+        double perKm, double minFareVal, int eta) {
       final raw = (base + dist * perKm).clamp(minFareVal, double.infinity);
       final gst = double.parse((raw * 0.05).toStringAsFixed(2));
       final grandTotal = double.parse((raw + gst).toStringAsFixed(2));
@@ -549,6 +549,8 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         'vehicleCategoryId': null,
         'vehicleCategoryName': name,
         'vehicleName': name,
+        'vehicleType': vehicleType,
+        'type': widget.category == 'parcel' ? 'parcel' : 'ride',
         'baseFare': base,
         'farePerKm': perKm,
         'billableKm': dist,
@@ -571,18 +573,18 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     // Parcel-specific vehicles — never mix with ride vehicles
     if (widget.category == 'parcel') {
       return [
-        make('Parcel Bike',  20,  8,  25, (dist * 4).ceil()),
-        make('Parcel Auto',  30, 10,  35, (dist * 4).ceil()),
-        make('Mini Truck',  100, 25, 120, (dist * 5).ceil()),
-        make('Pickup Van',  150, 35, 180, (dist * 5).ceil()),
+        make('Parcel Bike', 'bike_parcel', 20, 8, 25, (dist * 4).ceil()),
+        make('Parcel Auto', 'auto_parcel', 30, 10, 35, (dist * 4).ceil()),
+        make('Mini Truck', 'tata_ace', 100, 25, 120, (dist * 5).ceil()),
+        make('Pickup Van', 'pickup_truck', 150, 35, 180, (dist * 5).ceil()),
       ];
     }
     // Ride vehicles (default)
     return [
-      make('Bike', 25, 10, 28, (dist * 3).ceil()),
-      make('Auto', 35, 13, 40, (dist * 3.5).ceil()),
-      make('Cab',  50, 16, 60, (dist * 4).ceil()),
-      make('Premium Cab', 70, 20, 80, (dist * 4).ceil()),
+      make('Bike', 'bike', 25, 10, 28, (dist * 3).ceil()),
+      make('Auto', 'auto', 35, 13, 40, (dist * 3.5).ceil()),
+      make('Mini Car', 'mini_car', 50, 16, 60, (dist * 4).ceil()),
+      make('Premium Cab', 'premium', 70, 20, 80, (dist * 4).ceil()),
     ];
   }
 
@@ -622,6 +624,16 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
       };
       final vcId = _fare?['vehicleCategoryId']?.toString() ?? _fare?['id']?.toString() ?? widget.vehicleCategoryId;
       if (vcId != null && vcId.isNotEmpty) body['vehicleCategoryId'] = vcId;
+      final vehicleType = _fare?['vehicleType']?.toString();
+      if (vehicleType != null && vehicleType.isNotEmpty) {
+        body['vehicleType'] = vehicleType;
+      }
+      final vehicleName = _fare?['vehicleCategoryName']?.toString() ??
+          _fare?['vehicleName']?.toString() ??
+          widget.vehicleCategoryName;
+      if (vehicleName != null && vehicleName.isNotEmpty) {
+        body['vehicleCategoryName'] = vehicleName;
+      }
       final res = await http.post(Uri.parse(ApiConfig.bookRide),
         headers: headers,
         body: jsonEncode(body));

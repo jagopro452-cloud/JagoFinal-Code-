@@ -17,7 +17,6 @@ import { findBestDrivers, type DriverMatchScore } from "./ai";
 import { notifyUser } from "./notification-service";
 import { findParcelCapableDrivers } from "./parcel-advanced";
 import {
-  getDriverDbVehicleType,
   getDriverSocketRoomKeyForCategoryId,
   getMatchingDriverCategoryIds,
   normalizeVehicleKey,
@@ -1892,10 +1891,6 @@ async function findDriversInRadius(
     : vehicleCategoryId
       ? rawSql`AND dd.vehicle_category_id = ${vehicleCategoryId}::uuid`
       : rawSql``;
-  const driverDbVehicleType = getDriverDbVehicleType(vehicleType);
-  const vehicleTypeFilter = driverDbVehicleType
-    ? rawSql`AND vc.type = ${driverDbVehicleType}`
-    : rawSql``;
   const femaleFilter = femaleOnly
     ? rawSql`AND LOWER(COALESCE(u.gender, '')) = 'female'`
     : rawSql``;
@@ -1934,7 +1929,6 @@ async function findDriversInRadius(
       AND u.current_trip_id IS NULL
       AND COALESCE(ds.completion_rate, 0.8) >= 0.5
       ${vcFilter}
-      ${vehicleTypeFilter}
       ${femaleFilter}
       ${excludeClause}
       AND SQRT(
@@ -1996,13 +1990,6 @@ async function findDriversInRadius(
           reasons.push(
             `vehicle_category mismatch (has=${r.vehicle_category_id}, allowed=${Array.from(allowedCategoryIds).join("|")})`,
           );
-        }
-        if (
-          driverDbVehicleType &&
-          r.driver_vehicle_type &&
-          getDriverDbVehicleType(String(r.driver_vehicle_type)) !== driverDbVehicleType
-        ) {
-          reasons.push(`vehicle_type mismatch (has=${r.driver_vehicle_type}, need=${vehicleType})`);
         }
         const distKm = Number(r.distance_km).toFixed(1);
         if (Number(distKm) > radiusKm) reasons.push(`outside radius (${distKm}km > ${radiusKm}km)`);

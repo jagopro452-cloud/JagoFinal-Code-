@@ -53,7 +53,7 @@ import {
   type TripMeta,
 } from "./dispatch";
 import { diagnoseDispatch, TripNotFoundError } from "./dispatch-diag";
-import { getPlatformServiceKeyForCategory, getVehicleCategoryMeta } from "./vehicle-matching";
+import { getPlatformServiceKeyForCategory, getVehicleCategoryMeta, resolveBookingVehicleSelection } from "./vehicle-matching";
 import {
   computeDemandHeatmap,
   calculateSurgeMultiplier,
@@ -2061,6 +2061,16 @@ async function ensureOperationalSchema() {
         ('outstation_pool', 'Outstation Pool',     'carpool', 'inactive', 'commission',   15.0,  8, '???', '#EC4899', 'Long distance pool travel'),
         ('parcel_delivery', 'Parcel Delivery',     'parcel',  'active',   'commission',   15.0,  9, '??',  '#FF6B35', 'Porter-style parcel and goods delivery')
       ON CONFLICT (service_key) DO NOTHING;
+    `).catch(dbCatch("db"));
+    await rawDb.execute(rawSql`
+      UPDATE platform_services
+      SET service_status='active', updated_at=NOW()
+      WHERE service_key IN ('bike_ride', 'auto_ride', 'mini_car', 'sedan', 'suv')
+    `).catch(dbCatch("db"));
+    await rawDb.execute(rawSql`
+      UPDATE vehicle_categories
+      SET is_active=true
+      WHERE type='ride' AND vehicle_type IN ('bike', 'auto', 'mini_car', 'sedan', 'suv')
     `).catch(dbCatch("db"));
 
     // -- parcel_orders: multi-drop Porter-style delivery -----------------------
@@ -10152,7 +10162,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         pickupShortName,
         destinationAddress, destAddress, destinationLat, destLat, destinationLng, destLng,
         destinationShortName,
-        vehicleCategoryId, estimatedFare, estimatedDistance, distanceKm,
+        vehicleCategoryId, vehicleType, vehicleCategoryName, vehicleName,
+        estimatedFare, estimatedDistance, distanceKm,
         paymentMethod, paymentMode, tripType = "normal", isScheduled = false, scheduledAt,
         // Book for someone else
         isForSomeoneElse = false, passengerName, passengerPhone,
@@ -10177,6 +10188,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const finalDestLng = validDestCoords.lng;
       const finalPayment = paymentMethod || paymentMode || "cash";
       const finalDistance = estimatedDistance || distanceKm || 0;
+      const requestedVehicleName = vehicleCategoryName || vehicleName || null;
+      const resolvedVehicle = await resolveBookingVehicleSelection({
+        vehicleCategoryId: vehicleCategoryId || null,
+        vehicleType: vehicleType || null,
+        vehicleCategoryName: requestedVehicleName,
+      });
+      const bookingVehicleCategoryId = resolvedVehicle.vehicleCategoryId;
+      const bookingVehicleType = resolvedVehicle.vehicleType;
+      const bookingVehicleName = resolvedVehicle.vehicleCategoryName || requestedVehicleName || "";
+
+      if (!bookingVehicleCategoryId || !bookingVehicleType) {
+        return res.status(400).json({
+          message: "Please select a valid vehicle type before booking.",
+          code: "VEHICLE_CATEGORY_REQUIRED",
+        });
+      }
+      if (resolvedVehicle.typeMismatch) {
+        return res.status(400).json({
+          message: "Selected vehicle does not match the requested booking type.",
+          code: "VEHICLE_TYPE_MISMATCH",
+        });
+      }
 
       // -- Service activation gate -------------------------------------------
       const rideGate = await rawDb.execute(rawSql`
@@ -10189,14 +10222,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       // -- Server-side fare calculation (fallback when client sends 0 or missing) --
       let computedFare = Number(estimatedFare) || 0;
-      if ((computedFare === 0 || isNaN(computedFare)) && vehicleCategoryId) {
+      if ((computedFare === 0 || isNaN(computedFare)) && bookingVehicleCategoryId) {
         try {
           // Detect zone from pickup location for accurate zone-specific fares
           const detectedZoneId = await detectZoneId(validPickupCoords.lat, validPickupCoords.lng);
           const fareConfig = await rawDb.execute(rawSql`
             SELECT base_fare, fare_per_km, fare_per_min, minimum_fare, night_charge_multiplier
             FROM trip_fares
-            WHERE vehicle_category_id = ${vehicleCategoryId}::uuid
+            WHERE vehicle_category_id = ${bookingVehicleCategoryId}::uuid
               AND (
                 ${detectedZoneId ? rawSql`zone_id = ${detectedZoneId}::uuid` : rawSql`zone_id IS NULL`}
                 OR zone_id IS NULL
@@ -10384,7 +10417,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ) VALUES (
           ${refId}, ${customer.id}::uuid,
           NULL,
-          ${vehicleCategoryId ? rawSql`${vehicleCategoryId}::uuid` : rawSql`NULL`},
+          ${bookingVehicleCategoryId ? rawSql`${bookingVehicleCategoryId}::uuid` : rawSql`NULL`},
           ${pickupAddress || ""}, ${validPickupCoords.lat}, ${validPickupCoords.lng},
           ${finalDestAddress}, ${finalDestLat}, ${finalDestLng},
           ${finalFareAfterDiscount}, ${Number(finalDistance) || 0}, ${finalPayment},
@@ -10448,9 +10481,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       // -- Smart Dispatch Engine ----------------------------------------------
       // Resolve vehicle category name for service type detection
-      let vcName = '';
-      if (vehicleCategoryId) {
-        const vcR = await rawDb.execute(rawSql`SELECT name FROM vehicle_categories WHERE id=${vehicleCategoryId}::uuid LIMIT 1`).catch(() => ({ rows: [] as any[] }));
+      let vcName = bookingVehicleName;
+      if (!vcName && bookingVehicleCategoryId) {
+        const vcR = await rawDb.execute(rawSql`SELECT name FROM vehicle_categories WHERE id=${bookingVehicleCategoryId}::uuid LIMIT 1`).catch(() => ({ rows: [] as any[] }));
         vcName = (vcR.rows[0] as any)?.name || '';
       }
       const serviceType = resolveServiceType(tripType, vcName);
@@ -10476,14 +10509,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         customer.id,
         Number(pickupLat),
         Number(pickupLng),
-        vehicleCategoryId || undefined,
-        vcName || undefined,
+        bookingVehicleCategoryId || undefined,
+        bookingVehicleType || vcName || undefined,
         serviceType,
         dispatchMeta
       ).catch((err: any) => {
         console.error('[DISPATCH] startDispatch error:', err.message);
         // Fallback to legacy broadcast if dispatch engine fails
-        notifyNearbyDriversNewTrip(tripRow.id, Number(pickupLat), Number(pickupLng), vehicleCategoryId).catch(dbCatch("db"));
+        notifyNearbyDriversNewTrip(tripRow.id, Number(pickupLat), Number(pickupLng), bookingVehicleCategoryId || undefined).catch(dbCatch("db"));
       });
 
       res.json({

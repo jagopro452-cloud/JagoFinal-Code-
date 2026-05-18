@@ -494,8 +494,7 @@ class _TripScreenState extends State<TripScreen>
 
   bool get _isHeadingToPickup =>
       _status == 'accepted' ||
-      _status == 'driver_assigned' ||
-      _status == 'arrived';
+      _status == 'driver_assigned';
 
   LatLng? _currentTargetLatLng() {
     final trip = _trip;
@@ -1007,6 +1006,10 @@ class _TripScreenState extends State<TripScreen>
       _showOtpBottomSheet();
       return;
     }
+    if (_status == 'in_progress' || _status == 'on_the_way') {
+      final confirmed = await _confirmCashBeforeComplete();
+      if (!confirmed) return;
+    }
     setState(() => _loading = true);
     final h = await AuthService.getHeaders();
     final tripId = _trip?['id'] ?? _trip?['tripId'] ?? '';
@@ -1024,10 +1027,7 @@ class _TripScreenState extends State<TripScreen>
           });
           print('[TRIP] ✅ Arrived at pickup — tripId=$tripId');
           _showSnack('Arrived! Ask customer for OTP 📍');
-          // Pre-fetch route to destination while driver waits for OTP
-          // (polylines will be ready the moment trip starts)
-          await _fetchRouteForCurrentStatus(); // status is now 'arrived' → fetches pickup
-          // Actually we want destination route pre-loaded, fetch it explicitly
+          // Pre-fetch destination route while driver waits for pickup OTP.
           final t = _trip;
           if (t != null) {
             final dLat = double.tryParse(t['destinationLat']?.toString() ?? t['destination_lat']?.toString() ?? '') ?? 0.0;
@@ -1038,6 +1038,13 @@ class _TripScreenState extends State<TripScreen>
             if (dLat != 0 && dLng != 0) {
               await _fetchRoute(fromLat, fromLng, dLat, dLng);
             }
+          }
+          if (mounted && _status == 'arrived') {
+            Future.delayed(const Duration(milliseconds: 250), () {
+              if (mounted && _status == 'arrived') {
+                _showOtpBottomSheet();
+              }
+            });
           }
         } else {
           final err = jsonDecode(res.body);
@@ -1053,6 +1060,115 @@ class _TripScreenState extends State<TripScreen>
       _showSnack('Network error. Try again.', error: true);
       setState(() => _loading = false);
     }
+  }
+
+  bool get _isCashPayment {
+    final pm = (_trip?['paymentMethod'] ?? _trip?['payment_method'] ?? 'cash')
+        .toString()
+        .toLowerCase();
+    return pm == 'cash' || pm == 'cod';
+  }
+
+  Future<bool> _confirmCashBeforeComplete() async {
+    if (!_isCashPayment) return true;
+    final fare = double.tryParse(
+            (_trip?['estimatedFare'] ?? _trip?['estimated_fare'] ?? 0)
+                .toString()) ??
+        0;
+    final result = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
+        ),
+        padding: const EdgeInsets.fromLTRB(24, 14, 24, 28),
+        child: SafeArea(
+          top: false,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Container(
+              width: 44,
+              height: 4,
+              decoration: BoxDecoration(
+                color: JT.border,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 22),
+            Container(
+              width: 74,
+              height: 74,
+              decoration: BoxDecoration(
+                color: JT.warning.withValues(alpha: 0.12),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.payments_rounded,
+                  color: JT.warning, size: 38),
+            ),
+            const SizedBox(height: 18),
+            Text(
+              'Did you collect ₹${fare.toStringAsFixed(0)} cash?',
+              textAlign: TextAlign.center,
+              style: GoogleFonts.poppins(
+                color: JT.textPrimary,
+                fontSize: 22,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Confirm only after cash is collected. This closes the ride and updates customer/admin in realtime.',
+              textAlign: TextAlign.center,
+              style: GoogleFonts.poppins(
+                color: JT.textSecondary,
+                fontSize: 13,
+                height: 1.45,
+              ),
+            ),
+            const SizedBox(height: 24),
+            Row(children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: JT.textPrimary,
+                    side: BorderSide(color: JT.border),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                  ),
+                  child: Text('Go Back',
+                      style: GoogleFonts.poppins(
+                          fontWeight: FontWeight.w600, fontSize: 15)),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: JT.warning,
+                    foregroundColor: JT.textPrimary,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                  ),
+                  child: Text('Collected',
+                      style: GoogleFonts.poppins(
+                          fontWeight: FontWeight.w700, fontSize: 15)),
+                ),
+              ),
+            ]),
+          ]),
+        ),
+      ),
+    );
+    return result == true;
   }
 
   Future<void> _completeTrip(Map<String, String> authHeaders) async {
