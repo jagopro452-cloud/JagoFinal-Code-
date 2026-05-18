@@ -124,6 +124,8 @@ class ApiConfig {
   static String get localPoolSessionEnd => '$baseUrl/api/app/driver/pool/session/end';
   static String get localPoolLocation => '$baseUrl/api/app/driver/pool/location';
   static String localPoolPickup(String requestId) => '$baseUrl/api/app/driver/pool/passengers/$requestId/pickup';
+  static String localPoolAcceptPassenger(String requestId) => '$baseUrl/api/app/driver/pool/passengers/$requestId/accept';
+  static String localPoolSkipPassenger(String requestId) => '$baseUrl/api/app/driver/pool/passengers/$requestId/skip';
   static String localPoolDrop(String requestId) => '$baseUrl/api/app/driver/pool/passengers/$requestId/drop';
   static String localPoolNoShow(String requestId) => '$baseUrl/api/app/driver/pool/passengers/$requestId/no-show';
 

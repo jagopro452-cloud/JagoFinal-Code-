@@ -5250,9 +5250,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const mode = String(req.body?.mode || "on").toLowerCase() === "off" ? "off" : "on";
       const collectionSecs = Math.max(60, Math.min(600, Number(req.body?.collectionSecs || 300)));
+      const matchRadiusKm = Math.max(1, Math.min(12, Number(req.body?.matchRadiusKm || 4)));
+      const maxDetourKm = Math.max(0.5, Math.min(8, Number(req.body?.maxDetourKm || 2.5)));
+      const directionToleranceDeg = Math.max(15, Math.min(90, Number(req.body?.directionToleranceDeg || 50)));
       const pairs = [
         ["local_pool_mode", mode],
         ["local_pool_collection_secs", String(collectionSecs)],
+        ["local_pool_match_radius_km", String(matchRadiusKm)],
+        ["local_pool_max_detour_km", String(maxDetourKm)],
+        ["local_pool_direction_tolerance_deg", String(directionToleranceDeg)],
       ];
       for (const [key, value] of pairs) {
         await rawDb.execute(rawSql`
@@ -5261,7 +5267,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           ON CONFLICT (key_name) DO UPDATE SET value=EXCLUDED.value, settings_type=EXCLUDED.settings_type, updated_at=NOW()
         `);
       }
-      res.json({ success: true, mode, collectionSecs });
+      res.json({ success: true, mode, collectionSecs, matchRadiusKm, maxDetourKm, directionToleranceDeg });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 

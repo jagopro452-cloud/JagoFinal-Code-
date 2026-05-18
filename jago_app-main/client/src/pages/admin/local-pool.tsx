@@ -94,7 +94,13 @@ export default function LocalPool() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [viewPassengersRideId, setViewPassengersRideId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsForm, setSettingsForm] = useState({ mode: "on", collectionSecs: "300" });
+  const [settingsForm, setSettingsForm] = useState({
+    mode: "on",
+    collectionSecs: "300",
+    matchRadiusKm: "4",
+    maxDetourKm: "2.5",
+    directionToleranceDeg: "50",
+  });
 
   const { data: statsData } = useQuery<any>({ queryKey: ["/api/admin/local-pool/stats"] });
   const stats = statsData || {};
@@ -259,6 +265,24 @@ export default function LocalPool() {
                   onChange={e => setSettingsForm(f => ({ ...f, collectionSecs: e.target.value }))} />
                 <small className="text-muted">Default: 300 seconds. Live rolling-pool sessions can pause accepting without ending the ride.</small>
               </div>
+              <div className="row g-2">
+                <div className="col-4">
+                  <label className="form-label-jago">Radius km</label>
+                  <input type="number" className="form-control" value={settingsForm.matchRadiusKm} min="1" max="12" step="0.5"
+                    onChange={e => setSettingsForm(f => ({ ...f, matchRadiusKm: e.target.value }))} />
+                </div>
+                <div className="col-4">
+                  <label className="form-label-jago">Detour km</label>
+                  <input type="number" className="form-control" value={settingsForm.maxDetourKm} min="0.5" max="8" step="0.5"
+                    onChange={e => setSettingsForm(f => ({ ...f, maxDetourKm: e.target.value }))} />
+                </div>
+                <div className="col-4">
+                  <label className="form-label-jago">Direction</label>
+                  <input type="number" className="form-control" value={settingsForm.directionToleranceDeg} min="15" max="90" step="5"
+                    onChange={e => setSettingsForm(f => ({ ...f, directionToleranceDeg: e.target.value }))} />
+                </div>
+              </div>
+              <small className="text-muted">Controls realtime matching strictness: pickup radius, max route detour and route-direction tolerance.</small>
               <div className="d-flex gap-2 justify-content-end mt-2">
                 <button className="btn btn-outline-secondary" onClick={() => setSettingsOpen(false)}>Cancel</button>
                 <button className="btn btn-primary" onClick={() => saveSettings.mutate(settingsForm)} disabled={saveSettings.isPending}>

@@ -404,6 +404,14 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
     );
   }
 
+  Future<void> _acceptPassenger(String requestId) async {
+    await _postSimple(ApiConfig.localPoolAcceptPassenger(requestId), const {});
+  }
+
+  Future<void> _skipPassenger(String requestId) async {
+    await _postSimple(ApiConfig.localPoolSkipPassenger(requestId), const {});
+  }
+
   Widget _buildAcceptingControl() {
     final accepting = _acceptingNewPassengers;
     return Container(
@@ -518,7 +526,23 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
           const SizedBox(height: 14),
           Row(
             children: [
-              if (status == 'matched') ...[
+              if (status == 'pending_driver_accept') ...[
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: requestId.isEmpty ? null : () => _skipPassenger(requestId),
+                    style: OutlinedButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                    child: Text('Skip', style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: requestId.isEmpty ? null : () => _acceptPassenger(requestId),
+                    style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF16A34A), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                    child: Text('Accept', style: GoogleFonts.poppins(color: Colors.white, fontWeight: FontWeight.w600)),
+                  ),
+                ),
+              ] else if (status == 'matched') ...[
                 Expanded(
                   child: OutlinedButton(
                     onPressed: requestId.isEmpty ? null : () => _markNoShow(requestId),
@@ -553,6 +577,9 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
   Widget _statusBadge(String status) {
     Color color;
     switch (status) {
+      case 'pending_driver_accept':
+        color = const Color(0xFFF97316);
+        break;
       case 'picked_up':
         color = const Color(0xFF16A34A);
         break;

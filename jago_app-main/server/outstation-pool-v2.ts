@@ -35,6 +35,9 @@ export async function ensureOutstationPoolV2Schema(): Promise<void> {
     `ALTER TABLE outstation_pool_rides ADD COLUMN IF NOT EXISTS to_lng NUMERIC(10,7)`,
     `ALTER TABLE outstation_pool_rides ADD COLUMN IF NOT EXISTS current_lat NUMERIC(10,7)`,
     `ALTER TABLE outstation_pool_rides ADD COLUMN IF NOT EXISTS current_lng NUMERIC(10,7)`,
+    `ALTER TABLE outstation_pool_rides ADD COLUMN IF NOT EXISTS accepting_new_requests BOOLEAN NOT NULL DEFAULT true`,
+    `ALTER TABLE outstation_pool_rides ADD COLUMN IF NOT EXISTS state_version INTEGER NOT NULL DEFAULT 1`,
+    `ALTER TABLE outstation_pool_rides ADD COLUMN IF NOT EXISTS route_plan JSONB NOT NULL DEFAULT '[]'`,
   ];
   for (const sql of rideAlters) {
     await rawDb.execute(rawSql.raw(sql)).catch(() => undefined);
@@ -289,6 +292,40 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any): void
 
   // ─── DRIVER: Update location (broadcast to all passengers in this ride) ───
 
+  app.post("/api/app/driver/outstation-pool/rides/:id/accepting", authApp, async (req: any, res: any) => {
+    try {
+      const driver = req.currentUser;
+      const rideId = String(req.params.id);
+      const accepting = req.body?.acceptingNewRequests !== false;
+      const r = await rawDb.execute(rawSql`
+        UPDATE outstation_pool_rides
+        SET accepting_new_requests = ${accepting},
+            state_version = state_version + 1,
+            updated_at = NOW()
+        WHERE id = ${rideId}::uuid
+          AND driver_id = ${driver.id}::uuid
+          AND status IN ('scheduled', 'active')
+        RETURNING id, accepting_new_requests, state_version
+      `);
+      if (!r.rows.length) return res.status(404).json({ message: "Ride not found or already closed" });
+      const row = r.rows[0] as any;
+      const passengersR = await rawDb.execute(rawSql`
+        SELECT customer_id FROM outstation_pool_bookings
+        WHERE ride_id = ${rideId}::uuid AND status IN ('confirmed', 'picked_up')
+      `).catch(() => ({ rows: [] as any[] }));
+      for (const p of passengersR.rows as any[]) {
+        io.to(`user:${p.customer_id}`).emit("outstation_pool:seat_update", {
+          rideId,
+          acceptingNewRequests: row.accepting_new_requests !== false,
+          stateVersion: parseInt(row.state_version || 1),
+        });
+      }
+      res.json({ success: true, acceptingNewRequests: row.accepting_new_requests !== false, stateVersion: parseInt(row.state_version || 1) });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   app.patch("/api/app/driver/outstation-pool/rides/:id/location", authApp, async (req: any, res: any) => {
     try {
       const driver = req.currentUser;
@@ -470,6 +507,7 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any): void
         LEFT JOIN outstation_pool_bookings opb ON opb.ride_id = opr.id
         WHERE opr.is_active = true
           AND opr.status IN ('scheduled', 'active')
+          AND opr.accepting_new_requests = true
           AND opr.available_seats >= ${seatsN}
           AND LOWER(opr.from_city) LIKE LOWER(${`%${fromCity}%`})
           AND LOWER(opr.to_city) LIKE LOWER(${`%${toCity}%`})
@@ -568,6 +606,7 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any): void
         const rideR = await txClient.query(
           `SELECT * FROM outstation_pool_rides
            WHERE id = $1 AND is_active = true AND status IN ('scheduled','active')
+             AND accepting_new_requests = true
              AND available_seats >= $2
            FOR UPDATE`,
           [rideId, seatsN],
@@ -664,7 +703,7 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any): void
 
         // Decrement available seats
         await txClient.query(
-          `UPDATE outstation_pool_rides SET available_seats = available_seats - $1, updated_at = NOW() WHERE id = $2`,
+          `UPDATE outstation_pool_rides SET available_seats = available_seats - $1, state_version = state_version + 1, updated_at = NOW() WHERE id = $2`,
           [seatsN, rideId],
         );
 
