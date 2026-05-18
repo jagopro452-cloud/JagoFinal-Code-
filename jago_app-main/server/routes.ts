@@ -1390,6 +1390,9 @@ async function ensureOperationalSchema() {
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS pending_payment_amount NUMERIC(10,2) DEFAULT 0;
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS seats_booked INTEGER DEFAULT 1;
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS seat_price NUMERIC(10,2) DEFAULT 0;
+      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS driver_accepted_at TIMESTAMPTZ;
+      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS driver_arriving_at TIMESTAMPTZ;
+      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS driver_arrived_at TIMESTAMPTZ;
 
       ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS vehicle_type VARCHAR(50);
       ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS type VARCHAR(50) DEFAULT 'ride';
@@ -5515,6 +5518,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
+  app.get("/api/app/runtime-config", async (_req, res) => {
+    try {
+      const cfg = await getRuntimeConfigSnapshot();
+      res.json({
+        config: {
+          mapsEnabled: true,
+          paymentsEnabled: true,
+          parcelsEnabled: true,
+          poolEnabled: true,
+          realtimeEnabled: true,
+        },
+        featureFlags: cfg.featureFlags,
+        services: cfg.services,
+      });
+    } catch (e: any) {
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
+  });
+
   app.get("/api/app/popular-locations", async (req, res) => {
     try {
       const city = String(req.query.city || "Vijayawada").trim();
@@ -9055,7 +9077,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const { tripId } = req.body;
       if (!tripId) return res.status(400).json({ message: "tripId required" });
       const updR = await rawDb.execute(rawSql`
-        UPDATE trip_requests SET current_status='arrived'
+        UPDATE trip_requests SET current_status='arrived', driver_arrived_at=NOW()
         WHERE id=${tripId}::uuid AND driver_id=${driver.id}::uuid
           AND current_status IN ('accepted','driver_assigned')
         RETURNING id, pickup_otp, customer_id
