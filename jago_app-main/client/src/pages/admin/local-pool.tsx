@@ -135,8 +135,8 @@ export default function LocalPool() {
     <div className="container-fluid">
       <div className="mb-4 d-flex justify-content-between align-items-start flex-wrap gap-2">
         <div>
-          <h2 className="fs-22 mb-1">Local Pool Rides</h2>
-          <div className="fs-14 text-muted">Live rolling pool sessions, seat occupancy, GST and commission monitoring</div>
+          <h2 className="fs-22 mb-1">Realtime Seat Control</h2>
+          <div className="fs-14 text-muted">Rolling pool sessions, seat occupancy, GST and commission monitoring</div>
         </div>
         <button className="btn btn-outline-primary btn-sm" onClick={() => setSettingsOpen(true)}>
           <i className="bi bi-gear me-1"></i> Pool Settings
@@ -203,8 +203,16 @@ export default function LocalPool() {
                 ) : rides.length === 0 ? (
                   <tr><td colSpan={12}>
                     <div className="d-flex flex-column align-items-center gap-2 py-5">
-                      <i className="bi bi-people" style={{ fontSize: "2.5rem", color: "#94a3b8" }}></i>
-                      <p className="text-muted mb-0">No local pool sessions found</p>
+                      <div style={{ width: 64, height: 64, borderRadius: 20, background: "linear-gradient(135deg,#eff6ff,#eef2ff)", display: "grid", placeItems: "center", border: "1px solid #dbeafe" }}>
+                        <i className="bi bi-people" style={{ fontSize: "2rem", color: "#2563eb" }}></i>
+                      </div>
+                      <div className="fw-semibold">No active local pool sessions</div>
+                      <p className="text-muted mb-0 text-center" style={{ maxWidth: 520 }}>
+                        Once a pool-enabled pilot starts accepting local pool passengers, live seats, route occupancy, GST, commission and passenger status will appear here.
+                      </p>
+                      <button className="btn btn-sm btn-outline-primary mt-2" onClick={() => setSettingsOpen(true)}>
+                        <i className="bi bi-gear me-1"></i> Review Pool Settings
+                      </button>
                     </div>
                   </td></tr>
                 ) : rides.map((r: any, i: number) => (
