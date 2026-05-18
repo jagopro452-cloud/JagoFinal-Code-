@@ -1,4 +1,4 @@
-import { lazy } from "react";
+import { lazy, Suspense } from "react";
 import { Switch, Route, Redirect } from "wouter";
 import AdminLayout from "@/pages/admin/layout";
 
@@ -68,77 +68,88 @@ const CityServices = lazy(() => import("@/pages/admin/city-services"));
 const ParcelVehiclesAdmin = lazy(() => import("@/pages/admin/parcel-vehicles"));
 const AIBrainDashboard = lazy(() => import("@/pages/admin/ai-brain-dashboard"));
 
+function AdminPageFallback() {
+  return (
+    <div className="admin-page-loading" aria-live="polite">
+      <div className="admin-page-loading__bar" />
+      <div className="admin-page-loading__text">Loading workspace...</div>
+    </div>
+  );
+}
+
 export default function AdminRoutes() {
   return (
     <AdminLayout>
-      <Switch>
-        <Route path="/admin/dashboard" component={Dashboard} />
-        <Route path="/admin/heat-map" component={HeatMap} />
-        <Route path="/admin/fleet-view" component={FleetView} />
-        <Route path="/admin/zones" component={Zones} />
-        <Route path="/admin/trips" component={Trips} />
-        <Route path="/admin/car-sharing" component={CarSharing} />
-        <Route path="/admin/intercity-carsharing" component={IntercityCarSharing} />
-        <Route path="/admin/local-pool" component={LocalPool} />
-        <Route path="/admin/outstation-pool" component={OutstationPool} />
-        <Route path="/admin/parcel-refunds" component={ParcelRefunds} />
-        <Route path="/admin/safety-alerts" component={SafetyAlerts} />
-        <Route path="/admin/alert-engine" component={AlertEngine} />
-        <Route path="/admin/banners" component={Banners} />
-        <Route path="/admin/coupons" component={Coupons} />
-        <Route path="/admin/discounts" component={Discounts} />
-        <Route path="/admin/spin-wheel" component={SpinWheel} />
-        <Route path="/admin/notifications" component={Notifications} />
-        <Route path="/admin/driver-levels" component={DriverLevels} />
-        <Route path="/admin/driver-verification" component={DriverVerificationPage} />
-        <Route path="/admin/drivers" component={Drivers} />
-        <Route path="/admin/withdrawals" component={Withdrawals} />
-        <Route path="/admin/customer-levels" component={CustomerLevels} />
-        <Route path="/admin/customers" component={Customers} />
-        <Route path="/admin/customer-wallet" component={CustomerWallet} />
-        <Route path="/admin/wallet-bonus" component={WalletBonus} />
-        <Route path="/admin/employees" component={Employees} />
-        <Route path="/admin/newsletter" component={Newsletter} />
-        <Route path="/admin/subscriptions" component={Subscriptions} />
-        <Route path="/admin/revenue-model" component={RevenueModel} />
-        <Route path="/admin/parcel-attributes" component={ParcelAttributes} />
-        <Route path="/admin/vehicle-attributes" component={VehicleAttributes} />
-        <Route path="/admin/vehicles" component={VehicleCategories} />
-        <Route path="/admin/vehicle-requests" component={VehicleRequests} />
-        <Route path="/admin/fares" component={Fares} />
-        <Route path="/admin/cancellation-reasons" component={CancellationReasonsPage} />
-        <Route path="/admin/parcel-fares" component={ParcelFares} />
-        <Route path="/admin/surge-pricing" component={SurgePricing} />
-        <Route path="/admin/transactions" component={Transactions} />
-        <Route path="/admin/reports" component={Reports} />
-        <Route path="/admin/chatting" component={Chatting} />
-        <Route path="/admin/call-logs" component={CallLogs} />
-        <Route path="/admin/blogs" component={BlogsPage} />
-        <Route path="/admin/reviews" component={Reviews} />
-        <Route path="/admin/business-setup" component={BusinessSetup} />
-        <Route path="/admin/pages-media" component={PagesMedia} />
-        <Route path="/admin/configurations" component={Configurations} />
-        <Route path="/admin/settings" component={Settings} />
-        <Route path="/admin/b2b-companies" component={B2BCompanies} />
-        <Route path="/admin/intercity-routes" component={IntercityRoutes} />
-        <Route path="/admin/insurance" component={Insurance} />
-        <Route path="/admin/driver-earnings" component={DriverEarnings} />
-        <Route path="/admin/driver-wallet" component={DriverWalletPage} />
-        <Route path="/admin/refund-requests" component={RefundRequestsPage} />
-        <Route path="/admin/api-docs" component={ApiDocsPage} />
-        <Route path="/admin/app-design" component={AppDesignPage} />
-        <Route path="/admin/languages" component={LanguagesPage} />
-        <Route path="/admin/service-management" component={ServiceManagement} />
-        <Route path="/admin/parcel-orders" component={ParcelOrders} />
-        <Route path="/admin/system-health" component={SystemHealth} />
-        <Route path="/admin/voice-commands" component={VoiceCommandsPage} />
-        <Route path="/admin/referrals" component={Referrals} />
-        <Route path="/admin/popular-locations" component={PopularLocationsAdmin} />
-        <Route path="/admin/city-services" component={CityServices} />
-        <Route path="/admin/parcel-vehicle-types" component={ParcelVehiclesAdmin} />
-        <Route path="/admin/ai-brain" component={AIBrainDashboard} />
-        <Route><Redirect to="/admin/dashboard" /></Route>
-      </Switch>
+      <Suspense fallback={<AdminPageFallback />}>
+        <Switch>
+          <Route path="/admin/dashboard" component={Dashboard} />
+          <Route path="/admin/heat-map" component={HeatMap} />
+          <Route path="/admin/fleet-view" component={FleetView} />
+          <Route path="/admin/zones" component={Zones} />
+          <Route path="/admin/trips" component={Trips} />
+          <Route path="/admin/car-sharing" component={CarSharing} />
+          <Route path="/admin/intercity-carsharing" component={IntercityCarSharing} />
+          <Route path="/admin/local-pool" component={LocalPool} />
+          <Route path="/admin/outstation-pool" component={OutstationPool} />
+          <Route path="/admin/parcel-refunds" component={ParcelRefunds} />
+          <Route path="/admin/safety-alerts" component={SafetyAlerts} />
+          <Route path="/admin/alert-engine" component={AlertEngine} />
+          <Route path="/admin/banners" component={Banners} />
+          <Route path="/admin/coupons" component={Coupons} />
+          <Route path="/admin/discounts" component={Discounts} />
+          <Route path="/admin/spin-wheel" component={SpinWheel} />
+          <Route path="/admin/notifications" component={Notifications} />
+          <Route path="/admin/driver-levels" component={DriverLevels} />
+          <Route path="/admin/driver-verification" component={DriverVerificationPage} />
+          <Route path="/admin/drivers" component={Drivers} />
+          <Route path="/admin/withdrawals" component={Withdrawals} />
+          <Route path="/admin/customer-levels" component={CustomerLevels} />
+          <Route path="/admin/customers" component={Customers} />
+          <Route path="/admin/customer-wallet" component={CustomerWallet} />
+          <Route path="/admin/wallet-bonus" component={WalletBonus} />
+          <Route path="/admin/employees" component={Employees} />
+          <Route path="/admin/newsletter" component={Newsletter} />
+          <Route path="/admin/subscriptions" component={Subscriptions} />
+          <Route path="/admin/revenue-model" component={RevenueModel} />
+          <Route path="/admin/parcel-attributes" component={ParcelAttributes} />
+          <Route path="/admin/vehicle-attributes" component={VehicleAttributes} />
+          <Route path="/admin/vehicles" component={VehicleCategories} />
+          <Route path="/admin/vehicle-requests" component={VehicleRequests} />
+          <Route path="/admin/fares" component={Fares} />
+          <Route path="/admin/cancellation-reasons" component={CancellationReasonsPage} />
+          <Route path="/admin/parcel-fares" component={ParcelFares} />
+          <Route path="/admin/surge-pricing" component={SurgePricing} />
+          <Route path="/admin/transactions" component={Transactions} />
+          <Route path="/admin/reports" component={Reports} />
+          <Route path="/admin/chatting" component={Chatting} />
+          <Route path="/admin/call-logs" component={CallLogs} />
+          <Route path="/admin/blogs" component={BlogsPage} />
+          <Route path="/admin/reviews" component={Reviews} />
+          <Route path="/admin/business-setup" component={BusinessSetup} />
+          <Route path="/admin/pages-media" component={PagesMedia} />
+          <Route path="/admin/configurations" component={Configurations} />
+          <Route path="/admin/settings" component={Settings} />
+          <Route path="/admin/b2b-companies" component={B2BCompanies} />
+          <Route path="/admin/intercity-routes" component={IntercityRoutes} />
+          <Route path="/admin/insurance" component={Insurance} />
+          <Route path="/admin/driver-earnings" component={DriverEarnings} />
+          <Route path="/admin/driver-wallet" component={DriverWalletPage} />
+          <Route path="/admin/refund-requests" component={RefundRequestsPage} />
+          <Route path="/admin/api-docs" component={ApiDocsPage} />
+          <Route path="/admin/app-design" component={AppDesignPage} />
+          <Route path="/admin/languages" component={LanguagesPage} />
+          <Route path="/admin/service-management" component={ServiceManagement} />
+          <Route path="/admin/parcel-orders" component={ParcelOrders} />
+          <Route path="/admin/system-health" component={SystemHealth} />
+          <Route path="/admin/voice-commands" component={VoiceCommandsPage} />
+          <Route path="/admin/referrals" component={Referrals} />
+          <Route path="/admin/popular-locations" component={PopularLocationsAdmin} />
+          <Route path="/admin/city-services" component={CityServices} />
+          <Route path="/admin/parcel-vehicle-types" component={ParcelVehiclesAdmin} />
+          <Route path="/admin/ai-brain" component={AIBrainDashboard} />
+          <Route><Redirect to="/admin/dashboard" /></Route>
+        </Switch>
+      </Suspense>
     </AdminLayout>
   );
 }

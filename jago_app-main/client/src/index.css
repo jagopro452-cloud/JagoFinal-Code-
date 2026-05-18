@@ -2431,8 +2431,11 @@ html, body {
   background: #eef2f8 !important;
 }
 
-* { transition-property: background-color, border-color, box-shadow, transform, opacity;
-    transition-duration: 160ms; transition-timing-function: cubic-bezier(.4,0,.2,1); }
+body:not(.admin-route) * {
+  transition-property: background-color, border-color, box-shadow, transform, opacity;
+  transition-duration: 160ms;
+  transition-timing-function: cubic-bezier(.4,0,.2,1);
+}
 *:focus-visible { outline: 2px solid #2F7BFF; outline-offset: 2px; }
 
 /* ── Page Fade-In ── */

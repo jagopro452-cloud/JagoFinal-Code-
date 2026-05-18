@@ -54,12 +54,12 @@ function useAdminBootstrap() {
     const fallback = setTimeout(() => setCssReady(true), 1500);
     return () => {
       clearTimeout(fallback);
-      added.forEach(el => el.remove());
-      cssFiles.forEach(({ id }) => {
-        const el = document.getElementById(id);
-        if (el) el.remove();
+      // Keep admin CSS mounted after first load. Removing it during route
+      // transitions causes a visible layout flash/jump before links reload.
+      added.forEach(el => {
+        el.onload = null;
+        el.onerror = null;
       });
-      setCssReady(false);
     };
   }, []);
 
@@ -547,6 +547,41 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           font-size: 12px;
           font-weight: 500;
         }
+        .admin-shell .admin-page-loading {
+          min-height: 420px;
+          border: 1px solid rgba(226,232,240,0.92);
+          border-radius: 22px;
+          background: linear-gradient(180deg, rgba(255,255,255,0.92), rgba(248,250,252,0.92));
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 12px;
+          color: #64748b;
+          font-size: 13px;
+          font-weight: 700;
+        }
+        .admin-shell .admin-page-loading__bar {
+          width: 120px;
+          height: 4px;
+          border-radius: 999px;
+          overflow: hidden;
+          background: #e2e8f0;
+          position: relative;
+        }
+        .admin-shell .admin-page-loading__bar::after {
+          content: "";
+          position: absolute;
+          inset: 0;
+          width: 42%;
+          border-radius: inherit;
+          background: linear-gradient(90deg, #2f7bff, #0891b2);
+          animation: admin-loading-bar 900ms ease-in-out infinite alternate;
+        }
+        @keyframes admin-loading-bar {
+          from { transform: translateX(0); }
+          to { transform: translateX(140%); }
+        }
         .admin-shell .container-fluid {
           padding-left: 0;
           padding-right: 0;
@@ -816,6 +851,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           align-items: center;
           justify-content: center;
           padding: 24px 16px;
+          animation: admin-modal-backdrop-in 140ms ease-out both;
         }
         .admin-shell .modal-jago {
           width: min(100%, 760px);
@@ -825,6 +861,26 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           border: 1px solid rgba(226,232,240,0.92);
           background: linear-gradient(180deg, rgba(255,255,255,0.99), rgba(248,250,252,0.98));
           box-shadow: 0 32px 90px rgba(15,23,42,0.22);
+          animation: admin-modal-in 180ms cubic-bezier(.16,1,.3,1) both;
+          transform-origin: center top;
+        }
+        .admin-shell .modal-jago.admin-add-driver-modal {
+          width: min(100%, 840px);
+          overflow-x: hidden;
+        }
+        .admin-shell .driver-field-feedback {
+          min-height: 18px;
+          margin-top: 4px;
+          font-size: 11.5px;
+          line-height: 1.35;
+        }
+        @keyframes admin-modal-backdrop-in {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+        @keyframes admin-modal-in {
+          from { opacity: 0; transform: translateY(10px) scale(.985); }
+          to { opacity: 1; transform: translateY(0) scale(1); }
         }
         .admin-shell .modal-jago-header {
           display: flex;
