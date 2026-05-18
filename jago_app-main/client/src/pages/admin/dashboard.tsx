@@ -181,7 +181,7 @@ export default function Dashboard() {
   const services = [
     { label: "City Rides", icon: "bi-car-front-fill", color: "#2F7BFF", bg: "#eff6ff", trips: svc?.rides?.trips ?? 0, revenue: svc?.rides?.revenue ?? 0, model: svc?.rides?.model ?? "subscription", href: "/admin/trips" },
     { label: "Parcels", icon: "bi-box-seam-fill", color: "#16a34a", bg: "#f0fdf4", trips: svc?.parcels?.trips ?? 0, revenue: svc?.parcels?.revenue ?? 0, model: svc?.parcels?.model ?? "commission", href: "/admin/parcel-trips" },
-    { label: "Intercity Carpool", icon: "bi-people-fill", color: "#7c3aed", bg: "#f5f3ff", trips: svc?.carpool?.trips ?? 0, revenue: svc?.carpool?.revenue ?? 0, model: svc?.carpool?.model ?? "commission", href: "/admin/intercity-carsharing" },
+    { label: "Local Pool", icon: "bi-people-fill", color: "#7c3aed", bg: "#f5f3ff", trips: svc?.carpool?.trips ?? 0, revenue: svc?.carpool?.revenue ?? 0, model: svc?.carpool?.model ?? "commission", href: "/admin/local-pool" },
     { label: "Outstation Pool", icon: "bi-signpost-2-fill", color: "#d97706", bg: "#fefce8", trips: svc?.outstationPool?.bookings ?? 0, revenue: svc?.outstationPool?.revenue ?? 0, model: svc?.outstationPool?.mode === "on" ? "active" : "inactive", modelColor: svc?.outstationPool?.mode === "on" ? "#16a34a" : "#94a3b8", href: "/admin/outstation-pool" },
   ];
   const pendingComm = drv?.totalPendingCommission ?? 0;

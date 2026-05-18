@@ -2486,7 +2486,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 MaterialPageRoute(builder: (_) => const ReferralScreen()));
           }),
           _drawerItem(
-              Icons.directions_car_outlined, 'Intercity Pool', textColor, () {
+              Icons.directions_car_outlined, 'Outstation Pool', textColor, () {
             Navigator.pop(context);
             Navigator.push(
                 context,
@@ -2549,7 +2549,6 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
   final TextEditingController _ctrl = TextEditingController();
   List<Map<String, dynamic>> _results = [];
   List<Map<String, dynamic>> _nearby = [];
-  List<Map<String, dynamic>> _popular = [];
   bool _loading = false;
   Timer? _debounce;
   int _searchRequestSeq = 0;
@@ -2559,7 +2558,6 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
   @override
   void initState() {
     super.initState();
-    _fetchPopularLocations();
     _fetchNearby();
   }
 
@@ -2576,49 +2574,6 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
     );
     if (result != null) {
       widget.onPlaceSelected(result.address, result.lat, result.lng);
-    }
-  }
-
-  Future<void> _fetchPopularLocations() async {
-    try {
-      final r = await http.get(Uri.parse(
-          '${ApiConfig.baseUrl}/api/app/popular-locations?city=Vijayawada'));
-      if (r.statusCode == 200) {
-        final data = jsonDecode(r.body) as Map<String, dynamic>;
-        final list = (data['locations'] as List<dynamic>? ?? [])
-            .map((x) => Map<String, dynamic>.from(x as Map))
-            .map((x) => {
-                  'name': (x['name'] ?? '').toString(),
-                  'lat': double.tryParse(
-                          (x['lat'] ?? x['latitude'] ?? 0).toString()) ??
-                      0.0,
-                  'lng': double.tryParse(
-                          (x['lng'] ?? x['longitude'] ?? 0).toString()) ??
-                      0.0,
-                })
-            .where((x) => (x['name'] as String).isNotEmpty)
-            .toList();
-        if (mounted && list.isNotEmpty) {
-          setState(() => _popular = list);
-          return;
-        }
-      }
-    } catch (_) {}
-    if (mounted && _popular.isEmpty) {
-      setState(() => _popular = [
-            {'name': 'Benz Circle', 'lat': 16.5062, 'lng': 80.6480},
-            {
-              'name': 'Vijayawada Railway Station',
-              'lat': 16.5175,
-              'lng': 80.6400
-            },
-            {'name': 'Vijayawada Bus Stand', 'lat': 16.5179, 'lng': 80.6238},
-            {'name': 'Balaji Bus Stand', 'lat': 16.5106, 'lng': 80.6248},
-            {'name': 'Kanaka Durga Temple', 'lat': 16.5176, 'lng': 80.6121},
-            {'name': 'Gannavaram Airport', 'lat': 16.5304, 'lng': 80.7968},
-            {'name': 'Governorpet', 'lat': 16.5135, 'lng': 80.6346},
-            {'name': 'Patamata', 'lat': 16.4883, 'lng': 80.6681},
-          ]);
     }
   }
 
@@ -2820,64 +2775,6 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
             ),
           ),
           const SizedBox(height: 8),
-          if (_popular.isNotEmpty && query.length < 3)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 2, 16, 10),
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Popular Locations',
-                      style: GoogleFonts.poppins(
-                          fontSize: 12,
-                          color: subColor,
-                          fontWeight: FontWeight.w400),
-                    ),
-                    const SizedBox(height: 8),
-                    SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: Row(
-                        children: _popular.map((p) {
-                          return GestureDetector(
-                            onTap: () {
-                              Navigator.pop(context);
-                              widget.onPlaceSelected(
-                                p['name'] as String,
-                                (p['lat'] as num?)?.toDouble() ?? 0.0,
-                                (p['lng'] as num?)?.toDouble() ?? 0.0,
-                              );
-                            },
-                            child: Container(
-                              margin: const EdgeInsets.only(right: 8),
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 12, vertical: 8),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFFF0F7FF),
-                                borderRadius: BorderRadius.circular(20),
-                                border:
-                                    Border.all(color: const Color(0xFFDCE9FF)),
-                              ),
-                              child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    const Icon(Icons.place_rounded,
-                                        color: _primary, size: 14),
-                                    const SizedBox(width: 6),
-                                    Text(
-                                      p['name'] as String,
-                                      style: GoogleFonts.poppins(
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w400,
-                                          color: textColor),
-                                    ),
-                                  ]),
-                            ),
-                          );
-                        }).toList(),
-                      ),
-                    ),
-                  ]),
-            ),
           if (_loading)
             const Padding(
                 padding: EdgeInsets.all(16),

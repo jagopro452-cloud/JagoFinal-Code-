@@ -35,7 +35,7 @@ class _OutstationPoolScreenState extends State<OutstationPoolScreen>
       appBar: AppBar(
         backgroundColor: JT.primary,
         foregroundColor: Colors.white,
-        title: const Text('Intercity Pool', style: TextStyle(fontWeight: FontWeight.w500)),
+        title: const Text('Outstation Pool', style: TextStyle(fontWeight: FontWeight.w500)),
         elevation: 0,
         bottom: TabBar(
           controller: _tabs,

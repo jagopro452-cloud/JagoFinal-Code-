@@ -18,8 +18,6 @@ const Withdrawals = lazy(() => import("@/pages/admin/withdrawals"));
 const CancellationReasonsPage = lazy(() => import("@/pages/admin/cancellation-reasons"));
 const HeatMap = lazy(() => import("@/pages/admin/heat-map"));
 const FleetView = lazy(() => import("@/pages/admin/fleet-view"));
-const CarSharing = lazy(() => import("@/pages/admin/car-sharing"));
-const IntercityCarSharing = lazy(() => import("@/pages/admin/intercity-carsharing"));
 const ParcelRefunds = lazy(() => import("@/pages/admin/parcel-refunds"));
 const SafetyAlerts = lazy(() => import("@/pages/admin/safety-alerts"));
 const AlertEngine = lazy(() => import("@/pages/admin/alert-engine"));
@@ -38,7 +36,6 @@ const RevenueModel = lazy(() => import("@/pages/admin/revenue-model"));
 const DriverWalletPage = lazy(() => import("@/pages/admin/driver-wallet"));
 const RefundRequestsPage = lazy(() => import("@/pages/admin/refund-requests"));
 const ApiDocsPage = lazy(() => import("@/pages/admin/api-docs"));
-const AppDesignPage = lazy(() => import("@/pages/admin/app-design"));
 const LanguagesPage = lazy(() => import("@/pages/admin/languages"));
 const ServiceManagement = lazy(() => import("@/pages/admin/service-management"));
 const ParcelAttributes = lazy(() => import("@/pages/admin/parcel-attributes"));
@@ -63,7 +60,6 @@ const OutstationPool = lazy(() => import("@/pages/admin/outstation-pool"));
 const ParcelOrders = lazy(() => import("@/pages/admin/parcel-orders"));
 const SystemHealth = lazy(() => import("@/pages/admin/system-health"));
 const VoiceCommandsPage = lazy(() => import("@/pages/admin/voice-commands"));
-const PopularLocationsAdmin = lazy(() => import("@/pages/admin/popular-locations"));
 const CityServices = lazy(() => import("@/pages/admin/city-services"));
 const ParcelVehiclesAdmin = lazy(() => import("@/pages/admin/parcel-vehicles"));
 const AIBrainDashboard = lazy(() => import("@/pages/admin/ai-brain-dashboard"));
@@ -87,8 +83,8 @@ export default function AdminRoutes() {
           <Route path="/admin/fleet-view" component={FleetView} />
           <Route path="/admin/zones" component={Zones} />
           <Route path="/admin/trips" component={Trips} />
-          <Route path="/admin/car-sharing" component={CarSharing} />
-          <Route path="/admin/intercity-carsharing" component={IntercityCarSharing} />
+          <Route path="/admin/car-sharing"><Redirect to="/admin/local-pool" /></Route>
+          <Route path="/admin/intercity-carsharing"><Redirect to="/admin/outstation-pool" /></Route>
           <Route path="/admin/local-pool" component={LocalPool} />
           <Route path="/admin/outstation-pool" component={OutstationPool} />
           <Route path="/admin/parcel-refunds" component={ParcelRefunds} />
@@ -136,14 +132,14 @@ export default function AdminRoutes() {
           <Route path="/admin/driver-wallet" component={DriverWalletPage} />
           <Route path="/admin/refund-requests" component={RefundRequestsPage} />
           <Route path="/admin/api-docs" component={ApiDocsPage} />
-          <Route path="/admin/app-design" component={AppDesignPage} />
+          <Route path="/admin/app-design"><Redirect to="/admin/configurations" /></Route>
           <Route path="/admin/languages" component={LanguagesPage} />
           <Route path="/admin/service-management" component={ServiceManagement} />
           <Route path="/admin/parcel-orders" component={ParcelOrders} />
           <Route path="/admin/system-health" component={SystemHealth} />
           <Route path="/admin/voice-commands" component={VoiceCommandsPage} />
           <Route path="/admin/referrals" component={Referrals} />
-          <Route path="/admin/popular-locations" component={PopularLocationsAdmin} />
+          <Route path="/admin/popular-locations"><Redirect to="/admin/zones" /></Route>
           <Route path="/admin/city-services" component={CityServices} />
           <Route path="/admin/parcel-vehicle-types" component={ParcelVehiclesAdmin} />
           <Route path="/admin/ai-brain" component={AIBrainDashboard} />

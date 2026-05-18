@@ -143,5 +143,4 @@ class ApiConfig {
   static String get appBanners => '$baseUrl/api/app/banners';
   static String get featureFlags => '$baseUrl/api/app/feature-flags';
   static String get platformServices => '$baseUrl/api/app/platform-services';
-  static String get popularLocations => '$baseUrl/api/app/popular-locations';
 }
