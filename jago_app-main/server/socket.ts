@@ -77,11 +77,11 @@ async function persistSafetyAlert(alert: any, driverId: string) {
 
 // Verify socket handshake token — prevents room spoofing (connecting as another user).
 // Returns verified user identity + role from DB, or null if invalid.
-async function verifySocketToken(token: string | undefined, claimedUserId: string | undefined): Promise<{ userId: string; userType: string } | null> {
+async function verifySocketToken(token: string | undefined, claimedUserId: string | undefined): Promise<{ userId: string; userType: string; role: string } | null> {
   if (!token || !claimedUserId) return null;
   try {
     const r = await rawDb.execute(rawSql`
-      SELECT id, user_type FROM users
+      SELECT id, user_type, role FROM users
       WHERE id = ${claimedUserId}::uuid
         AND auth_token = ${token}
         AND is_active = true
@@ -92,10 +92,22 @@ async function verifySocketToken(token: string | undefined, claimedUserId: strin
     return {
       userId: (r.rows[0] as any).id as string,
       userType: String((r.rows[0] as any).user_type || "").toLowerCase(),
+      role: String((r.rows[0] as any).role || "").toLowerCase(),
     };
   } catch {
     return null;
   }
+}
+
+function canUseSocketAs(verified: { userType: string; role: string }, claimedUserType: string): boolean {
+  if (!claimedUserType || claimedUserType === verified.userType) return true;
+  if (claimedUserType === "customer") {
+    return verified.role === "customer" || verified.role === "user";
+  }
+  if (claimedUserType === "driver") {
+    return verified.role === "driver" || verified.role === "pilot";
+  }
+  return false;
 }
 
 export function setupSocket(httpServer: HttpServer) {
@@ -132,9 +144,15 @@ export function setupSocket(httpServer: HttpServer) {
       return;
     }
     const userId = verified.userId;
-    const userType = verified.userType;
-    if (claimedUserType && claimedUserType !== userType) {
-      console.warn(`[SOCKET] Role mismatch for ${userId}: claimed=${claimedUserType}, actual=${userType}`);
+    let userType = verified.userType;
+    if (claimedUserType && claimedUserType !== verified.userType) {
+      if (!canUseSocketAs(verified, claimedUserType)) {
+        console.warn(`[SOCKET] Role mismatch for ${userId}: claimed=${claimedUserType}, actual=${verified.userType}, role=${verified.role}`);
+        socket.emit("auth:error", { message: "App role is not allowed for this account." });
+        socket.disconnect();
+        return;
+      }
+      userType = claimedUserType;
     }
 
     // Join personal room

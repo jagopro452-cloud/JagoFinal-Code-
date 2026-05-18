@@ -502,6 +502,49 @@ async function upsertDriverDocumentRow(
   `);
 }
 
+function normalizeAppRole(user: any): string {
+  return String(user?.userType || user?.user_type || user?.role || "").toLowerCase();
+}
+
+function canUseCustomerApp(user: any): boolean {
+  const userType = String(user?.userType || user?.user_type || "").toLowerCase();
+  const role = String(user?.role || "").toLowerCase();
+  return userType === "customer" || role === "customer" || role === "user";
+}
+
+function canUseDriverApp(user: any): boolean {
+  const userType = String(user?.userType || user?.user_type || "").toLowerCase();
+  const role = String(user?.role || "").toLowerCase();
+  return userType === "driver" || role === "driver" || role === "pilot";
+}
+
+function persistBase64Upload(imageData: string, docType: string): string {
+  const match = String(imageData).match(/^data:([^;]+);base64,(.+)$/);
+  const mimeType = match?.[1] || "image/jpeg";
+  const base64Body = match?.[2] || String(imageData);
+  const allowed: Record<string, string> = {
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "image/heic": "heic",
+    "image/heif": "heif",
+  };
+  const ext = allowed[mimeType.toLowerCase()];
+  if (!ext) throw new Error("Unsupported image format. Please upload JPG, PNG, WEBP, HEIC, or HEIF.");
+
+  const buffer = Buffer.from(base64Body, "base64");
+  if (!buffer.length) throw new Error("Image upload failed. Empty file.");
+  if (buffer.length > 8 * 1024 * 1024) throw new Error("Image is too large. Please retake a smaller photo.");
+
+  const uploadDir = path.join(process.cwd(), "uploads");
+  if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+  const safeType = String(docType || "document").replace(/[^a-z0-9_-]/gi, "_").toLowerCase();
+  const filename = `${Date.now()}-${crypto.randomBytes(8).toString("hex")}-${safeType}.${ext}`;
+  fs.writeFileSync(path.join(uploadDir, filename), buffer);
+  return `/uploads/${filename}`;
+}
+
 async function provisionAppUserSessionTx(
   trx: any,
   input: {
@@ -8248,11 +8291,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           AND (
             user_type=${userType}
             OR (${userType}='customer' AND role IN ('user', 'customer'))
+            OR (${userType}='driver' AND role IN ('driver', 'pilot'))
           )
         LIMIT 1
       `);
       if (!userRes.rows.length) return res.status(404).json({ message: "No account found. Please register first." });
       const user = camelize(userRes.rows[0]) as any;
+      const requestedUserType = String(userType).toLowerCase();
+      if (requestedUserType === "customer" && !canUseCustomerApp(user)) {
+        return res.status(403).json({ message: "Customer access required" });
+      }
+      if (requestedUserType === "driver" && !canUseDriverApp(user)) {
+        return res.status(403).json({ message: "Driver access required" });
+      }
       if (!user.isActive) return res.status(403).json({ message: "Account deactivated. Contact support." });
       if (!user.passwordHash) return res.status(400).json({ message: "Password not set. Please use Forgot Password to set one." });
       const match = await verifyPassword(password, user.passwordHash);
@@ -8267,7 +8318,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         WHERE id=${user.id}::uuid
       `);
       const walletBalance = safeFloat(user.walletBalance, 0);
-      res.json({ success: true, token, user: { id: user.id, fullName: user.fullName || user.name, phone: user.phone || user.mobile, email: user.email || null, userType: user.userType, profilePhoto: user.profilePhoto || user.profileImage || null, rating: safeFloat(user.rating, 5.0), isActive: user.isActive, walletBalance, isLocked: user.isLocked || false } });
+      const effectiveUserType = requestedUserType === "driver" ? "driver" : "customer";
+      res.json({ success: true, token, user: { id: user.id, fullName: user.fullName || user.name, phone: user.phone || user.mobile, email: user.email || null, userType: effectiveUserType, profilePhoto: user.profilePhoto || user.profileImage || null, rating: safeFloat(user.rating, 5.0), isActive: user.isActive, walletBalance, isLocked: user.isLocked || false } });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -8327,12 +8379,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Role-specific guards � always used after authApp
   function requireDriver(req: Request, res: Response, next: NextFunction) {
     const user = (req as any).currentUser;
-    if (user?.userType !== "driver") return res.status(403).json({ message: "Driver access required" });
+    if (!canUseDriverApp(user)) return res.status(403).json({ message: "Driver access required" });
+    (req as any).currentUser = { ...user, userType: "driver" };
     next();
   }
   function requireCustomer(req: Request, res: Response, next: NextFunction) {
     const user = (req as any).currentUser;
-    if (user?.userType !== "customer") return res.status(403).json({ message: "Customer access required" });
+    if (!canUseCustomerApp(user)) return res.status(403).json({ message: "Customer access required" });
+    (req as any).currentUser = { ...user, userType: "customer" };
     next();
   }
 
@@ -12871,12 +12925,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!docType || !imageData) return res.status(400).json({ message: "docType and imageData required" });
       const validTypes = ['dl_front', 'dl_back', 'rc', 'aadhar_front', 'aadhar_back', 'insurance', 'selfie', 'vehicle_photo'];
       if (!validTypes.includes(docType)) return res.status(400).json({ message: "Invalid docType" });
+      const fileUrl = persistBase64Upload(imageData, docType);
       logRegistrationAudit("driver.upload-document-base64", { docType }, { userId: user.id });
       await rawDb.transaction(async (trx) => {
-        await upsertDriverDocumentRow(trx, user.id, docType, imageData, expiryDate || null);
+        await upsertDriverDocumentRow(trx, user.id, docType, fileUrl, expiryDate || null);
       });
-      res.json({ success: true, docType, status: 'pending', message: "Document uploaded. Under review." });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+      res.json({ success: true, docType, fileUrl, status: 'pending', message: "Document uploaded. Under review." });
+    } catch (e: any) {
+      console.error("[driver-doc-upload] /api/app/driver/upload-document-base64 failed", {
+        message: e?.message,
+        stack: e?.stack,
+        userId: (req as any)?.currentUser?.id,
+        docType: req.body?.docType,
+      });
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
   });
 
   // -- DRIVER: Update registration profile fields -----------------------------

@@ -301,6 +301,14 @@ class AuthService {
         return;
       }
 
+      // Socket auth errors can arrive during reconnect/deploy races. Confirm
+      // the HTTP session is truly invalid before removing a fresh login.
+      final validation = await validateStoredSession();
+      if (validation.isValid || validation.isRetryable) {
+        _handle401RetryCount = 0;
+        return;
+      }
+
       _handle401RetryCount = 0;
       debugPrint('[AUTH] Confirmed unauthorized from $source, clearing session');
       await clearLocalSession();

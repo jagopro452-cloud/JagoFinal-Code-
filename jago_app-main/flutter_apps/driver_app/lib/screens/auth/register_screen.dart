@@ -229,9 +229,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
       final picked = await _picker.pickImage(
         source: source,
         preferredCameraDevice: type == 'selfie' ? CameraDevice.front : CameraDevice.rear,
-        imageQuality: 65,
-        maxWidth: 1080,
-        maxHeight: 1080,
+        imageQuality: type == 'selfie' ? 55 : 62,
+        maxWidth: type == 'selfie' ? 900 : 1080,
+        maxHeight: type == 'selfie' ? 900 : 1080,
       );
       if (picked == null) return;
 
@@ -382,6 +382,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
     final bytes = await file.readAsBytes();
     if (bytes.isEmpty) {
       throw Exception('Image upload failed');
+    }
+    if (bytes.length > 8 * 1024 * 1024) {
+      throw Exception('Image is too large. Please retake a smaller photo.');
     }
 
     final mimeType = _mimeTypeForFile(file.path);
