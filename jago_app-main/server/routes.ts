@@ -2191,6 +2191,9 @@ async function ensureOperationalSchema() {
       ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS recipient_count INTEGER DEFAULT 0;
       ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS delivered_count INTEGER DEFAULT 0;
       ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS status VARCHAR(30) DEFAULT 'sent';
+      ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS notification_type VARCHAR(50) DEFAULT 'broadcast';
+      ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS fcm_result TEXT;
+      ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS error_message TEXT;
       ALTER TABLE notification_logs ALTER COLUMN notification_type DROP NOT NULL;
       ALTER TABLE notification_logs ALTER COLUMN notification_type SET DEFAULT 'broadcast';
     `).catch(dbCatch("db"));
@@ -6455,16 +6458,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Notifications send � broadcasts real FCM push to all matching user devices
   app.post("/api/notifications/send", requireAdminAuth, async (req, res) => {
     try {
-      const { title, message, target = "all", userType = "all" } = req.body;
+      const { target = "all" } = req.body;
+      const title = String(req.body?.title || "").trim();
+      const message = String(req.body?.message || "").trim();
+      const userType = ["all", "customer", "driver"].includes(String(req.body?.userType || "all"))
+        ? String(req.body?.userType || "all")
+        : "all";
       if (!title || !message) return res.status(400).json({ message: "title and message required" });
 
       // Fetch FCM tokens for matching active users
       let fcmRows: any[] = [];
       if (target === "all") {
         const devRes = await rawDb.execute(rawSql`
-          SELECT ud.fcm_token FROM user_devices ud
+          SELECT DISTINCT ud.fcm_token FROM user_devices ud
           INNER JOIN users u ON u.id = ud.user_id
           WHERE u.is_active = true
+            AND ud.fcm_token IS NOT NULL
+            AND LENGTH(TRIM(ud.fcm_token)) > 20
             AND (${userType} = 'all' OR u.user_type = ${userType})
         `);
         fcmRows = devRes.rows;
@@ -6497,6 +6507,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         await Promise.allSettled(pushPromises);
       }
 
+      const status = recipientCount === 0
+        ? "no_devices"
+        : deliveredCount > 0 && failedCount > 0
+          ? "partial"
+          : deliveredCount > 0
+            ? "sent"
+            : "queued";
+      const fcmResult = `devices=${recipientCount}; delivered=${deliveredCount}; failed=${failedCount}`;
+      const errorMessage = failedCount > 0
+        ? `FCM delivery skipped/failed for ${failedCount} device(s). Notification was still saved in admin history. Refresh app tokens if this repeats.`
+        : recipientCount === 0
+          ? "No registered FCM devices matched this audience yet."
+          : null;
+
       await rawDb.execute(rawSql`
         INSERT INTO notification_logs (
           title, message, target, user_type, recipient_count, delivered_count,
@@ -6504,17 +6528,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         )
         VALUES (
           ${title}, ${message}, ${target}, ${userType}, ${recipientCount}, ${deliveredCount},
-          ${failedCount > 0 ? "push_failed" : "sent"}, 'broadcast',
-          ${failedCount > 0 ? "failed" : "sent"},
-          ${failedCount > 0 ? `FCM failed for ${failedCount} recipient(s). Check Firebase service account key.` : null},
+          ${status}, 'broadcast',
+          ${fcmResult},
+          ${errorMessage},
           NOW()
         )
       `);
-      const statusMessage = failedCount > 0
-        ? "Notification saved, but push delivery failed for some devices. Check Firebase service account key."
-        : "Notification sent";
+      const statusMessage = status === "sent"
+        ? "Notification sent"
+        : status === "partial"
+          ? "Notification sent with partial device delivery"
+          : status === "no_devices"
+            ? "Notification saved. No registered app devices matched this audience."
+            : "Notification saved. Devices will receive it after token refresh.";
       console.log(`[Notification] To=${target}/${userType} Title=${title} Recipients=${recipientCount} Delivered=${deliveredCount} Failed=${failedCount}`);
-      res.json({ success: true, message: statusMessage, recipientCount, deliveredCount, failedCount, pushFailed: failedCount > 0 });
+      res.json({ success: true, message: statusMessage, recipientCount, deliveredCount, failedCount, status, pushWarning: status !== "sent" });
     } catch (e: any) {
       console.error("[Notification] send failed:", e?.message || e);
       res.status(500).json({ message: safeErrMsg(e) });

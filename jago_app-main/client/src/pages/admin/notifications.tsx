@@ -16,6 +16,13 @@ function timeAgo(dateStr: string) {
 
 const TARGET_LABELS: any = { all: "All Users", customer: "Customers", driver: "Drivers" };
 const TYPE_COLORS: any = { all: "primary", customer: "info", driver: "success" };
+const STATUS_BADGES: Record<string, { label: string; cls: string }> = {
+  sent: { label: "sent", cls: "bg-success bg-opacity-10 text-success" },
+  partial: { label: "partial", cls: "bg-warning bg-opacity-10 text-warning" },
+  queued: { label: "queued", cls: "bg-info bg-opacity-10 text-info" },
+  no_devices: { label: "no devices", cls: "bg-secondary bg-opacity-10 text-secondary" },
+  push_failed: { label: "legacy failed", cls: "bg-warning bg-opacity-10 text-warning" },
+};
 
 export default function NotificationsPage() {
   const { toast } = useToast();
@@ -30,12 +37,9 @@ export default function NotificationsPage() {
   const sendMutation = useMutation({
     mutationFn: (payload: any) => apiRequest("POST", "/api/notifications/send", payload).then(r => r.json()),
     onSuccess: (data: any) => {
-      toast({ title: `✅ Notification sent to ${data.recipientCount || 0} users` });
-      if (data.pushFailed) {
-        toast({
-          title: `Push failed for ${data.failedCount || 0} devices`,
-          variant: "destructive",
-        });
+      toast({ title: data.message || `Notification saved for ${data.recipientCount || 0} devices` });
+      if (data.pushWarning) {
+        toast({ title: `Delivery warning: ${data.failedCount || 0} device token(s) need refresh`, variant: "default" });
       }
       setForm({ title: "", message: "", target: "all", userType: "all" });
       queryClient.invalidateQueries({ queryKey: ["/api/notifications"] });
@@ -62,9 +66,9 @@ export default function NotificationsPage() {
       <div className="container-fluid">
         <div className="row g-3 mb-4">
           {[
-            { label: "Total Sent", val: history.length, icon: "bi-bell-fill", color: "#4f46e5", bg: "linear-gradient(135deg,#4f46e515,#818cf815)" },
+            { label: "Total Campaigns", val: history.length, icon: "bi-bell-fill", color: "#4f46e5", bg: "linear-gradient(135deg,#4f46e515,#818cf815)" },
             { label: "Today Sent", val: todaySent, icon: "bi-calendar-check-fill", color: "#059669", bg: "linear-gradient(135deg,#05966915,#34d39915)" },
-            { label: "Total Reached", val: totalSent.toLocaleString(), icon: "bi-people-fill", color: "#0284c7", bg: "linear-gradient(135deg,#0284c715,#38bdf815)" },
+            { label: "Target Devices", val: totalSent.toLocaleString(), icon: "bi-people-fill", color: "#0284c7", bg: "linear-gradient(135deg,#0284c715,#38bdf815)" },
             { label: "This Month", val: history.filter((n: any) => new Date(n.sentAt) >= new Date(new Date().getFullYear(), new Date().getMonth(), 1)).length, icon: "bi-bar-chart-fill", color: "#d97706", bg: "linear-gradient(135deg,#d9770615,#fbbf2415)" },
           ].map((s, i) => (
             <div className="col-6 col-md-3" key={i}>
@@ -159,36 +163,45 @@ export default function NotificationsPage() {
                     <i className="bi bi-bell-slash fs-2 d-block mb-2 opacity-25"></i>
                     <p className="mb-0">No notifications sent yet</p>
                   </div>
-                ) : history.map((n: any, i: number) => (
-                  <div key={n.id} data-testid={`notif-row-${n.id}`} className="p-3 border-bottom" style={{ background: i % 2 === 0 ? "#fff" : "#fafbfc" }}>
-                    <div className="d-flex align-items-start gap-3">
-                      <div style={{
-                        width: 38, height: 38, borderRadius: 10, flexShrink: 0,
-                        background: TYPE_COLORS[n.userType] === "primary" ? "#4f46e522" : TYPE_COLORS[n.userType] === "info" ? "#0284c722" : "#05966922",
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                      }}>
-                        <i className="bi bi-bell-fill" style={{
-                          fontSize: "0.9rem",
-                          color: TYPE_COLORS[n.userType] === "primary" ? "#4f46e5" : TYPE_COLORS[n.userType] === "info" ? "#0284c7" : "#059669"
-                        }} />
-                      </div>
-                      <div className="flex-grow-1 min-w-0">
-                        <div className="d-flex align-items-center gap-2 mb-1 flex-wrap">
-                          <span style={{ fontSize: "0.85rem", fontWeight: 600 }}>{n.title}</span>
-                          <span className={`badge bg-${TYPE_COLORS[n.userType] || "secondary"} bg-opacity-10 text-${TYPE_COLORS[n.userType] || "secondary"}`} style={{ fontSize: "0.68rem" }}>
-                            {TARGET_LABELS[n.userType] || n.userType}
-                          </span>
+                ) : history.map((n: any, i: number) => {
+                  const status = STATUS_BADGES[n.status] || STATUS_BADGES.sent;
+                  return (
+                    <div key={n.id} data-testid={`notif-row-${n.id}`} className="p-3 border-bottom" style={{ background: i % 2 === 0 ? "#fff" : "#fafbfc" }}>
+                      <div className="d-flex align-items-start gap-3">
+                        <div style={{
+                          width: 38, height: 38, borderRadius: 10, flexShrink: 0,
+                          background: TYPE_COLORS[n.userType] === "primary" ? "#4f46e522" : TYPE_COLORS[n.userType] === "info" ? "#0284c722" : "#05966922",
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                        }}>
+                          <i className="bi bi-bell-fill" style={{
+                            fontSize: "0.9rem",
+                            color: TYPE_COLORS[n.userType] === "primary" ? "#4f46e5" : TYPE_COLORS[n.userType] === "info" ? "#0284c7" : "#059669"
+                          }} />
                         </div>
-                        <div style={{ fontSize: "0.78rem", color: "#64748b", marginBottom: 4 }}>{n.message}</div>
-                        <div className="d-flex gap-3" style={{ fontSize: "0.72rem", color: "#94a3b8" }}>
-                          <span><i className="bi bi-people me-1"></i>{(n.recipientCount || 0).toLocaleString()} recipients</span>
-                          <span><i className="bi bi-clock me-1"></i>{timeAgo(n.sentAt)}</span>
-                          <span className="badge bg-success bg-opacity-10 text-success" style={{ fontSize: "0.68rem" }}>{n.status}</span>
+                        <div className="flex-grow-1 min-w-0">
+                          <div className="d-flex align-items-center gap-2 mb-1 flex-wrap">
+                            <span style={{ fontSize: "0.85rem", fontWeight: 600 }}>{n.title}</span>
+                            <span className={`badge bg-${TYPE_COLORS[n.userType] || "secondary"} bg-opacity-10 text-${TYPE_COLORS[n.userType] || "secondary"}`} style={{ fontSize: "0.68rem" }}>
+                              {TARGET_LABELS[n.userType] || n.userType}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: "0.78rem", color: "#64748b", marginBottom: 4 }}>{n.message}</div>
+                          <div className="d-flex gap-3 flex-wrap" style={{ fontSize: "0.72rem", color: "#94a3b8" }}>
+                            <span><i className="bi bi-people me-1"></i>{(n.recipientCount || 0).toLocaleString()} devices</span>
+                            <span><i className="bi bi-check2-circle me-1"></i>{(n.deliveredCount || 0).toLocaleString()} delivered</span>
+                            <span><i className="bi bi-clock me-1"></i>{timeAgo(n.sentAt)}</span>
+                            <span className={`badge ${status.cls}`} style={{ fontSize: "0.68rem" }}>{status.label}</span>
+                          </div>
+                          {n.errorMessage && (
+                            <div className="mt-2 text-muted" style={{ fontSize: "0.72rem" }}>
+                              <i className="bi bi-info-circle me-1"></i>{n.errorMessage}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </div>
