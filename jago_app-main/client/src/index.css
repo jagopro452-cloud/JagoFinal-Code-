@@ -4687,6 +4687,9 @@ html[data-theme="dark"] .jd-view-all-btn:hover {
 /* Admin Stability Guard: prevents sidebar/header/content jump from delayed
    body classes, global page animations, and broad transform transitions. */
 body.admin-route {
+  --admin-sidebar-width: 256px;
+  --admin-sidebar-folded-width: 72px;
+  --admin-header-height: 76px;
   overflow-x: hidden;
   background: #F3F6FB !important;
 }
@@ -4703,33 +4706,110 @@ body.admin-route .admin-shell .admin-main-inner {
 }
 
 body.admin-route .admin-shell .aside {
-  width: 220px !important;
-  min-width: 220px !important;
-  max-width: 220px !important;
+  width: var(--admin-sidebar-width) !important;
+  min-width: var(--admin-sidebar-width) !important;
+  max-width: var(--admin-sidebar-width) !important;
+  height: 100vh !important;
   transition: none !important;
   will-change: auto !important;
 }
 
 body.admin-route.aside-folded .admin-shell .aside {
-  width: 60px !important;
-  min-width: 60px !important;
-  max-width: 60px !important;
+  width: var(--admin-sidebar-folded-width) !important;
+  min-width: var(--admin-sidebar-folded-width) !important;
+  max-width: var(--admin-sidebar-folded-width) !important;
+}
+
+body.admin-route .admin-shell .aside-header {
+  height: var(--admin-header-height) !important;
+  min-height: var(--admin-header-height) !important;
+  padding: 0 18px !important;
+  display: flex !important;
+  align-items: center !important;
+  overflow: visible !important;
+}
+
+body.admin-route .admin-shell .aside-header .logo {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+}
+
+body.admin-route .admin-shell .admin-brand {
+  min-width: 0 !important;
+}
+
+body.admin-route .admin-shell .admin-brand-mark {
+  flex: 0 0 34px !important;
+  width: 34px !important;
+  height: 34px !important;
+}
+
+body.admin-route .admin-shell .admin-brand-mark img {
+  width: 21px !important;
+  height: 21px !important;
+}
+
+body.admin-route .admin-shell .admin-brand-name {
+  font-size: 1rem !important;
+  line-height: 1 !important;
+}
+
+body.admin-route .admin-shell .admin-brand-tag {
+  font-size: 0.56rem !important;
+  line-height: 1 !important;
+}
+
+body.admin-route.aside-folded .admin-shell .admin-brand-copy {
+  display: none !important;
+}
+
+body.admin-route .admin-shell .toggle-menu-button {
+  position: static !important;
+  flex: 0 0 32px !important;
+  width: 32px !important;
+  height: 32px !important;
+  margin-left: 12px !important;
+  transform: none !important;
+}
+
+body.admin-route.aside-folded .admin-shell .toggle-menu-button {
+  margin-left: 0 !important;
 }
 
 body.admin-route .admin-shell .header {
-  left: 220px !important;
+  left: var(--admin-sidebar-width) !important;
+  height: var(--admin-header-height) !important;
+  min-height: var(--admin-header-height) !important;
   transition: none !important;
   will-change: auto !important;
 }
 
 body.admin-route.aside-folded .admin-shell .header {
-  left: 60px !important;
+  left: var(--admin-sidebar-folded-width) !important;
+}
+
+body.admin-route .admin-shell .header-inner {
+  min-height: var(--admin-header-height) !important;
+  height: var(--admin-header-height) !important;
+  padding: 0 28px !important;
+}
+
+body.admin-route .admin-shell .header-left-col,
+body.admin-route .admin-shell .header-right,
+body.admin-route .admin-shell .header-nav-list {
+  min-height: var(--admin-header-height) !important;
+  align-items: center !important;
+}
+
+body.admin-route .admin-shell .aside-body-wrapper {
+  min-height: 0 !important;
 }
 
 body.admin-route .admin-shell .main-area,
 body.admin-route .admin-shell .admin-main-area {
-  margin-left: 220px !important;
-  padding-top: 64px !important;
+  margin-left: var(--admin-sidebar-width) !important;
+  padding-top: var(--admin-header-height) !important;
   min-height: 100vh !important;
   transition: none !important;
   will-change: auto !important;
@@ -4737,7 +4817,7 @@ body.admin-route .admin-shell .admin-main-area {
 
 body.admin-route.aside-folded .admin-shell .main-area,
 body.admin-route.aside-folded .admin-shell .admin-main-area {
-  margin-left: 60px !important;
+  margin-left: var(--admin-sidebar-folded-width) !important;
 }
 
 body.admin-route .admin-shell .card,

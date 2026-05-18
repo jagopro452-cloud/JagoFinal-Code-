@@ -491,9 +491,32 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           border-bottom: 1px solid rgba(226,232,240,0.9);
           box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
         }
+        .admin-shell .header-left-col,
+        .admin-shell .header-right-col,
+        .admin-shell .header-right,
+        .admin-shell .header-nav-list {
+          display: flex;
+          align-items: center;
+        }
+        .admin-shell .header-right-col {
+          justify-content: flex-end;
+        }
         .admin-shell .header-icon-btn,
         .admin-shell .header-avatar-btn {
           box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+        }
+        .admin-shell .header-icon-btn,
+        .admin-shell .header-avatar-btn,
+        .admin-shell .header-avatar-btn.avatar {
+          width: 42px !important;
+          height: 42px !important;
+          min-width: 42px !important;
+          min-height: 42px !important;
+          border-radius: 14px !important;
+        }
+        .admin-shell .header-nav-list > li {
+          display: flex;
+          align-items: center;
         }
         .admin-shell .admin-main-inner {
           padding: 26px 26px 30px;
