@@ -1954,6 +1954,12 @@ async function ensureOperationalSchema() {
       SET is_active = COALESCE((SELECT service_status='active' FROM platform_services WHERE service_key='parcel_delivery' LIMIT 1), vc.is_active)
       WHERE vc.type = 'parcel'
     `).catch(dbCatch("db"));
+    await rawDb.execute(rawSql`
+      UPDATE vehicle_categories
+      SET is_active=false
+      WHERE LOWER(COALESCE(vehicle_type, '')) IN ('cargo_' || 'car', 'car_' || 'parcel', 'parcel_' || 'car')
+         OR LOWER(name) IN ('cargo ' || 'car', 'car ' || 'parcel', 'parcel ' || 'car')
+    `).catch(dbCatch("db"));
     console.log('[seed] vehicle_categories.is_active synced with platform_services');
 
     // -- Auto-promote pending drivers to verified so they can go online ------
@@ -2071,6 +2077,12 @@ async function ensureOperationalSchema() {
       UPDATE vehicle_categories
       SET is_active=true
       WHERE type='ride' AND vehicle_type IN ('bike', 'auto', 'mini_car', 'sedan', 'suv')
+    `).catch(dbCatch("db"));
+    await rawDb.execute(rawSql`
+      UPDATE vehicle_categories
+      SET is_active=false
+      WHERE LOWER(COALESCE(vehicle_type, '')) IN ('cargo_' || 'car', 'car_' || 'parcel', 'parcel_' || 'car')
+         OR LOWER(name) IN ('cargo ' || 'car', 'car ' || 'parcel', 'parcel ' || 'car')
     `).catch(dbCatch("db"));
 
     // -- parcel_orders: multi-drop Porter-style delivery -----------------------

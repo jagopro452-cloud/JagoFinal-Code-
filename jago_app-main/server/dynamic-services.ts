@@ -355,9 +355,10 @@ export async function getDriverEligibleServices(
 ): Promise<DriverServiceConfig> {
   // Determine driver's vehicle type
   const driverR = await rawDb.execute(rawSql`
-    SELECT u.vehicle_type, vc.name as vehicle_name, vc.type as vehicle_type_code
+    SELECT dd.vehicle_type, vc.name as vehicle_name, vc.vehicle_type as vehicle_type_code
     FROM users u
-    LEFT JOIN vehicle_categories vc ON vc.id = u.vehicle_category_id
+    LEFT JOIN driver_details dd ON dd.user_id = u.id
+    LEFT JOIN vehicle_categories vc ON vc.id = dd.vehicle_category_id
     WHERE u.id = ${driverId}::uuid
   `);
 
@@ -424,13 +425,16 @@ export async function getDriverEligibleServices(
   // Get matching parcel vehicles
   let parcelVehicles: ParcelVehicleType[] = [];
   if (eligibleParcelKeys.length > 0) {
+    const parcelKeyArray = rawSql.raw(
+      `ARRAY[${eligibleParcelKeys.map((key) => `'${key.replace(/'/g, "''")}'`).join(",")}]::text[]`
+    );
     const pvR = await rawDb.execute(rawSql`
       SELECT vehicle_key as key, name, subtitle, icon,
         COALESCE(image_url, '') as image_url, capacity_label,
         max_weight_kg, suitable_items, accent_color,
         base_fare, per_km, per_kg, load_charge, 5 as eta_minutes
       FROM parcel_vehicle_types
-      WHERE is_active = true AND vehicle_key = ANY(${eligibleParcelKeys})
+      WHERE is_active = true AND vehicle_key = ANY(${parcelKeyArray})
       ORDER BY sort_order ASC
     `);
     parcelVehicles = (pvR.rows as any[]).map(row => ({
