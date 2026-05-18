@@ -31,6 +31,12 @@ export default function NotificationsPage() {
     mutationFn: (payload: any) => apiRequest("POST", "/api/notifications/send", payload).then(r => r.json()),
     onSuccess: (data: any) => {
       toast({ title: `✅ Notification sent to ${data.recipientCount || 0} users` });
+      if (data.pushFailed) {
+        toast({
+          title: `Push failed for ${data.failedCount || 0} devices`,
+          variant: "destructive",
+        });
+      }
       setForm({ title: "", message: "", target: "all", userType: "all" });
       queryClient.invalidateQueries({ queryKey: ["/api/notifications"] });
     },

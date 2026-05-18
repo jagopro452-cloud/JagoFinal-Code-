@@ -2178,6 +2178,17 @@ async function ensureOperationalSchema() {
       );
       CREATE INDEX IF NOT EXISTS idx_notification_logs_sent_at ON notification_logs(sent_at DESC);
     `).catch(dbCatch("db"));
+    await rawDb.execute(rawSql`
+      ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS title VARCHAR(200);
+      ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS message TEXT;
+      ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS target VARCHAR(30) DEFAULT 'all';
+      ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS user_type VARCHAR(30) DEFAULT 'all';
+      ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS recipient_count INTEGER DEFAULT 0;
+      ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS delivered_count INTEGER DEFAULT 0;
+      ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS status VARCHAR(30) DEFAULT 'sent';
+      ALTER TABLE notification_logs ALTER COLUMN notification_type DROP NOT NULL;
+      ALTER TABLE notification_logs ALTER COLUMN notification_type SET DEFAULT 'broadcast';
+    `).catch(dbCatch("db"));
 
     // -- Driver payment ledger: records every commission debt/payment ----------
     await rawDb.execute(rawSql`
@@ -6432,29 +6443,51 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       // Fire FCM pushes (non-blocking � best effort)
       let deliveredCount = 0;
+      let failedCount = 0;
       if (fcmRows.length > 0) {
         const pushPromises = fcmRows.map(async (r: any) => {
           if (!r.fcm_token) return;
-          const ok = await sendFcmNotification({
-            fcmToken: r.fcm_token,
-            title,
-            body: message,
-            data: { type: "broadcast", target, userType },
-            channelId: "general_alerts",
-            sound: "default",
-          });
-          if (ok) deliveredCount++;
+          try {
+            const ok = await sendFcmNotification({
+              fcmToken: r.fcm_token,
+              title,
+              body: message,
+              data: { type: "broadcast", target, userType },
+              channelId: "general_alerts",
+              sound: "default",
+            });
+            if (ok) deliveredCount++;
+            else failedCount++;
+          } catch (pushErr: any) {
+            failedCount++;
+            console.warn("[Notification] FCM delivery failed:", pushErr?.message || pushErr);
+          }
         });
         await Promise.allSettled(pushPromises);
       }
 
       await rawDb.execute(rawSql`
-        INSERT INTO notification_logs (title, message, target, user_type, recipient_count, delivered_count, status, sent_at)
-        VALUES (${title}, ${message}, ${target}, ${userType}, ${recipientCount}, ${deliveredCount}, 'sent', NOW())
+        INSERT INTO notification_logs (
+          title, message, target, user_type, recipient_count, delivered_count,
+          status, notification_type, fcm_result, error_message, sent_at
+        )
+        VALUES (
+          ${title}, ${message}, ${target}, ${userType}, ${recipientCount}, ${deliveredCount},
+          ${failedCount > 0 ? "push_failed" : "sent"}, 'broadcast',
+          ${failedCount > 0 ? "failed" : "sent"},
+          ${failedCount > 0 ? `FCM failed for ${failedCount} recipient(s). Check Firebase service account key.` : null},
+          NOW()
+        )
       `);
-      console.log(`[Notification] To=${target}/${userType} Title=${title} Recipients=${recipientCount} Delivered=${deliveredCount}`);
-      res.json({ success: true, message: "Notification sent", recipientCount, deliveredCount });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+      const statusMessage = failedCount > 0
+        ? "Notification saved, but push delivery failed for some devices. Check Firebase service account key."
+        : "Notification sent";
+      console.log(`[Notification] To=${target}/${userType} Title=${title} Recipients=${recipientCount} Delivered=${deliveredCount} Failed=${failedCount}`);
+      res.json({ success: true, message: statusMessage, recipientCount, deliveredCount, failedCount, pushFailed: failedCount > 0 });
+    } catch (e: any) {
+      console.error("[Notification] send failed:", e?.message || e);
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
   });
 
   // --- Car Sharing APIs --------------------------------------------------------
