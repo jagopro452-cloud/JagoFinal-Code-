@@ -6,6 +6,7 @@ const rawSql = sql;
 
 let admin: any = null;
 let fcmInitialized = false;
+let lastFcmError: string | null = null;
 
 // ── Initialize Firebase Admin (env var only, no SMS fallback) ────────────────
 async function initFirebaseAsync() {
@@ -33,13 +34,19 @@ async function initFirebaseAsync() {
     // Avoid re-initializing if already done
     if (firebaseAdmin.apps.length === 0) {
       const serviceAccount = JSON.parse(serviceAccountJson);
+      if (typeof serviceAccount.private_key === "string") {
+        serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, "\n");
+      }
       firebaseAdmin.initializeApp({
         credential: firebaseAdmin.credential.cert(serviceAccount),
       });
     }
     admin = firebaseAdmin;
+    lastFcmError = null;
     log("[FCM] Firebase Admin initialized successfully", "fcm");
   } catch (e: any) {
+    admin = null;
+    lastFcmError = e?.message || "Firebase Admin initialization failed";
     log(`[FCM] Init failed: ${e.message}`, "fcm");
   }
 }
@@ -60,6 +67,10 @@ export async function getFirebaseAdminAsync(): Promise<any> {
 export function getFirebaseAdmin(): any {
   initFirebase();
   return admin;
+}
+
+export function getLastFcmError(): string | null {
+  return lastFcmError;
 }
 
 // ── Send single FCM notification ─────────────────────────────────────────────
@@ -120,9 +131,15 @@ export async function sendFcmNotification(opts: {
     }
 
     await admin.messaging().send(message);
+    lastFcmError = null;
     log(`[FCM] Sent to ${opts.fcmToken.substring(0, 20)}... — ${opts.title}${opts.dataOnly ? " (data-only)" : ""}`, "fcm");
     return true;
   } catch (e: any) {
+    lastFcmError = e?.message || "FCM send failed";
+    if (/invalid_grant|Invalid JWT Signature|certificate key file has been revoked/i.test(lastFcmError || "")) {
+      admin = null;
+      fcmInitialized = false;
+    }
     log(`[FCM] Send failed: ${e.message}`, "fcm");
     return false;
   }

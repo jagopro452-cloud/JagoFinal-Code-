@@ -419,10 +419,10 @@ export const notificationLogs = pgTable("notification_logs", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   title: varchar("title", { length: 255 }).notNull(),
   message: text("message").notNull(),
-  target: varchar("target", { length: 50 }).notNull().default("all"),
-  userType: varchar("user_type", { length: 50 }).notNull().default("all"),
+  target: varchar("target", { length: 80 }).notNull().default("all"),
+  userType: varchar("user_type", { length: 80 }).notNull().default("all"),
   recipientCount: integer("recipient_count").default(0),
-  status: varchar("status", { length: 30 }).notNull().default("sent"),
+  status: varchar("status", { length: 80 }).notNull().default("sent"),
   sentAt: timestamp("sent_at").defaultNow(),
 });
 

@@ -44,7 +44,11 @@ export default function NotificationsPage() {
       setForm({ title: "", message: "", target: "all", userType: "all" });
       queryClient.invalidateQueries({ queryKey: ["/api/notifications"] });
     },
-    onError: () => toast({ title: "Failed to send notification", variant: "destructive" }),
+    onError: (error: any) => toast({
+      title: "Failed to send notification",
+      description: error?.message || "Server rejected the notification request.",
+      variant: "destructive",
+    }),
   });
 
   const totalSent = history.reduce((s: number, n: any) => s + (n.recipientCount || 0), 0);

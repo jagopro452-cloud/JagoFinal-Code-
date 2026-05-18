@@ -1,7 +1,7 @@
 import express from "express";
 import type { Express, Request, Response, NextFunction } from "express";
 import { log } from "./index";
-import { getFirebaseAdminAsync, notifyDriverNewRide, notifyDriverNewParcel, notifyCustomerDriverAccepted, notifyCustomerDriverArrived, notifyCustomerTripCompleted, notifyTripCancelled, sendFcmNotification } from "./fcm";
+import { getFirebaseAdminAsync, getLastFcmError, notifyDriverNewRide, notifyDriverNewParcel, notifyCustomerDriverAccepted, notifyCustomerDriverArrived, notifyCustomerTripCompleted, notifyTripCancelled, sendFcmNotification } from "./fcm";
 import { sendCustomSms } from "./sms";
 import { notifyNearbyDriversNewTrip, io } from "./socket";
 import type { Server } from "http";
@@ -2194,6 +2194,10 @@ async function ensureOperationalSchema() {
       ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS notification_type VARCHAR(50) DEFAULT 'broadcast';
       ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS fcm_result TEXT;
       ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS error_message TEXT;
+      ALTER TABLE notification_logs ALTER COLUMN target TYPE VARCHAR(80);
+      ALTER TABLE notification_logs ALTER COLUMN user_type TYPE VARCHAR(80);
+      ALTER TABLE notification_logs ALTER COLUMN status TYPE VARCHAR(80);
+      ALTER TABLE notification_logs ALTER COLUMN notification_type TYPE VARCHAR(80);
       ALTER TABLE notification_logs ALTER COLUMN notification_type DROP NOT NULL;
       ALTER TABLE notification_logs ALTER COLUMN notification_type SET DEFAULT 'broadcast';
     `).catch(dbCatch("db"));
@@ -6458,7 +6462,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Notifications send � broadcasts real FCM push to all matching user devices
   app.post("/api/notifications/send", requireAdminAuth, async (req, res) => {
     try {
-      const { target = "all" } = req.body;
+      const safeLogValue = (value: unknown, fallback = "all", max = 70) => {
+        const v = String(value ?? fallback).trim();
+        return (v || fallback).slice(0, max);
+      };
+      const target = safeLogValue(req.body?.target, "all");
       const title = String(req.body?.title || "").trim();
       const message = String(req.body?.message || "").trim();
       const userType = ["all", "customer", "driver"].includes(String(req.body?.userType || "all"))
@@ -6468,17 +6476,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       // Fetch FCM tokens for matching active users
       let fcmRows: any[] = [];
-      if (target === "all") {
-        const devRes = await rawDb.execute(rawSql`
-          SELECT DISTINCT ud.fcm_token FROM user_devices ud
-          INNER JOIN users u ON u.id = ud.user_id
-          WHERE u.is_active = true
-            AND ud.fcm_token IS NOT NULL
-            AND LENGTH(TRIM(ud.fcm_token)) > 20
-            AND (${userType} = 'all' OR u.user_type = ${userType})
-        `);
-        fcmRows = devRes.rows;
-      }
+      const audienceTypes =
+        userType === "driver" ? ["driver", "pilot"] :
+        userType === "customer" ? ["customer", "user"] :
+        ["customer", "user", "driver", "pilot"];
+      const devRes = await rawDb.execute(rawSql`
+        SELECT DISTINCT TRIM(ud.fcm_token) AS fcm_token
+        FROM user_devices ud
+        INNER JOIN users u ON u.id = ud.user_id
+        WHERE COALESCE(u.is_active, true) = true
+          AND ud.fcm_token IS NOT NULL
+          AND LENGTH(TRIM(ud.fcm_token)) > 20
+          AND LOWER(COALESCE(u.user_type, 'customer')) = ANY(${audienceTypes}::text[])
+      `);
+      fcmRows = devRes.rows;
 
       const recipientCount = fcmRows.length;
 
@@ -6515,25 +6526,34 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             ? "sent"
             : "queued";
       const fcmResult = `devices=${recipientCount}; delivered=${deliveredCount}; failed=${failedCount}`;
+      const fcmError = getLastFcmError();
       const errorMessage = failedCount > 0
-        ? `FCM delivery skipped/failed for ${failedCount} device(s). Notification was still saved in admin history. Refresh app tokens if this repeats.`
+        ? `FCM delivery failed for ${failedCount} device(s). ${fcmError ? `Firebase: ${fcmError}` : "Refresh app tokens if this repeats."}`
         : recipientCount === 0
           ? "No registered FCM devices matched this audience yet."
           : null;
 
-      await rawDb.execute(rawSql`
-        INSERT INTO notification_logs (
-          title, message, target, user_type, recipient_count, delivered_count,
-          status, notification_type, fcm_result, error_message, sent_at
-        )
-        VALUES (
-          ${title}, ${message}, ${target}, ${userType}, ${recipientCount}, ${deliveredCount},
-          ${status}, 'broadcast',
-          ${fcmResult},
-          ${errorMessage},
-          NOW()
-        )
-      `);
+      try {
+        await rawDb.execute(rawSql`
+          INSERT INTO notification_logs (
+            title, message, target, user_type, recipient_count, delivered_count,
+            status, notification_type, fcm_result, error_message, sent_at
+          )
+          VALUES (
+            ${title.slice(0, 190)}, ${message}, ${target}, ${userType}, ${recipientCount}, ${deliveredCount},
+            ${status}, 'broadcast',
+            ${fcmResult},
+            ${errorMessage},
+            NOW()
+          )
+        `);
+      } catch (logErr: any) {
+        console.error("[Notification] history insert failed:", logErr?.message || logErr);
+        await rawDb.execute(rawSql`
+          INSERT INTO notification_logs (title, message, target, user_type, recipient_count, delivered_count, status, sent_at)
+          VALUES (${title.slice(0, 190)}, ${message}, 'all', ${userType}, ${recipientCount}, ${deliveredCount}, ${status}, NOW())
+        `);
+      }
       const statusMessage = status === "sent"
         ? "Notification sent"
         : status === "partial"
