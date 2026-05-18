@@ -28,7 +28,6 @@ class IncomingParcelSheet extends StatefulWidget {
 class _IncomingParcelSheetState extends State<IncomingParcelSheet>
     with TickerProviderStateMixin {
   late AnimationController _pulseCtrl;
-  late AnimationController _ringCtrl;
   int _countdown = 40;
   Timer? _countdownTimer;
   Timer? _vibrationTimer;
@@ -41,9 +40,6 @@ class _IncomingParcelSheetState extends State<IncomingParcelSheet>
 
     _pulseCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 600))
       ..repeat(reverse: true);
-    _ringCtrl = AnimationController(vsync: this, duration: const Duration(seconds: 40))
-      ..forward();
-
     // Start loud alarm siren
     AlarmService().startAlarm();
 
@@ -122,7 +118,6 @@ class _IncomingParcelSheetState extends State<IncomingParcelSheet>
   @override
   void dispose() {
     _pulseCtrl.dispose();
-    _ringCtrl.dispose();
     _countdownTimer?.cancel();
     _vibrationTimer?.cancel();
     if (!_responded) {
@@ -148,13 +143,11 @@ class _IncomingParcelSheetState extends State<IncomingParcelSheet>
         : vehicleType.contains('tata') || vehicleType.contains('mini') || vehicleType.contains('tempo')
             ? Icons.local_shipping_rounded
             : vehicleType.contains('auto') ? Icons.electric_rickshaw_rounded
-            : vehicleType.contains('car') ? Icons.directions_car_rounded
             : Icons.electric_bike_rounded;
 
     final vehicleName = vehicleType.contains('pickup') || vehicleType.contains('truck') ? 'Pickup Truck'
         : vehicleType.contains('tata') || vehicleType.contains('mini') || vehicleType.contains('tempo') ? 'Mini Truck'
         : vehicleType.contains('auto') ? 'Auto Parcel'
-        : vehicleType.contains('car') ? 'Car Cargo'
         : 'Bike Parcel';
 
     return PopScope(
@@ -215,30 +208,33 @@ class _IncomingParcelSheetState extends State<IncomingParcelSheet>
                   ),
                 ])),
                 const SizedBox(width: 16),
-                // Circular countdown
-                Stack(alignment: Alignment.center, children: [
-                  SizedBox(width: 84, height: 84,
-                    child: AnimatedBuilder(
-                      animation: _ringCtrl,
-                      builder: (_, __) => CircularProgressIndicator(
-                        value: 1.0 - _ringCtrl.value,
-                        strokeWidth: 6,
-                        backgroundColor: Colors.white.withValues(alpha: 0.10),
-                        valueColor: AlwaysStoppedAnimation<Color>(
-                          urgency ? const Color(0xFFF59E0B) : const Color(0xFFF59E0B).withValues(alpha: 0.7)),
+                AnimatedBuilder(
+                  animation: _pulseCtrl,
+                  builder: (_, __) => Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: urgency
+                          ? const Color(0xFFF59E0B).withValues(alpha: 0.20 + 0.08 * _pulseCtrl.value)
+                          : Colors.white.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: const Color(0xFFF59E0B).withValues(alpha: urgency ? 0.55 : 0.28),
                       ),
                     ),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Icon(Icons.timer_rounded,
+                          color: urgency ? const Color(0xFFF59E0B) : Colors.white,
+                          size: 16),
+                      const SizedBox(width: 6),
+                      Text('$_countdown s',
+                          style: TextStyle(
+                            color: urgency ? const Color(0xFFF59E0B) : Colors.white,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                          )),
+                    ]),
                   ),
-                  Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                    Text('$_countdown',
-                      style: TextStyle(
-                        color: urgency ? const Color(0xFFF59E0B) : Colors.white,
-                        fontSize: 28, fontWeight: FontWeight.w500, height: 1.0)),
-                    Text('sec', style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.4),
-                      fontSize: 10, fontWeight: FontWeight.w400)),
-                  ]),
-                ]),
+                ),
               ]),
             ),
 

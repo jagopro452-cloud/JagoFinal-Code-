@@ -71,11 +71,54 @@ class _TrackingScreenState extends State<TrackingScreen>
   int? _lastRemainingDistanceMeters;
   DateTime? _routeRefreshUntil;
   DateTime? _lastRouteRefreshBannerAt;
+  DateTime? _lastDriverRouteRefreshAt;
+  DateTime? _lastCameraFollowAt;
 
   // Custom Top Banner state
   String? _bannerMessage;
   Color _bannerColor = JT.primary;
   Timer? _bannerTimer;
+
+  static const Map<String, int> _tripStatusRank = {
+    'searching': 0,
+    'driver_assigned': 1,
+    'accepted': 2,
+    'arrived': 3,
+    'in_progress': 4,
+    'on_the_way': 4,
+    'payment_pending': 5,
+    'completed': 6,
+    'cancelled': 6,
+  };
+
+  String _normalizeTripStatus(dynamic value) {
+    final status = value?.toString().trim();
+    if (status == null || status.isEmpty) return _status;
+    if (status == 'payment_pending') return 'completed';
+    return status;
+  }
+
+  int _rankOf(String status) => _tripStatusRank[status] ?? 0;
+
+  bool _isSameTripEvent(Map<String, dynamic> data) {
+    final id = data['tripId'] ?? data['trip_id'] ?? data['id'];
+    return id == null || id.toString().isEmpty || id.toString() == widget.tripId;
+  }
+
+  bool _canApplyStatus(String incoming) {
+    final currentRank = _rankOf(_status);
+    final incomingRank = _rankOf(incoming);
+    if (incoming == 'cancelled' || incoming == 'completed') return true;
+    return incomingRank >= currentRank;
+  }
+
+  void _stopSearchingUi() {
+    _searchTimeoutTimer?.cancel();
+    _nearbyDriversTimer?.cancel();
+    if (_nearbyDrivers.isNotEmpty && mounted) {
+      setState(() => _nearbyDrivers = []);
+    }
+  }
 
   @override
   void initState() {
@@ -120,6 +163,7 @@ class _TrackingScreenState extends State<TrackingScreen>
 
     _subs.add(_socket.onDriverLocation.listen((data) {
       if (!mounted) return;
+      if (!_isSameTripEvent(data)) return;
       final lat = double.tryParse(data['lat']?.toString() ?? '');
       final lng = double.tryParse(data['lng']?.toString() ?? '');
       if (lat != null && lng != null) {
@@ -146,31 +190,23 @@ class _TrackingScreenState extends State<TrackingScreen>
           }
           _trip = _trip != null ? {..._trip!, ...updates} : updates;
           _updateMapMarkers();
-          _fetchRouteForStatus(); // Keep route updated as driver moves
         });
+        final now = DateTime.now();
+        if (_lastDriverRouteRefreshAt == null ||
+            now.difference(_lastDriverRouteRefreshAt!) >
+                const Duration(seconds: 12)) {
+          _lastDriverRouteRefreshAt = now;
+          _fetchRouteForStatus();
+        }
       }
     }));
 
     _subs.add(_socket.onTripStatus.listen((data) {
       try {
-        final newStatus = data['status']?.toString();
-        if (newStatus == null) return;
+        if (!_isSameTripEvent(data)) return;
+        final newStatus = _normalizeTripStatus(data['status']);
 
-        // Status rank guard: ensure we only move forward in the lifecycle
-        const statusRank = {
-          'searching': 0,
-          'driver_assigned': 1,
-          'accepted': 2,
-          'arrived': 3,
-          'in_progress': 4,
-          'on_the_way': 4,
-          'completed': 5,
-          'cancelled': 5
-        };
-        final incomingRank = statusRank[newStatus] ?? 0;
-        final currentRank = statusRank[_status] ?? 0;
-
-        if (incomingRank < currentRank) {
+        if (!_canApplyStatus(newStatus)) {
           debugPrint(
               '[SOCKET] Ignoring stale status update: $newStatus (current: $_status)');
           return;
@@ -232,6 +268,9 @@ class _TrackingScreenState extends State<TrackingScreen>
 
             _trip = (_trip != null) ? {..._trip!, ...update} : update;
           });
+          if (_rankOf(newStatus) >= _rankOf('accepted')) {
+            _stopSearchingUi();
+          }
 
           // UI transitions & feedback
           _handleStatusTransition(newStatus);
@@ -254,7 +293,15 @@ class _TrackingScreenState extends State<TrackingScreen>
     // Detailed driver assignment info
     _subs.add(_socket.onDriverAssigned.listen((data) {
       if (!mounted) return;
-      _searchTimeoutTimer?.cancel();
+      if (!_isSameTripEvent(data)) return;
+      final nextStatus =
+          _normalizeTripStatus(data['status'] ?? data['currentStatus'] ?? 'accepted');
+      if (!_canApplyStatus(nextStatus)) {
+        debugPrint(
+            '[SOCKET] Ignoring stale driver assignment status: $nextStatus (current: $_status)');
+        return;
+      }
+      _stopSearchingUi();
       final driverData = data['driver'];
       final driverId = data['driverId']?.toString();
       final driverMap =
@@ -263,7 +310,7 @@ class _TrackingScreenState extends State<TrackingScreen>
           data['pickupOtp']?.toString() ?? data['otp']?.toString();
 
       setState(() {
-        _status = data['status'] ?? data['currentStatus'] ?? 'accepted';
+        _status = nextStatus;
         final Map<String, dynamic> update = {};
         if (pickupOtp != null && pickupOtp.isNotEmpty)
           update['pickupOtp'] = pickupOtp;
@@ -332,8 +379,9 @@ class _TrackingScreenState extends State<TrackingScreen>
       if (_driverLatLng != null) _fetchRouteForStatus();
     }));
 
-    _subs.add(_socket.onTripCancelled.listen((_) {
+    _subs.add(_socket.onTripCancelled.listen((data) {
       if (!mounted) return;
+      if (!_isSameTripEvent(data)) return;
       setState(() => _status = 'cancelled');
       _pollTimer?.cancel();
       _showStatusBanner('Trip was cancelled', Colors.red);
@@ -349,6 +397,12 @@ class _TrackingScreenState extends State<TrackingScreen>
     // Re-searching for driver (after rejection)
     _subs.add(_socket.onTripSearching.listen((data) {
       if (!mounted) return;
+      if (!_isSameTripEvent(data)) return;
+      if (_rankOf(_status) > _rankOf('searching')) {
+        debugPrint(
+            '[SOCKET] Ignoring stale trip:searching for active trip ${widget.tripId}');
+        return;
+      }
       setState(() => _status = 'searching');
       // Restart the 90s timeout warning since we're back to searching
       _startSearchTimeoutTimer();
@@ -357,6 +411,12 @@ class _TrackingScreenState extends State<TrackingScreen>
     // No drivers available — trip auto-cancelled
     _subs.add(_socket.onNoDrivers.listen((data) {
       if (!mounted) return;
+      if (!_isSameTripEvent(data)) return;
+      if (_rankOf(_status) > _rankOf('searching')) {
+        debugPrint(
+            '[SOCKET] Ignoring stale no-drivers event for active trip ${widget.tripId}');
+        return;
+      }
       setState(() => _status = 'cancelled');
       _pollTimer?.cancel();
       _showNoDriversDialog();
@@ -654,7 +714,7 @@ class _TrackingScreenState extends State<TrackingScreen>
     _mapController?.animateCamera(CameraUpdate.newLatLngBounds(bounds, 120));
   }
 
-  void _updateMapMarkers() async {
+  void _updateMapMarkers({bool followDriver = true}) async {
     final Set<Marker> newMarkers = {};
 
     // 1. Pickup Location Marker (Search center)
@@ -683,7 +743,14 @@ class _TrackingScreenState extends State<TrackingScreen>
         icon: await _getMarkerIcon(vName),
         anchor: const Offset(0.5, 0.5),
       ));
-      if (_status != 'completed') {
+      final now = DateTime.now();
+      final shouldFollow = followDriver &&
+          _status != 'completed' &&
+          (_lastCameraFollowAt == null ||
+              now.difference(_lastCameraFollowAt!) >
+                  const Duration(seconds: 5));
+      if (shouldFollow) {
+        _lastCameraFollowAt = now;
         _mapController
             ?.animateCamera(CameraUpdate.newLatLngZoom(_driverLatLng!, 16));
       }
@@ -708,7 +775,15 @@ class _TrackingScreenState extends State<TrackingScreen>
         icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
       ));
 
-      if (_driverLatLng != null && _mapController != null) {
+      final now = DateTime.now();
+      final shouldFit = followDriver &&
+          _driverLatLng != null &&
+          _mapController != null &&
+          (_lastCameraFollowAt == null ||
+              now.difference(_lastCameraFollowAt!) >
+                  const Duration(seconds: 8));
+      if (shouldFit) {
+        _lastCameraFollowAt = now;
         final bounds = LatLngBounds(
           southwest: LatLng(
             _driverLatLng!.latitude < dLat ? _driverLatLng!.latitude : dLat,
@@ -1150,23 +1225,10 @@ class _TrackingScreenState extends State<TrackingScreen>
         final data = jsonDecode(res.body);
         final trip = data['trip'];
         if (trip != null) {
-          final rawStatus = trip['currentStatus']?.toString() ?? _status;
-          final resolvedStatus =
-              rawStatus == 'payment_pending' ? 'completed' : rawStatus;
-
-          const statusRank = {
-            'searching': 0,
-            'driver_assigned': 1,
-            'accepted': 2,
-            'arrived': 3,
-            'in_progress': 4,
-            'on_the_way': 4,
-            'completed': 5,
-            'cancelled': 5,
-          };
-
-          final currentRank = statusRank[_status] ?? 0;
-          final incomingRank = statusRank[resolvedStatus] ?? 0;
+          final resolvedStatus = _normalizeTripStatus(trip['currentStatus']);
+          final currentRank = _rankOf(_status);
+          final incomingRank = _rankOf(resolvedStatus);
+          var statusChanged = false;
 
           if (incomingRank >= currentRank) {
             setState(() {
@@ -1202,7 +1264,7 @@ class _TrackingScreenState extends State<TrackingScreen>
                 }
               }
 
-              final bool statusChanged = _status != resolvedStatus;
+              statusChanged = _status != resolvedStatus;
               _trip = trip;
               _status = resolvedStatus;
 
@@ -1215,10 +1277,16 @@ class _TrackingScreenState extends State<TrackingScreen>
                     _walletPendingAmount;
               }
 
-              if (statusChanged) {
-                _handleStatusTransition(resolvedStatus);
-              }
             });
+            if (_rankOf(resolvedStatus) >= _rankOf('accepted')) {
+              _stopSearchingUi();
+            }
+            if (statusChanged) {
+              _handleStatusTransition(resolvedStatus);
+            }
+          } else {
+            debugPrint(
+                '[POLL] Ignoring stale server state: $resolvedStatus (current: $_status)');
           }
 
           final dLat = double.tryParse(trip['driverLat']?.toString() ?? '');

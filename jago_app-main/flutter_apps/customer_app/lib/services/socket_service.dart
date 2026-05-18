@@ -14,6 +14,7 @@ class SocketService {
   String? _activeTripId; // stored so we can re-join trip room after server restart
   String? _activeParcelId;
   String? _lastBaseUrl;
+  Timer? _heartbeatTimer;
 
   final _driverAssignedController = StreamController<Map<String, dynamic>>.broadcast();
   final _driverLocationController = StreamController<Map<String, dynamic>>.broadcast();
@@ -107,6 +108,7 @@ class SocketService {
     _socket!.on('connect', (_) {
       _isConnected = true;
       _connectedController.add(true);
+      _startHeartbeat();
       // Re-join trip room on every connect (first connect + reconnect after restart)
       if (_activeTripId != null) {
         _socket!.emit('customer:track_trip', {'tripId': _activeTripId});
@@ -129,6 +131,7 @@ class SocketService {
     _socket!.on('disconnect', (_) {
       _isConnected = false;
       _connectedController.add(false);
+      _heartbeatTimer?.cancel();
     });
 
     _socket!.on('connect_error', (err) async {
@@ -256,6 +259,8 @@ class SocketService {
       if (data == null) return;
       _configUpdatedController.add(Map<String, dynamic>.from(data));
     });
+
+    _socket!.on('client:heartbeat_ack', (_) {});
 
     // Trip re-searching after driver rejected
     _socket!.on('trip:searching', (data) {
@@ -396,6 +401,19 @@ class SocketService {
     }
   }
 
+  void _startHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 20), (_) {
+      if (_socket == null || !_socket!.connected) return;
+      _socket!.emit('client:heartbeat', {
+        'userType': 'customer',
+        if (_activeTripId != null) 'tripId': _activeTripId,
+        if (_activeParcelId != null) 'orderId': _activeParcelId,
+        'ts': DateTime.now().millisecondsSinceEpoch,
+      });
+    });
+  }
+
   void stopTrackingParcel(String orderId) {
     if (_socket != null && _socket!.connected) {
       _socket!.emit('customer:leave_parcel', {'orderId': orderId});
@@ -460,6 +478,8 @@ class SocketService {
   }
 
   void disconnect() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
     _socket?.disconnect();
     _socket = null;
     _isConnected = false;

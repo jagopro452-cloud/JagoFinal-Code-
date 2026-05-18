@@ -158,6 +158,23 @@ export function setupSocket(httpServer: HttpServer) {
     // Join personal room
     socket.join(`user:${userId}`);
 
+    socket.on("client:heartbeat", (
+      data: { tripId?: string; orderId?: string },
+      ack?: (payload: Record<string, unknown>) => void
+    ) => {
+      const payload = {
+        ok: true,
+        serverTs: Date.now(),
+        tripId: data?.tripId,
+        orderId: data?.orderId,
+      };
+      if (typeof ack === "function") {
+        ack(payload);
+      } else {
+        socket.emit("client:heartbeat_ack", payload);
+      }
+    });
+
     if (userType === "driver") {
       socket.join(`driver:${userId}`);
       trackSocketConnection(driverSockets, userId, socket.id);

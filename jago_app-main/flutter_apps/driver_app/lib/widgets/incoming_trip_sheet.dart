@@ -186,7 +186,7 @@ class _IncomingTripSheetState extends State<IncomingTripSheet> with TickerProvid
             ),
           ),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
             decoration: BoxDecoration(
               gradient: const LinearGradient(
                 colors: [_jagoBlue, _jagoLavender],
@@ -195,16 +195,18 @@ class _IncomingTripSheetState extends State<IncomingTripSheet> with TickerProvid
             ),
             child: Row(
               children: [
+                const Icon(Icons.timer_rounded, color: Colors.white, size: 15),
+                const SizedBox(width: 5),
                 Text(
-                  'ON',
+                  '${_countdown}s',
                   style: GoogleFonts.outfit(
                     color: Colors.white,
                     fontWeight: FontWeight.w800,
-                    fontSize: 14,
+                    fontSize: 13,
                   ),
                 ),
                 const SizedBox(width: 6),
-                const Icon(Icons.volume_up_rounded, color: Colors.white, size: 18),
+                const Icon(Icons.volume_up_rounded, color: Colors.white, size: 16),
               ],
             ),
           ),
@@ -400,14 +402,14 @@ class _IncomingTripSheetState extends State<IncomingTripSheet> with TickerProvid
                         alignment: Alignment.center,
                         children: [
                           SizedBox(
-                            width: 58,
-                            height: 58,
+                            width: 46,
+                            height: 46,
                             child: AnimatedBuilder(
                               animation: _ringCtrl,
                               builder: (context, child) {
                                 return CircularProgressIndicator(
                                   value: 1.0 - _ringCtrl.value,
-                                  strokeWidth: 4,
+                                  strokeWidth: 3,
                                   color: Colors.red.shade400,
                                   backgroundColor: Colors.grey.shade200,
                                 );
@@ -415,8 +417,8 @@ class _IncomingTripSheetState extends State<IncomingTripSheet> with TickerProvid
                             ),
                           ),
                           Container(
-                            width: 42,
-                            height: 42,
+                            width: 34,
+                            height: 34,
                             decoration: BoxDecoration(
                               shape: BoxShape.circle,
                               color: Colors.white,
@@ -424,7 +426,7 @@ class _IncomingTripSheetState extends State<IncomingTripSheet> with TickerProvid
                                 BoxShadow(color: Colors.black.withValues(alpha: 0.1), blurRadius: 4),
                               ],
                             ),
-                            child: const Icon(Icons.close_rounded, color: Colors.black, size: 24),
+                            child: const Icon(Icons.close_rounded, color: Colors.black, size: 20),
                           ),
                         ],
                       ),
