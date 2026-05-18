@@ -106,6 +106,31 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         'Bike';
   }
 
+  String? _normalizedVehicleTypeForBooking(Map<String, dynamic>? fare) {
+    final raw = (fare?['vehicleType'] ??
+            fare?['type'] ??
+            fare?['vehicleCategoryName'] ??
+            fare?['vehicleName'] ??
+            fare?['name'] ??
+            widget.vehicleCategoryName)
+        ?.toString()
+        .trim()
+        .toLowerCase();
+    if (raw == null || raw.isEmpty) return null;
+    if (raw.contains('bike') && raw.contains('parcel')) return 'bike_parcel';
+    if (raw.contains('auto') && raw.contains('parcel')) return 'auto_parcel';
+    if (raw.contains('tata') || raw.contains('mini truck')) return 'tata_ace';
+    if (raw.contains('pickup') || raw.contains('bolero')) return 'pickup_truck';
+    if (raw.contains('tempo')) return 'tempo_407';
+    if (raw.contains('bike')) return 'bike';
+    if (raw.contains('auto')) return 'auto';
+    if (raw.contains('premium') || raw.contains('luxury')) return 'premium';
+    if (raw.contains('cab') || raw.contains('car') || raw.contains('sedan') || raw.contains('suv') || raw == 'mini') {
+      return raw.contains('premium') ? 'premium' : 'mini_car';
+    }
+    return raw.replaceAll(RegExp(r'[^a-z0-9]+'), '_').replaceAll(RegExp(r'^_+|_+$'), '');
+  }
+
   List<MapEntry<int, Map<String, dynamic>>> _visibleFareEntries(
     Map<String, VehicleStatus> statuses,
   ) {
@@ -513,7 +538,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
             if (widget.vehicleCategoryId != null || widget.vehicleCategoryName != null) {
               final targetName = (widget.vehicleCategoryName ?? '').toLowerCase();
               final idx = _allFares.indexWhere((f) {
-                final fName = (f['vehicleCategoryName'] ?? f['name'] ?? '').toString().toLowerCase();
+                final fName = (f['vehicleCategoryName'] ?? f['vehicleName'] ?? f['name'] ?? '').toString().toLowerCase();
                 final fId = f['vehicleCategoryId']?.toString() ?? f['id']?.toString();
                 return fId == widget.vehicleCategoryId || 
                        (targetName.isNotEmpty && fName.contains(targetName));
@@ -624,12 +649,13 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
       };
       final vcId = _fare?['vehicleCategoryId']?.toString() ?? _fare?['id']?.toString() ?? widget.vehicleCategoryId;
       if (vcId != null && vcId.isNotEmpty) body['vehicleCategoryId'] = vcId;
-      final vehicleType = _fare?['vehicleType']?.toString();
+      final vehicleType = _normalizedVehicleTypeForBooking(_fare);
       if (vehicleType != null && vehicleType.isNotEmpty) {
         body['vehicleType'] = vehicleType;
       }
       final vehicleName = _fare?['vehicleCategoryName']?.toString() ??
           _fare?['vehicleName']?.toString() ??
+          _fare?['name']?.toString() ??
           widget.vehicleCategoryName;
       if (vehicleName != null && vehicleName.isNotEmpty) {
         body['vehicleCategoryName'] = vehicleName;

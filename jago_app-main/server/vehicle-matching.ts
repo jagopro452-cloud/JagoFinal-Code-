@@ -79,6 +79,7 @@ export function normalizeBookingVehicleType(value: string | null | undefined): s
     key === "car" ||
     key === "cab" ||
     key === "cab_ride" ||
+    key === "mini" ||
     key === "mini_car" ||
     key === "sedan" ||
     key === "suv" ||
@@ -143,7 +144,7 @@ function allowedKeysForRequestedVehicle(
       if (normalizeVehicleKey(requestedVehicleName).includes("premium")) {
         return ["premium", "sedan", "suv", "mini_car", "car"];
       }
-      return ["mini_car", "car", "sedan", "suv"];
+      return ["mini", "mini_car", "cab", "car", "sedan", "suv"];
     case "bike_parcel":
       return ["bike_parcel"];
     case "auto_parcel":
@@ -181,7 +182,7 @@ function scoreVehicleCandidate(
   if (requestedType === "premium" && rowKey === "premium") score += 85;
   if (requestedType === "car") {
     if (rowKey === "premium") score += requestedNameKey.includes("premium") ? 60 : 10;
-    if (rowKey === "mini_car" || rowKey === "car") score += 40;
+    if (rowKey === "mini" || rowKey === "mini_car" || rowKey === "cab" || rowKey === "car") score += 40;
     if (rowKey === "sedan") score += 35;
     if (rowKey === "suv") score += 30;
   }
@@ -213,8 +214,11 @@ async function findVehicleCategoryMetaByHint(params: {
   vehicleType?: string | null;
   vehicleCategoryName?: string | null;
 }): Promise<VehicleCategoryMeta | null> {
+  const inferredType =
+    normalizeBookingVehicleType(params.vehicleType) ||
+    normalizeBookingVehicleType(params.vehicleCategoryName);
   const allowedKeys = new Set(
-    allowedKeysForRequestedVehicle(params.vehicleType || null, params.vehicleCategoryName),
+    allowedKeysForRequestedVehicle(inferredType, params.vehicleCategoryName),
   );
   if (!allowedKeys.size) return null;
 
@@ -223,7 +227,7 @@ async function findVehicleCategoryMetaByHint(params: {
       id,
       name,
       icon,
-      COALESCE(vehicle_type, '') as vehicle_type,
+      COALESCE(NULLIF(vehicle_type, ''), name) as vehicle_type,
       COALESCE(service_type, '') as service_type,
       COALESCE(type, '') as type,
       COALESCE(description, '') as description,
@@ -372,14 +376,17 @@ export async function resolveBookingVehicleSelection(params: {
   vehicleType?: string | null;
   vehicleCategoryName?: string | null;
 }): Promise<ResolvedBookingVehicleSelection> {
+  const inferredVehicleType =
+    normalizeBookingVehicleType(params.vehicleType) ||
+    normalizeBookingVehicleType(params.vehicleCategoryName);
   const meta =
     (await getVehicleCategoryMeta(params.vehicleCategoryId)) ||
     (await findVehicleCategoryMetaByHint({
-      vehicleType: params.vehicleType,
+      vehicleType: inferredVehicleType,
       vehicleCategoryName: params.vehicleCategoryName,
     }));
   const categoryVehicleType = getDriverSocketRoomKey(meta);
-  const requestedVehicleType = normalizeBookingVehicleType(params.vehicleType);
+  const requestedVehicleType = inferredVehicleType;
 
   return {
     vehicleCategoryId: meta?.id ?? (params.vehicleCategoryId || null),
