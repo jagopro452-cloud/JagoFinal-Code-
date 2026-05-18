@@ -17,6 +17,7 @@ import {
 import { parseEnv } from "./config/env";
 import { getMatchingDriverCategoryIds } from "./vehicle-matching";
 import { addSocketPresence, hasSocketPresence, removeSocketPresence } from "./socket-presence";
+import { enforceDriverRevenuePolicy, revenueModuleFromTripRow } from "./revenue-policy";
 
 export let io: SocketIOServer;
 
@@ -401,9 +402,11 @@ export function setupSocket(httpServer: HttpServer) {
           // Verify trip is still in searching/driver_assigned state
           const tripR = await rawDb.execute(rawSql`
             SELECT t.*, u.full_name as customer_name, u.fcm_token as customer_fcm,
-              dd.vehicle_category_id, dl.lat as driver_lat, dl.lng as driver_lng
+              dd.vehicle_category_id, dl.lat as driver_lat, dl.lng as driver_lng,
+              vc.type as vc_type, vc.service_type, vc.vehicle_type, vc.slug, vc.name as vehicle_name, vc.is_carpool
             FROM trip_requests t
             JOIN users u ON u.id = t.customer_id
+            LEFT JOIN vehicle_categories vc ON vc.id = t.vehicle_category_id
             LEFT JOIN driver_details dd ON dd.user_id=${userId}::uuid
             LEFT JOIN driver_locations dl ON dl.driver_id=${userId}::uuid
             WHERE t.id=${tripId}::uuid AND t.current_status IN ('searching','driver_assigned')
@@ -413,6 +416,17 @@ export function setupSocket(httpServer: HttpServer) {
             return;
           }
           const trip = camelize(tripR.rows[0]) as any;
+          const revenueModule = revenueModuleFromTripRow(tripR.rows[0] as any);
+          try {
+            await enforceDriverRevenuePolicy(userId, revenueModule);
+          } catch (policyErr: any) {
+            socket.emit("driver:accept_trip_error", {
+              message: policyErr.message || "Subscription required for this service",
+              code: policyErr.code || "SUBSCRIPTION_REQUIRED",
+              moduleName: revenueModule,
+            });
+            return;
+          }
 
           // Atomically claim the trip — only if still available (prevents race condition)
           const claimed = await rawDb.execute(rawSql`
@@ -713,6 +727,17 @@ export function setupSocket(httpServer: HttpServer) {
         try {
           const { orderId } = data;
           if (!orderId) return;
+          try {
+            await enforceDriverRevenuePolicy(userId, "parcel");
+          } catch (policyErr: any) {
+            socket.emit("parcel:accept_error", {
+              orderId,
+              message: policyErr.message || "Subscription required for parcel service",
+              code: policyErr.code || "SUBSCRIPTION_REQUIRED",
+              moduleName: "parcel",
+            });
+            return;
+          }
 
           // Atomically claim the parcel order
           const r = await rawDb.execute(rawSql`

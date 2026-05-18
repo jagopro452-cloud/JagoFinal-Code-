@@ -70,6 +70,16 @@ import {
   startIntelligenceJobs,
 } from "./intelligence";
 import {
+  enforceDriverRevenuePolicy,
+  listRevenueModuleConfigs,
+  normalizeRevenueModule,
+  reconcileRevenueModuleAliases,
+  revenueModuleFromTripRow,
+  revenueModuleFromVehicleCategory,
+  syncAllRevenueModuleConfigs,
+  upsertRevenueModuleConfig,
+} from "./revenue-policy";
+import {
   geocodeWithCache,
   getDistanceWithCache,
   getRouteWithCache,
@@ -1760,6 +1770,8 @@ async function ensureOperationalSchema() {
       );
     `);
 
+    await reconcileRevenueModuleAliases().catch(dbCatch("db"));
+
     await rawDb.execute(rawSql`
       CREATE INDEX IF NOT EXISTS idx_popular_locations_city_active
       ON popular_locations(city_name, is_active);
@@ -1799,6 +1811,7 @@ async function ensureOperationalSchema() {
         ('commission_mode','on')
       ON CONFLICT (key_name) DO NOTHING;
     `);
+    await syncAllRevenueModuleConfigs().catch(dbCatch("db"));
 
     // -- Company GST wallet (single-row ledger) -----------------------------
     await rawDb.execute(rawSql`
@@ -6772,16 +6785,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // GET /api/app/revenue-config � used by both apps to determine commission/subscription
   app.get("/api/app/revenue-config", authApp, async (_req, res) => {
     try {
-      const rows = await rawDb.execute(rawSql`SELECT * FROM service_revenue_config ORDER BY module_name`);
+      const rows = await listRevenueModuleConfigs();
       const config: Record<string, any> = {};
-      for (const row of rows.rows) {
-        const r = row as any;
-        config[r.module_name] = {
-          revenueModel: r.revenue_model,
-          commissionPercentage: parseFloat(r.commission_percentage),
-          commissionGstPercentage: parseFloat(r.commission_gst_percentage),
-          subscriptionRequired: r.subscription_required,
-          isActive: r.is_active,
+      for (const r of rows) {
+        config[r.moduleName] = {
+          revenueModel: r.revenueModel,
+          commissionPercentage: r.commissionPercentage,
+          commissionGstPercentage: r.commissionGstPercentage,
+          subscriptionRequired: r.subscriptionRequired,
+          isActive: r.isActive,
         };
       }
       res.json({ config });
@@ -6791,35 +6803,45 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // GET /api/admin/module-revenue � admin read all module configs
   app.get("/api/admin/module-revenue", requireAdminAuth, async (_req, res) => {
     try {
-      const rows = await rawDb.execute(rawSql`SELECT * FROM service_revenue_config ORDER BY module_name`);
-      res.json({ modules: rows.rows.map(camelize) });
+      await reconcileRevenueModuleAliases().catch(dbCatch("db"));
+      const rows = await listRevenueModuleConfigs();
+      res.json({
+        modules: rows.map((r) => ({
+          moduleName: r.moduleName,
+          revenueModel: r.revenueModel,
+          commissionPercentage: r.commissionPercentage,
+          commissionGstPercentage: r.commissionGstPercentage,
+          subscriptionRequired: r.subscriptionRequired,
+          isActive: r.isActive,
+          notes: r.notes,
+        })),
+      });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
   // PUT /api/admin/module-revenue/:module � admin update one module
   app.put("/api/admin/module-revenue/:module", requireAdminAuth, async (req, res) => {
     try {
-      const module = req.params.module as string;
-      const ALLOWED = ['ride', 'parcel', 'carpool', 'outstation', 'b2b'];
-      if (!ALLOWED.includes(module)) return res.status(400).json({ message: "Invalid module name" });
+      const module = normalizeRevenueModule(req.params.module);
+      if (!module) return res.status(400).json({ message: "Invalid module name" });
       const { revenueModel, commissionPercentage, commissionGstPercentage, subscriptionRequired, isActive, notes } = req.body;
-      await rawDb.execute(rawSql`
-        INSERT INTO service_revenue_config
-          (module_name, revenue_model, commission_percentage, commission_gst_percentage, subscription_required, is_active, notes, updated_at)
-        VALUES
-          (${module}, ${revenueModel || 'commission'}, ${commissionPercentage ?? 15}::numeric, ${commissionGstPercentage ?? 18}::numeric,
-           ${subscriptionRequired ?? false}::boolean, ${isActive ?? true}::boolean, ${notes || null}, NOW())
-        ON CONFLICT (module_name) DO UPDATE SET
-          revenue_model             = EXCLUDED.revenue_model,
-          commission_percentage     = EXCLUDED.commission_percentage,
-          commission_gst_percentage = EXCLUDED.commission_gst_percentage,
-          subscription_required     = EXCLUDED.subscription_required,
-          is_active                 = EXCLUDED.is_active,
-          notes                     = EXCLUDED.notes,
-          updated_at                = NOW()
-      `);
-      const updated = await rawDb.execute(rawSql`SELECT * FROM service_revenue_config WHERE module_name = ${module} LIMIT 1`);
-      res.json(camelize(updated.rows[0]));
+      const updated = await upsertRevenueModuleConfig(module, {
+        revenueModel,
+        commissionPercentage,
+        commissionGstPercentage,
+        subscriptionRequired,
+        isActive,
+        notes,
+      });
+      res.json({
+        moduleName: updated.moduleName,
+        revenueModel: updated.revenueModel,
+        commissionPercentage: updated.commissionPercentage,
+        commissionGstPercentage: updated.commissionGstPercentage,
+        subscriptionRequired: updated.subscriptionRequired,
+        isActive: updated.isActive,
+        notes: updated.notes,
+      });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -7410,6 +7432,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const driver = (req as any).currentUser;
       const { fromCity, toCity, routeKm, departureDate, departureTime, totalSeats, vehicleNumber, vehicleModel, farePerSeat, note } = req.body;
       if (!fromCity || !toCity) return res.status(400).json({ message: "fromCity and toCity are required" });
+      try {
+        await enforceDriverRevenuePolicy(driver.id, 'outstation');
+      } catch (policyErr: any) {
+        return res.status(policyErr.statusCode || 403).json({
+          message: policyErr.message || "Subscription required for outstation pool service",
+          code: policyErr.code || "SUBSCRIPTION_REQUIRED",
+          moduleName: "outstation",
+        });
+      }
 
       const r = await rawDb.execute(rawSql`
         INSERT INTO outstation_pool_rides
@@ -8743,44 +8774,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             message: lockMsg, isLocked: true, walletBalance: currentBalance
           });
         }
-        // Per-service subscription check: use model based on driver's vehicle category type
-        const modelAllR = await rawDb.execute(rawSql`SELECT key_name, value FROM revenue_model_settings`);
-        const mS: any = {};
-        modelAllR.rows.forEach((row: any) => { mS[(row as any).key_name] = (row as any).value; });
-        // Get driver's vehicle category type
+        // Per-service subscription check: service_revenue_config is the source of truth.
         const driverVehicleR = await rawDb.execute(rawSql`
-          SELECT vc.type as vehicle_type FROM driver_details dd
+          SELECT vc.type, vc.service_type, vc.vehicle_type, vc.slug, vc.name, vc.is_carpool
+          FROM driver_details dd
           JOIN vehicle_categories vc ON vc.id = dd.vehicle_category_id
           WHERE dd.user_id = ${driver.id}::uuid
         `);
-        const vehicleType = (driverVehicleR.rows[0] as any)?.vehicle_type || 'ride';
-        let relevantModelKey = 'rides_model';
-        if (vehicleType === 'parcel') relevantModelKey = 'parcels_model';
-        else if (vehicleType === 'cargo') relevantModelKey = 'cargo_model';
-        const activeModel = mS[relevantModelKey] || mS['active_model'] || "commission";
-        if (activeModel === "subscription" || activeModel === "hybrid") {
-          // Re-check free period here so it bypasses the system-model subscription gate too
-          const fp2R = await rawDb.execute(rawSql`SELECT launch_free_active, free_period_end FROM users WHERE id=${driver.id}::uuid LIMIT 1`).catch(() => ({ rows: [] as any[] }));
-          const fp2 = fp2R.rows[0] as any;
-          const inFP2 = fp2?.launch_free_active === true && fp2?.free_period_end && new Date(fp2.free_period_end) >= new Date();
-          if (!inFP2) {
-            const subR = await rawDb.execute(rawSql`
-              SELECT id, end_date, is_active FROM driver_subscriptions
-              WHERE driver_id=${driver.id}::uuid AND is_active=true AND end_date >= CURRENT_DATE
-              ORDER BY end_date DESC LIMIT 1
-            `);
-            if (!subR.rows.length) {
-              return res.status(403).json({
-                message: "Subscription required. Please purchase or renew your subscription to go online.",
-                subscriptionExpired: true, requiresSubscription: true, isLocked: false
-              });
-            }
-            const sub = subR.rows[0] as any;
-            const daysLeft = Math.ceil((new Date(sub.end_date).getTime() - Date.now()) / 86400000);
-            if (daysLeft <= 2) {
-              res.setHeader("X-Subscription-Warning", `Subscription expires in ${daysLeft} day(s)`);
-            }
-          }
+        const moduleName = revenueModuleFromVehicleCategory(driverVehicleR.rows[0] as any);
+        try {
+          await enforceDriverRevenuePolicy(driver.id, moduleName);
+        } catch (policyErr: any) {
+          return res.status(policyErr.statusCode || 403).json({
+            message: policyErr.message || "Subscription required for this service.",
+            code: policyErr.code || "SUBSCRIPTION_REQUIRED",
+            moduleName,
+            subscriptionExpired: policyErr.code === "SUBSCRIPTION_REQUIRED",
+            requiresSubscription: policyErr.code === "SUBSCRIPTION_REQUIRED",
+            isLocked: false
+          });
         }
       }
       const lat = req.body.lat;
@@ -8940,44 +8952,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       if (!tripId || !uuidRe.test(tripId)) return res.status(400).json({ message: "Invalid trip ID" });
 
-      // -- Subscription gate: rides use subscription model; parcels use commission (no gate) --
+      // Subscription/commission gate is module-based and controlled from Admin > Revenue Model.
       const tripTypeR = await rawDb.execute(rawSql`
-        SELECT trip_type FROM trip_requests WHERE id=${tripId}::uuid LIMIT 1
+        SELECT t.trip_type, t.vehicle_category_id,
+          vc.type as vc_type, vc.service_type, vc.vehicle_type, vc.slug, vc.name as vehicle_name, vc.is_carpool
+        FROM trip_requests t
+        LEFT JOIN vehicle_categories vc ON vc.id = t.vehicle_category_id
+        WHERE t.id=${tripId}::uuid
+        LIMIT 1
       `).catch(() => ({ rows: [] as any[] }));
-      const tripType = (tripTypeR.rows[0] as any)?.trip_type || 'normal';
-      const isParcelTrip = tripType === 'parcel' || tripType === 'delivery' || tripType === 'cargo';
-      if (!isParcelTrip) {
-        // Ride trip: check subscription model setting
-        const ridesModelR = await rawDb.execute(rawSql`
-          SELECT value FROM revenue_model_settings WHERE key_name='rides_model' LIMIT 1
-        `).catch(() => ({ rows: [] as any[] }));
-        const ridesModel = (ridesModelR.rows[0] as any)?.value || 'subscription';
-        // Both 'subscription' and 'hybrid' models require an active subscription or free period
-        if (['subscription', 'hybrid'].includes(ridesModel)) {
-          const freeR = await rawDb.execute(rawSql`
-            SELECT launch_free_active, free_period_end FROM users WHERE id=${driver.id}::uuid LIMIT 1
-          `).catch(() => ({ rows: [] as any[] }));
-          const freeRow = freeR.rows[0] as any;
-          const inFreePeriod = freeRow?.launch_free_active === true
-            && freeRow?.free_period_end
-            && new Date(freeRow.free_period_end) >= new Date();
-          if (!inFreePeriod) {
-            const subR = await rawDb.execute(rawSql`
-              SELECT id FROM driver_subscriptions
-              WHERE driver_id = ${driver.id}::uuid
-                AND is_active = true
-                AND end_date > NOW()
-              LIMIT 1
-            `);
-            if (!subR.rows.length) {
-              // return res.status(403).json({
-              //   message: "Active subscription required to accept rides. Please subscribe to continue.",
-              //   code: "SUBSCRIPTION_REQUIRED",
-              // });
-              console.log(`[DRIVER_ACCEPT] Driver ${driver.id} - Subscription missing, but ALLOWING for test`);
-            }
-          }
-        }
+      const revenueModule = revenueModuleFromTripRow(tripTypeR.rows[0] as any);
+      try {
+        await enforceDriverRevenuePolicy(driver.id, revenueModule);
+      } catch (policyErr: any) {
+        return res.status(policyErr.statusCode || 403).json({
+          message: policyErr.message || "Subscription required for this service.",
+          code: policyErr.code || "SUBSCRIPTION_REQUIRED",
+          moduleName: revenueModule,
+        });
       }
 
       // -- Account lock check ------------------------------------------------
@@ -15468,6 +15460,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       const eligible = await isDriverEligibleForParcel(driverId, existingOrder.vehicle_category);
       if (!eligible) {
         return res.status(403).json({ message: 'Driver is not eligible for this parcel vehicle category', code: 'PARCEL_DRIVER_NOT_ELIGIBLE' });
+      }
+      try {
+        await enforceDriverRevenuePolicy(driverId, 'parcel');
+      } catch (policyErr: any) {
+        return res.status(policyErr.statusCode || 403).json({
+          message: policyErr.message || 'Subscription required for parcel service',
+          code: policyErr.code || 'SUBSCRIPTION_REQUIRED',
+          moduleName: 'parcel',
+        });
       }
       const r = await rawDb.execute(rawSql`
         UPDATE parcel_orders

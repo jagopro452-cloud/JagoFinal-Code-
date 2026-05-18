@@ -21,6 +21,7 @@ import { rawDb, rawSql, pool as dbPool } from "./db";
 import { io } from "./socket";
 import { sendFcmNotification } from "./fcm";
 import { calculateRevenueBreakdown, settleRevenue } from "./revenue-engine";
+import { enforceDriverRevenuePolicy } from "./revenue-policy";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -685,6 +686,15 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
       const vc = vcR.rows[0] as any;
       if (!isPoolVehicleCategory(vc)) {
         return res.status(403).json(poolResponse(false, "POOL_DRIVER_NOT_ELIGIBLE", "Only approved pool-enabled drivers can start rolling pool"));
+      }
+      try {
+        await enforceDriverRevenuePolicy(driver.id, "carpool");
+      } catch (policyErr: any) {
+        return res.status(policyErr.statusCode || 403).json(poolResponse(
+          false,
+          policyErr.code || "SUBSCRIPTION_REQUIRED",
+          policyErr.message || "Subscription required for pool service",
+        ));
       }
 
       // End any existing active session first

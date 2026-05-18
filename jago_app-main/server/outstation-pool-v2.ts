@@ -15,6 +15,7 @@ import { rawDb, rawSql, pool as dbPool } from "./db";
 import { io } from "./socket";
 import { sendFcmNotification } from "./fcm";
 import { calculateRevenueBreakdown, settleRevenue } from "./revenue-engine";
+import { enforceDriverRevenuePolicy } from "./revenue-policy";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -238,6 +239,15 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any): void
         return res.status(403).json({
           message: "Only approved pool-enabled drivers can create outstation pool rides",
           code: "OUTSTATION_POOL_DRIVER_NOT_ELIGIBLE",
+        });
+      }
+      try {
+        await enforceDriverRevenuePolicy(driver.id, "outstation");
+      } catch (policyErr: any) {
+        return res.status(policyErr.statusCode || 403).json({
+          message: policyErr.message || "Subscription required for outstation pool service",
+          code: policyErr.code || "SUBSCRIPTION_REQUIRED",
+          moduleName: "outstation",
         });
       }
 
