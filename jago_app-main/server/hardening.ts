@@ -14,7 +14,7 @@
 
 import { db as rawDb } from "./db";
 import { sql as rawSql } from "drizzle-orm";
-import { io } from "./socket";
+import { hasActiveDriverSocket, io } from "./socket";
 import { sendFcmNotification } from "./fcm";
 import { sendAlert as sendObservabilityAlert } from "./observability";
 // Removed legacy SMS notification logic. Only FCM and socket notifications are supported.
@@ -146,6 +146,11 @@ export async function verifyDriverAfterAccept(
 ): Promise<boolean> {
   const config = await loadHardeningSettings();
   const timeoutMs = config.driver_ping_timeout_ms || 5000;
+
+  if (hasActiveDriverSocket(driverId)) {
+    await logInfo('DRIVER-VERIFY', 'Driver already has an active socket after accept', { driverId, tripId });
+    return true;
+  }
   
   return new Promise((resolve) => {
     // Request socket ping from driver
@@ -164,6 +169,36 @@ export async function verifyDriverAfterAccept(
         return;
       }
       driverPingTracker.delete(driverId);
+
+      const activeTripCheck = await rawDb.execute(rawSql`
+        SELECT
+          t.current_status,
+          u.current_trip_id,
+          dl.is_online,
+          dl.updated_at
+        FROM trip_requests t
+        LEFT JOIN users u ON u.id=${driverId}::uuid
+        LEFT JOIN driver_locations dl ON dl.driver_id=${driverId}::uuid
+        WHERE t.id=${tripId}::uuid
+        LIMIT 1
+      `).catch(() => ({ rows: [] as any[] }));
+      const activeTrip = activeTripCheck.rows[0] as any;
+      const stillClaimed =
+        activeTrip &&
+        String(activeTrip.current_status || "") === "accepted" &&
+        String(activeTrip.current_trip_id || "") === tripId &&
+        (
+          hasActiveDriverSocket(driverId) ||
+          (activeTrip.is_online === true && activeTrip.updated_at && (Date.now() - new Date(activeTrip.updated_at).getTime()) <= 30_000)
+        );
+      if (stillClaimed) {
+        await logInfo('DRIVER-VERIFY', 'Driver accept verified from current-trip state without ping response', {
+          driverId,
+          tripId,
+        });
+        resolve(true);
+        return;
+      }
       
       await logWarn('DRIVER-VERIFY', 'Driver ping timeout - ghost acceptance', {
         driverId,

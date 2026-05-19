@@ -191,8 +191,8 @@ export class LiveClient {
     return response.json();
   }
 
-  async loginAdmin(): Promise<AdminSession> {
-    if (this.cachedAdminSession?.token) {
+  async loginAdmin(forceRefresh = false): Promise<AdminSession> {
+    if (!forceRefresh && this.cachedAdminSession?.token) {
       return this.cachedAdminSession;
     }
 
@@ -217,10 +217,24 @@ export class LiveClient {
     return this.cachedAdminSession;
   }
 
-  async getRazorpayDiag(token: string) {
-    const response = await this.api.get("/api/diag/razorpay", {
-      headers: authHeaders(token),
+  async adminGet(path: string) {
+    let admin = await this.loginAdmin();
+    let response = await this.api.get(path, {
+      headers: authHeaders(admin.token),
     });
+    if (response.status() === 401) {
+      admin = await this.loginAdmin(true);
+      response = await this.api.get(path, {
+        headers: authHeaders(admin.token),
+      });
+    }
+    return response;
+  }
+
+  async getRazorpayDiag(token: string) {
+    const response = token
+      ? await this.api.get("/api/diag/razorpay", { headers: authHeaders(token) })
+      : await this.adminGet("/api/diag/razorpay");
     expect(response.ok()).toBeTruthy();
     return response.json();
   }
@@ -519,9 +533,14 @@ export class LiveClient {
   }
 
   async getAdminOutstationRides(token: string) {
-    const response = await this.api.get("/api/admin/outstation-pool/rides", {
-      headers: authHeaders(token),
-    });
+    const response = token
+      ? await this.api.get("/api/admin/outstation-pool/rides", { headers: authHeaders(token) })
+      : await this.adminGet("/api/admin/outstation-pool/rides");
+    if (response.status() === 401) {
+      const retry = await this.adminGet("/api/admin/outstation-pool/rides");
+      expect(retry.ok()).toBeTruthy();
+      return retry.json();
+    }
     expect(response.ok()).toBeTruthy();
     return response.json();
   }

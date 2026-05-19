@@ -435,8 +435,9 @@ export async function getMatchingDriverCategoryIds(categoryId?: string | null): 
 
   const ids = (categories.rows as any[])
     .filter((row) => {
-      const rowKey = normalizeVehicleKey(row.vehicle_type || row.name);
-      return allowedKeys.has(rowKey);
+      const rawKey = normalizeVehicleKey(row.vehicle_type || row.name);
+      const canonicalKey = normalizeBookingVehicleType(row.vehicle_type || row.name) || rawKey;
+      return allowedKeys.has(rawKey) || allowedKeys.has(canonicalKey);
     })
     .map((row) => row.id as string);
 

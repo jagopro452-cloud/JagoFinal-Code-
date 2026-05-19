@@ -1507,6 +1507,10 @@ async function ensureOperationalSchema() {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS fcm_token TEXT;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS current_lat NUMERIC(10,7);
       ALTER TABLE users ADD COLUMN IF NOT EXISTS current_lng NUMERIC(10,7);
+      ALTER TABLE driver_locations ADD COLUMN IF NOT EXISTS heading NUMERIC(10,2) DEFAULT 0;
+      ALTER TABLE driver_locations ADD COLUMN IF NOT EXISTS speed NUMERIC(10,2) DEFAULT 0;
+      ALTER TABLE driver_locations ADD COLUMN IF NOT EXISTS is_online BOOLEAN DEFAULT false;
+      ALTER TABLE driver_locations ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
 
       -- Fix: missing trip_requests columns for parcel/person-booking flow
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS receiver_name VARCHAR(120);
@@ -1528,6 +1532,26 @@ async function ensureOperationalSchema() {
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP;
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS ride_started_at TIMESTAMP;
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS ride_ended_at TIMESTAMP;
+      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'REQUESTED';
+      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS driver_assigned_at TIMESTAMP;
+      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS auto_cancelled BOOLEAN DEFAULT false;
+      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS auto_cancelled_at TIMESTAMP;
+      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS cancellation_reason TEXT;
+
+      UPDATE trip_requests
+      SET status = CASE LOWER(COALESCE(current_status, 'searching'))
+        WHEN 'scheduled' THEN 'SCHEDULED'
+        WHEN 'searching' THEN 'REQUESTED'
+        WHEN 'driver_assigned' THEN 'DRIVER_ASSIGNED'
+        WHEN 'accepted' THEN 'ACCEPTED'
+        WHEN 'arrived' THEN 'STARTED'
+        WHEN 'on_the_way' THEN 'IN_PROGRESS'
+        WHEN 'payment_pending' THEN 'PAYMENT_PENDING'
+        WHEN 'completed' THEN 'COMPLETED'
+        WHEN 'cancelled' THEN 'CANCELLED'
+        ELSE UPPER(COALESCE(current_status, 'REQUESTED'))
+      END
+      WHERE status IS NULL OR TRIM(status) = '';
 
       -- Fix: reviews table column name mismatch (code uses review_type and comment)
       ALTER TABLE reviews ADD COLUMN IF NOT EXISTS review_type VARCHAR(50);
@@ -7869,11 +7893,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       res.set("Cache-Control", "no-store");
       const r = await rawDb.execute(rawSql`
-        SELECT user_id::text AS user_id, COUNT(*)::int AS unread
-        FROM support_messages
-        WHERE COALESCE(sender, 'user')='user' AND COALESCE(is_read, false)=false
-        GROUP BY user_id
-        ORDER BY unread DESC
+        WITH grouped AS (
+          SELECT
+            sm.user_id::text AS user_id,
+            COUNT(*)::int AS unread
+          FROM support_messages sm
+          WHERE sm.user_id IS NOT NULL
+            AND COALESCE(sm.sender, 'user') = 'user'
+            AND COALESCE(sm.is_read, false) = false
+          GROUP BY sm.user_id
+        )
+        SELECT grouped.user_id, grouped.unread
+        FROM grouped
+        ORDER BY grouped.unread DESC, grouped.user_id ASC
       `);
       res.json({ unreadByUser: r.rows.map(camelize) });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
@@ -9114,7 +9146,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // if driver already has an active trip this UPDATE returns 0 rows.
       const r = await rawDb.execute(rawSql`
         UPDATE trip_requests
-        SET current_status='accepted', driver_accepted_at=NOW(), driver_arriving_at=NOW(), pickup_otp=${otp}, driver_id=${driver.id}::uuid
+        SET current_status='accepted',
+            status='ACCEPTED',
+            assigned_at=COALESCE(assigned_at, NOW()),
+            accepted_at=COALESCE(accepted_at, NOW()),
+            driver_assigned_at=COALESCE(driver_assigned_at, NOW()),
+            driver_accepted_at=NOW(),
+            driver_arriving_at=NOW(),
+            pickup_otp=${otp},
+            driver_id=${driver.id}::uuid
         WHERE id=${tripId}::uuid
           AND current_status IN ('searching','driver_assigned')
           AND (driver_id IS NULL OR driver_id=${driver.id}::uuid)

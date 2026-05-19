@@ -19,21 +19,21 @@ export default function ChattingPage() {
 
   const { data: custData } = useQuery<any>({
     queryKey: ["/api/users", { userType: "customer" }],
-    queryFn: () => fetch("/api/users?userType=customer&limit=30").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => (d && !d.message && !d.error) ? d : { data: [] }),
+    queryFn: () => apiRequest("GET", "/api/users?userType=customer&limit=30").then(r => r.json()).then(d => (d && !d.message && !d.error) ? d : { data: [] }),
   });
   const { data: driverData } = useQuery<any>({
     queryKey: ["/api/users", { userType: "driver" }],
-    queryFn: () => fetch("/api/users?userType=driver&limit=30").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => (d && !d.message && !d.error) ? d : { data: [] }),
+    queryFn: () => apiRequest("GET", "/api/users?userType=driver&limit=30").then(r => r.json()).then(d => (d && !d.message && !d.error) ? d : { data: [] }),
   });
   const { data: unreadData } = useQuery<any>({
     queryKey: ["/api/support-chat/unread-count"],
-    queryFn: () => fetch("/api/support-chat/unread-count").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => (d && !d.message && !d.error) ? d : {}),
+    queryFn: () => apiRequest("GET", "/api/support-chat/unread-count").then(r => r.json()).then(d => (d && !d.message && !d.error) ? d : {}),
     refetchInterval: 5000,
   });
 
   const { data: chatData, isLoading: chatLoading } = useQuery<any>({
     queryKey: ["/api/support-chat", selected?.id],
-    queryFn: () => fetch(`/api/support-chat?userId=${selected.id}`).then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => (d && !d.message && !d.error) ? d : { messages: [] }),
+    queryFn: () => apiRequest("GET", `/api/support-chat?userId=${selected.id}`).then(r => r.json()).then(d => (d && !d.message && !d.error) ? d : { messages: [] }),
     enabled: !!selected?.id,
     refetchInterval: 3000,
   });

@@ -181,6 +181,20 @@ export default function IntercityRoutesPage() {
 
   const toggle = useMutation({
     mutationFn: ({ id, isActive }: any) => apiRequest("PATCH", `/api/intercity-routes/${id}`, { isActive }),
+    onMutate: async ({ id, isActive }: any) => {
+      await queryClient.cancelQueries({ queryKey: ["/api/intercity-routes"] });
+      const previous = queryClient.getQueryData<any[]>(["/api/intercity-routes"]);
+      queryClient.setQueryData<any[]>(["/api/intercity-routes"], (current = []) =>
+        current.map((route) => route.id === id ? { ...route, isActive } : route),
+      );
+      return { previous };
+    },
+    onError: (_error, _vars, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["/api/intercity-routes"], context.previous);
+      }
+      toast({ title: "Error", description: "Failed to update route status", variant: "destructive" });
+    },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/intercity-routes"] }),
   });
 

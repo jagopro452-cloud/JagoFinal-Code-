@@ -488,8 +488,8 @@ export function emitParcelLifecycle(
  * with no mapping is rejected outright.
  */
 const PARCEL_VEHICLE_DRIVER_MAP: Record<string, string[]> = {
-  bike_parcel:   ["bike_parcel", "bike parcel", "parcel_bike", "bike_delivery"],
-  auto_parcel:   ["auto_parcel", "auto parcel", "parcel_auto", "auto_delivery", "mini_cargo_auto"],
+  bike_parcel:   ["bike_parcel", "bike parcel", "parcel_bike", "bike_delivery", "bike delivery"],
+  auto_parcel:   ["auto_parcel", "auto parcel", "parcel_auto", "auto_delivery", "auto delivery", "mini_cargo_auto"],
   tata_ace:      ["tata_ace", "tata ace"],
   pickup_truck:  ["pickup_truck", "pickup truck"],
   bolero_cargo:  ["bolero_cargo", "bolero pickup", "bolero cargo"],
@@ -511,9 +511,9 @@ async function resolveAllowedCategoryIds(parcelKey: string): Promise<string[]> {
   const lowered = allowedNames.map((t) => t.toLowerCase());
   const r = await rawDb.execute(rawSql`
     SELECT id FROM vehicle_categories
-    WHERE LOWER(name) = ANY(${lowered})
-       OR LOWER(slug) = ANY(${lowered})
-       OR LOWER(COALESCE(vehicle_type, '')) = ANY(${lowered})
+    WHERE REGEXP_REPLACE(LOWER(name), '[^a-z0-9]+', '_', 'g') = ANY(${lowered})
+       OR REGEXP_REPLACE(LOWER(COALESCE(slug, '')), '[^a-z0-9]+', '_', 'g') = ANY(${lowered})
+       OR REGEXP_REPLACE(LOWER(COALESCE(vehicle_type, '')), '[^a-z0-9]+', '_', 'g') = ANY(${lowered})
   `).catch(() => ({ rows: [] as any[] }));
 
   const ids = (r.rows as any[]).map((row) => String(row.id));

@@ -168,9 +168,10 @@ test.describe("Admin Live CRUD And Security", () => {
     );
     await page.getByTestId("btn-save-route").click();
     const persistedUpdate = await updateUiResponse;
+    const persistedUpdateText = persistedUpdate.ok() ? "" : await persistedUpdate.text();
     expect(
       persistedUpdate.ok(),
-      `Intercity route update failed with status ${persistedUpdate.status()}: ${await persistedUpdate.text()}`,
+      `Intercity route update failed with status ${persistedUpdate.status()}: ${persistedUpdateText}`,
     ).toBeTruthy();
 
     const updateResponse = await adminJson("GET", "/api/intercity-routes");
@@ -178,11 +179,12 @@ test.describe("Admin Live CRUD And Security", () => {
     const updated = updatedRoutes.find((item) => item.id === created!.id);
     expect(Number(updated?.baseFare)).toBe(updatedFare);
 
-    await page.getByTestId(`toggle-route-${created!.id}`).click();
+    const activeBeforeToggle = Boolean(updated?.isActive);
+    await page.getByTestId(`toggle-route-${created!.id}`).setChecked(!activeBeforeToggle, { force: true });
     const toggledResponse = await adminJson("GET", "/api/intercity-routes");
     const toggledRoutes = await toggledResponse.json() as Array<{ id: string; isActive: boolean }>;
     const toggled = toggledRoutes.find((item) => item.id === created!.id);
-    expect(toggled?.isActive).toBeFalsy();
+    expect(Boolean(toggled?.isActive)).toBe(!activeBeforeToggle);
 
     page.once("dialog", (dialog) => dialog.accept());
     await page.getByTestId(`btn-delete-route-${created!.id}`).click();

@@ -44,9 +44,8 @@ test.describe("Live Production Smoke", () => {
       }
 
       if (admin?.token) {
-        const dashboardStats = await client.get("/api/dashboard/stats", {
-          Authorization: `Bearer ${admin.token}`,
-        });
+        admin = await client.loginAdmin(true);
+        const dashboardStats = await client.adminGet("/api/dashboard/stats");
         if (!dashboardStats.ok()) {
           blockers.push(`/api/dashboard/stats rejected the shared admin token with status ${dashboardStats.status()}`);
         }

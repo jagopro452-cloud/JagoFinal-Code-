@@ -33,6 +33,10 @@ const activeCallSessions = new Map<string, { callerId: string; targetId: string;
 const pendingOfflineTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const DRIVER_OFFLINE_GRACE_MS = 90_000; // 90 seconds
 
+export function hasActiveDriverSocket(driverId: string): boolean {
+  return (driverSockets.get(driverId)?.size || 0) > 0;
+}
+
 function trackSocketConnection(store: Map<string, Set<string>>, userId: string, socketId: string) {
   const sockets = store.get(userId) ?? new Set<string>();
   sockets.add(socketId);
@@ -440,6 +444,9 @@ export function setupSocket(httpServer: HttpServer) {
             UPDATE trip_requests
             SET driver_id=${userId}::uuid,
                 current_status='accepted',
+                status='ACCEPTED',
+                assigned_at=COALESCE(assigned_at, NOW()),
+                accepted_at=COALESCE(accepted_at, NOW()),
                 driver_accepted_at=NOW(),
                 driver_arriving_at=NOW(),
                 pickup_otp=${pickupOtp},
