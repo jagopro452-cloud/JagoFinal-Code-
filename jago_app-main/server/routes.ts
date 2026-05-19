@@ -667,11 +667,15 @@ async function provisionAppUserSessionTx(
   const finalUserRes = await findUserByPhone(trx, input.phone, input.userType);
   const finalUser = camelize(finalUserRes.rows[0]) as any;
   const token = `${userId}:${crypto.randomBytes(32).toString("hex")}`;
+  const refreshToken = `${userId}:refresh:${crypto.randomBytes(32).toString("hex")}`;
   const tokenExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  const refreshTokenExpiry = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
   await trx.execute(rawSql`
     UPDATE users
     SET auth_token=${token},
         auth_token_expires_at=${tokenExpiry},
+        refresh_token=${refreshToken},
+        refresh_token_expires_at=${refreshTokenExpiry},
         last_login_at=NOW()
     WHERE id=${userId}::uuid
   `);
@@ -679,6 +683,7 @@ async function provisionAppUserSessionTx(
   return {
     isNew,
     token,
+    refreshToken,
     user: finalUser,
   };
 }
@@ -1497,6 +1502,8 @@ async function ensureOperationalSchema() {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS rating NUMERIC(3,2) NOT NULL DEFAULT 5.0;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS total_ratings INTEGER NOT NULL DEFAULT 0;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_token_expires_at TIMESTAMP;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS refresh_token TEXT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS refresh_token_expires_at TIMESTAMP;
 
       -- Fix: missing trip_requests columns for parcel/person-booking flow
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS receiver_name VARCHAR(120);
@@ -1508,6 +1515,7 @@ async function ensureOperationalSchema() {
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS destination_short_name VARCHAR(120);
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS tip_amount NUMERIC(10,2) DEFAULT 0;
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS driver_rating NUMERIC(3,1);
+      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMP;
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS customer_rating NUMERIC(3,1);
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS driver_note TEXT;
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS tips NUMERIC(10,2) DEFAULT 0;
@@ -8524,6 +8532,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         success: true,
         isNew: session.isNew,
         token: session.token,
+        refreshToken: session.refreshToken,
         user: {
           id: session.user.id,
           fullName: session.user.fullName || session.user.name,
@@ -8584,10 +8593,80 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             last_login_at=NOW()
         WHERE id=${user.id}::uuid
       `);
+      const refreshToken = `${user.id}:refresh:${crypto.randomBytes(32).toString("hex")}`;
+      const refreshTokenExpiry = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
+      await rawDb.execute(rawSql`
+        UPDATE users
+        SET refresh_token=${refreshToken},
+            refresh_token_expires_at=${refreshTokenExpiry}
+        WHERE id=${user.id}::uuid
+      `);
       const walletBalance = safeFloat(user.walletBalance, 0);
       const effectiveUserType = requestedUserType === "driver" ? "driver" : "customer";
-      res.json({ success: true, token, user: { id: user.id, fullName: user.fullName || user.name, phone: user.phone || user.mobile, email: user.email || null, userType: effectiveUserType, profilePhoto: user.profilePhoto || user.profileImage || null, rating: safeFloat(user.rating, 5.0), isActive: user.isActive, walletBalance, isLocked: user.isLocked || false } });
+      res.json({ success: true, token, refreshToken, user: { id: user.id, fullName: user.fullName || user.name, phone: user.phone || user.mobile, email: user.email || null, userType: effectiveUserType, profilePhoto: user.profilePhoto || user.profileImage || null, rating: safeFloat(user.rating, 5.0), isActive: user.isActive, walletBalance, isLocked: user.isLocked || false } });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  app.post("/api/app/auth/refresh", async (req, res) => {
+    try {
+      const refreshToken = req.headers.authorization?.replace("Bearer ", "")?.trim() || "";
+      if (!refreshToken) return res.status(401).json({ message: "No refresh token provided" });
+      const parts = refreshToken.split(":");
+      if (parts.length < 3 || parts[1] !== "refresh") {
+        return res.status(401).json({ message: "Invalid refresh token format" });
+      }
+
+      const userId = parts[0];
+      const userRes = await rawDb.execute(rawSql`
+        SELECT *
+        FROM users
+        WHERE id=${userId}::uuid
+          AND is_active=true
+          AND refresh_token=${refreshToken}
+          AND (refresh_token_expires_at IS NULL OR refresh_token_expires_at > NOW())
+        LIMIT 1
+      `);
+      if (!userRes.rows.length) {
+        return res.status(401).json({ message: "Refresh token expired. Please login again." });
+      }
+
+      const user = camelize(userRes.rows[0]) as any;
+      const nextAccessToken = `${user.id}:${crypto.randomBytes(32).toString("hex")}`;
+      const nextRefreshToken = `${user.id}:refresh:${crypto.randomBytes(32).toString("hex")}`;
+      const nextAccessExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+      const nextRefreshExpiry = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
+
+      await rawDb.execute(rawSql`
+        UPDATE users
+        SET auth_token=${nextAccessToken},
+            auth_token_expires_at=${nextAccessExpiry},
+            refresh_token=${nextRefreshToken},
+            refresh_token_expires_at=${nextRefreshExpiry},
+            last_login_at=NOW()
+        WHERE id=${user.id}::uuid
+      `);
+
+      const effectiveUserType = canUseDriverApp(user) ? "driver" : "customer";
+      res.json({
+        success: true,
+        accessToken: nextAccessToken,
+        refreshToken: nextRefreshToken,
+        user: {
+          id: user.id,
+          fullName: user.fullName || user.name,
+          phone: user.phone || user.mobile,
+          email: user.email || null,
+          userType: effectiveUserType,
+          profilePhoto: user.profilePhoto || user.profileImage || null,
+          rating: safeFloat(user.rating, 5.0),
+          isActive: user.isActive,
+          walletBalance: safeFloat(user.walletBalance, 0),
+          isLocked: user.isLocked || false,
+        },
+      });
+    } catch (e: any) {
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
   });
 
   // -- FORGOT PASSWORD -------------------------------------------------------
@@ -8802,6 +8881,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const lng = req.body.lng;
       const hasValidCoords = lat != null && lng != null && isFinite(Number(lat)) && isFinite(Number(lng)) && (Number(lat) !== 0 || Number(lng) !== 0);
       await rawDb.execute(rawSql`UPDATE users SET is_online=${isOnline} WHERE id=${driver.id}::uuid`);
+      await rawDb.execute(rawSql`
+        UPDATE driver_details
+        SET availability_status=${isOnline ? "online" : "offline"}
+        WHERE user_id=${driver.id}::uuid
+      `);
       // UPSERT driver_locations � only update lat/lng if we have a real GPS fix; never write 0,0
       if (hasValidCoords) {
         await rawDb.execute(rawSql`
@@ -9062,6 +9146,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       // ?? Socket: notify customer � driver accepted, show pilot details
       if (io) {
+        io.to(`user:${tripData.customerId}`).emit("trip:driver_assigned", {
+          tripId: tripData.id,
+          pickupOtp: otp,
+          status: 'accepted',
+          currentStatus: 'accepted',
+          driver: {
+            id: driver.id,
+            fullName: driver.fullName || "Pilot",
+            phone: driver.phone || "",
+            rating: driver.avgRating || driver.rating || 0,
+            photo: driver.profilePhoto || null,
+            vehicleNumber: driverVehicle.vehicle_number || '',
+            vehicleModel: driverVehicle.vehicle_model || '',
+            vehicleCategory: driverVehicle.vehicle_category || '',
+          },
+        });
         io.to(`user:${tripData.customerId}`).emit("trip:accepted", {
           tripId: tripData.id,
           driverName: driver.fullName || "Pilot",
