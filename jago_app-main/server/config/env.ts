@@ -20,6 +20,9 @@ const EnvSchema = z.object({
   REDIS_URL: z.string().optional(),
   APP_BASE_URL: z.string().optional(),
   AI_ASSISTANT_SERVICE_URL: z.string().optional(),
+  FF_VOICE_ASSISTANT_V2: z.string().optional(),
+  FF_VOICE_BOOKING: z.string().optional(),
+  REQUIRE_EXTERNAL_ALERT_WEBHOOK: z.string().optional(),
   ADMIN_RESET_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
 
@@ -62,10 +65,15 @@ export function validateProductionReadiness(env: AppEnv): void {
 
   if (!env.GOOGLE_MAPS_API_KEY) warnings.push("GOOGLE_MAPS_API_KEY");
   if (!env.OPS_API_KEY) warnings.push("OPS_API_KEY");
-  if (!env.ALERT_WEBHOOK_URL) warnings.push("ALERT_WEBHOOK_URL");
+  if (isTrue(env.REQUIRE_EXTERNAL_ALERT_WEBHOOK) && !env.ALERT_WEBHOOK_URL) {
+    warnings.push("ALERT_WEBHOOK_URL (external ops webhook required by REQUIRE_EXTERNAL_ALERT_WEBHOOK=true)");
+  }
   if (!env.REDIS_URL) warnings.push("REDIS_URL (Socket presence/HA will fall back to single-process memory only)");
   if (!env.APP_BASE_URL) warnings.push("APP_BASE_URL");
-  if (!env.AI_ASSISTANT_SERVICE_URL) warnings.push("AI_ASSISTANT_SERVICE_URL");
+  const voiceAssistantEnabled = isTrue(env.FF_VOICE_ASSISTANT_V2) || isTrue(env.FF_VOICE_BOOKING);
+  if (voiceAssistantEnabled && !env.AI_ASSISTANT_SERVICE_URL) {
+    warnings.push("AI_ASSISTANT_SERVICE_URL (required only when voice assistant feature flags are enabled)");
+  }
   if (env.AI_ASSISTANT_SERVICE_URL?.includes("localhost")) warnings.push("AI_ASSISTANT_SERVICE_URL points to localhost");
   if (!env.ADMIN_RESET_KEY) warnings.push("ADMIN_RESET_KEY");
   if (!env.ANTHROPIC_API_KEY) warnings.push("ANTHROPIC_API_KEY");
