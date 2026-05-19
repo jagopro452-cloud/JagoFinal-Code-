@@ -11974,7 +11974,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const customer = (req as any).currentUser;
       const { amount, tripId } = req.body;
-      const amt = parseFloat(amount);
+      if (!tripId) return res.status(400).json({ message: "tripId is required for ride payment" });
+      const tripFareR = await rawDb.execute(rawSql`
+        SELECT estimated_fare, actual_fare, payment_status, current_status
+        FROM trip_requests
+        WHERE id=${tripId}::uuid AND customer_id=${customer.id}::uuid
+        LIMIT 1
+      `);
+      if (!tripFareR.rows.length) return res.status(404).json({ message: "Trip not found for this customer" });
+      const tripFare = tripFareR.rows[0] as any;
+      if (["paid", "paid_online"].includes(String(tripFare.payment_status || "").toLowerCase())) {
+        return res.status(409).json({ message: "Trip payment already completed" });
+      }
+      if (String(tripFare.current_status || "").toLowerCase() === "cancelled") {
+        return res.status(400).json({ message: "Cannot pay for a cancelled trip" });
+      }
+      const requestedAmt = parseFloat(amount);
+      const serverAmt = parseFloat(tripFare.actual_fare || tripFare.estimated_fare || "0");
+      const amt = Number.isFinite(serverAmt) && serverAmt > 0 ? serverAmt : requestedAmt;
       if (!amt || amt <= 0 || amt > 50000) return res.status(400).json({ message: "Invalid fare amount" });
       const { keyId, keySecret } = await getRazorpayKeys();
       if (!keyId || !keySecret) return res.status(503).json({ message: "Payment gateway not configured" });
@@ -12014,17 +12031,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         crypto.timingSafeEqual(Buffer.from(expectedSig, "utf8"), Buffer.from(razorpaySignature, "utf8"));
       if (!sigValid) return res.status(400).json({ message: "Invalid payment signature" });
       // Amount + trip_id from DB � never trust client-sent amount
-      const pendingRec = await rawDb.execute(rawSql`
-        SELECT amount, trip_id FROM customer_payments WHERE razorpay_order_id=${razorpayOrderId} AND customer_id=${customer.id}::uuid AND status='pending' LIMIT 1
-      `);
-      if (!pendingRec.rows.length) return res.status(400).json({ message: "No pending order found for this payment" });
-      const verifiedAmt = parseFloat((pendingRec.rows[0] as any).amount);
-      const linkedTripId = (pendingRec.rows[0] as any).trip_id;
-      // Mark as completed
-      await rawDb.execute(rawSql`
+      const atomicMark = await rawDb.execute(rawSql`
         UPDATE customer_payments SET razorpay_payment_id=${razorpayPaymentId}, status='completed', verified_at=NOW()
-        WHERE razorpay_order_id=${razorpayOrderId} AND customer_id=${customer.id}::uuid
-      `).catch(dbCatch("db"));
+        WHERE razorpay_order_id=${razorpayOrderId}
+          AND customer_id=${customer.id}::uuid
+          AND payment_type='ride_payment'
+          AND status='pending'
+        RETURNING amount, trip_id
+      `);
+      if (!atomicMark.rows.length) {
+        return res.status(409).json({ message: "Payment already processed or not pending", alreadyProcessed: true });
+      }
+      const verifiedAmt = parseFloat((atomicMark.rows[0] as any).amount);
+      const linkedTripId = (atomicMark.rows[0] as any).trip_id;
       // Mark trip as paid_online so cancel-trip can auto-refund to wallet
       if (linkedTripId) {
         await rawDb.execute(rawSql`
@@ -12245,33 +12264,57 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
           // -- B) Customer wallet topup / ride payment -----------------------
           {
-            const cpRows = await rawDb.execute(rawSql`
-              SELECT * FROM customer_payments
+            const cpUpdate = await rawDb.execute(rawSql`
+              UPDATE customer_payments
+              SET status = 'completed',
+                  razorpay_payment_id = ${paymentId},
+                  verified_at = NOW()
               WHERE razorpay_order_id = ${orderId} AND status = 'pending'
-              LIMIT 1
+              RETURNING *
             `).catch(() => ({ rows: [] as any[] }));
-            if (cpRows.rows.length) {
-              const rec = camelize(cpRows.rows[0]) as any;
-              const done = await rawDb.execute(rawSql`
-                SELECT id FROM customer_payments
-                WHERE razorpay_order_id = ${orderId} AND status = 'completed'
-                LIMIT 1
-              `).catch(() => ({ rows: [] as any[] }));
-              if (!done.rows.length) {
-                await rawDb.execute(rawSql`
-                  UPDATE customer_payments
-                  SET status = 'completed',
-                      razorpay_payment_id = ${paymentId},
-                      verified_at = NOW()
-                  WHERE razorpay_order_id = ${orderId} AND status = 'pending'
-                `);
+            if (cpUpdate.rows.length) {
+              const rec = camelize(cpUpdate.rows[0]) as any;
+              if (rec.paymentType === "wallet_topup") {
                 await rawDb.execute(rawSql`
                   UPDATE users
                   SET wallet_balance = wallet_balance + ${rec.amount}, updated_at = NOW()
                   WHERE id = ${rec.customerId}::uuid
+                  RETURNING wallet_balance
                 `);
+                await rawDb.execute(rawSql`
+                  INSERT INTO transactions (user_id, account, credit, debit, balance, transaction_type, ref_transaction_id)
+                  SELECT ${rec.customerId}::uuid, ${'Wallet recharge via Razorpay'}, ${rec.amount}, 0, wallet_balance, ${'wallet_recharge'}, ${paymentId}
+                  FROM users WHERE id=${rec.customerId}::uuid
+                  ON CONFLICT (ref_transaction_id, transaction_type) WHERE ref_transaction_id IS NOT NULL DO NOTHING
+                `).catch(dbCatch("db"));
                 if (io) io.to(`user:${rec.customerId}`).emit("wallet:recharged", { amount: rec.amount });
                 console.info(`${tag} customer wallet credited customer=${rec.customerId} ?${rec.amount}`);
+              } else if (rec.paymentType === "ride_payment") {
+                await rawDb.execute(rawSql`
+                  UPDATE trip_requests
+                  SET payment_status='paid_online',
+                      razorpay_payment_id=${paymentId},
+                      updated_at=NOW()
+                  WHERE id=${rec.tripId ?? null}::uuid
+                    AND customer_id=${rec.customerId}::uuid
+                `);
+                if (io) {
+                  io.to(`user:${rec.customerId}`).emit("payment:confirmed", {
+                    tripId: rec.tripId,
+                    paymentId,
+                    amount: rec.amount,
+                    status: "paid_online",
+                  });
+                  if (rec.tripId) io.to(`trip:${rec.tripId}`).emit("payment:confirmed", {
+                    tripId: rec.tripId,
+                    paymentId,
+                    amount: rec.amount,
+                    status: "paid_online",
+                  });
+                }
+                console.info(`${tag} ride payment confirmed customer=${rec.customerId} trip=${rec.tripId} ?${rec.amount}`);
+              } else {
+                console.info(`${tag} customer payment completed type=${rec.paymentType} orderId=${orderId}`);
               }
             }
           }
@@ -12438,10 +12481,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           console.info(`${tag} refundId=${refundId} paymentId=${paymentId} ?${refundAmt}`);
 
           if (eventType === "refund.processed") {
-            // Find a matching approved refund_request and credit customer wallet
+            // Match by Razorpay payment id first. Amount-only matching can complete the wrong refund.
+            const cpMatch = await rawDb.execute(rawSql`
+              SELECT customer_id, trip_id FROM customer_payments
+              WHERE razorpay_payment_id = ${paymentId}
+              ORDER BY verified_at DESC NULLS LAST, created_at DESC
+              LIMIT 1
+            `).catch(() => ({ rows: [] as any[] }));
+            const cp = cpMatch.rows[0] as any | undefined;
             const rrRows = await rawDb.execute(rawSql`
               SELECT * FROM refund_requests
-              WHERE status = 'approved' AND amount = ${refundAmt}
+              WHERE status = 'approved'
+                AND amount = ${refundAmt}
+                ${cp?.customer_id ? rawSql`AND customer_id=${cp.customer_id}::uuid` : rawSql``}
+                ${cp?.trip_id ? rawSql`AND trip_id=${cp.trip_id}::uuid` : rawSql``}
               ORDER BY created_at DESC LIMIT 1
             `).catch(() => ({ rows: [] as any[] }));
             if (rrRows.rows.length) {
@@ -12453,17 +12506,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
                     approved_at = NOW()
                 WHERE id = ${rr.id}::uuid
               `);
-              if (rr.paymentMethod === "wallet" && rr.customerId) {
-                await rawDb.execute(rawSql`
-                  UPDATE users
-                  SET wallet_balance = wallet_balance + ${refundAmt}, updated_at = NOW()
-                  WHERE id = ${rr.customerId}::uuid
-                `);
-                if (io) io.to(`user:${rr.customerId}`).emit("wallet:recharged", {
+              if (rr.customerId && io) {
+                io.to(`user:${rr.customerId}`).emit("refund:processed", {
                   amount: refundAmt,
-                  reason: "Refund processed",
+                  paymentId,
+                  refundId,
+                  method: "original_payment_method",
                 });
-                console.info(`${tag} wallet credited ?${refundAmt} for refund customer=${rr.customerId}`);
               }
             }
           }
