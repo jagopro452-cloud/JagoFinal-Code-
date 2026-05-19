@@ -117,7 +117,6 @@ import {
   getPlaceDetails,
   reverseGeocode,
   getMultiWaypointRoute,
-  getRealTimeETA,
   extractShortName,
   searchNearbyPlaces,
   getMappingStats,
@@ -2486,16 +2485,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // Health check endpoint
-  app.get("/api/health", async (_req, res) => {
-    try {
-      const { pool: dbPool } = await import("./db");
-      await dbPool.query("SELECT 1");
-      res.json({ status: "ok", db: "connected", ts: new Date().toISOString() });
-    } catch (e: any) {
-      res.status(503).json({ status: "error", db: "disconnected" });
-    }
-  });
-
   // Public env/config diagnostic — reports which critical keys are configured.
   // Returns booleans only (never exposes values). Safe to expose publicly.
   app.get("/api/health/env", async (_req, res) => {
@@ -6407,23 +6396,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const type = settingsType || "pages_settings";
       await rawDb.execute(rawSql`INSERT INTO business_settings (key_name, value, settings_type) VALUES (${keyName}, ${String(value)}, ${type}) ON CONFLICT (key_name) DO UPDATE SET value=${String(value)}, updated_at=now()`);
       res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
-  });
-
-  // Admin password change
-  app.post("/api/admin/change-password", async (req, res) => {
-    try {
-      const { currentPassword, newPassword } = req.body;
-      if (!currentPassword || !newPassword) return res.status(400).json({ message: "Current and new passwords required" });
-      if (newPassword.length < 8) return res.status(400).json({ message: "New password must be at least 8 characters" });
-      const r = await rawDb.execute(rawSql`SELECT id, password FROM admins WHERE role='superadmin' LIMIT 1`);
-      if (!r.rows.length) return res.status(404).json({ message: "Admin not found" });
-      const admin = r.rows[0] as any;
-      const valid = await verifyPassword(String(currentPassword), admin.password);
-      if (!valid) return res.status(401).json({ message: "Current password is incorrect" });
-      const hash = await hashPassword(String(newPassword));
-      await rawDb.execute(rawSql`UPDATE admins SET password=${hash} WHERE id=${admin.id}::uuid`);
-      res.json({ success: true, message: "Password changed successfully" });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -11494,11 +11466,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Falls back to straight-line Haversine estimate if Google API unavailable.
   app.get("/api/app/eta", authApp, async (req, res) => {
     try {
-      const { originLat, originLng, destLat, destLng } = req.query as Record<string, string>;
-      if (!originLat || !originLng || !destLat || !destLng) {
-        return res.status(400).json({ message: "originLat, originLng, destLat, destLng required" });
+      const {
+        originLat,
+        originLng,
+        driverLat,
+        driverLng,
+        destLat,
+        destLng,
+      } = req.query as Record<string, string>;
+      const sourceLat = originLat ?? driverLat;
+      const sourceLng = originLng ?? driverLng;
+      if (!sourceLat || !sourceLng || !destLat || !destLng) {
+        return res.status(400).json({ message: "originLat/originLng or driverLat/driverLng plus destLat/destLng required" });
       }
-      const oLat = parseFloat(originLat), oLng = parseFloat(originLng);
+      const oLat = parseFloat(sourceLat), oLng = parseFloat(sourceLng);
       const dLat = parseFloat(destLat), dLng = parseFloat(destLng);
 
       // Try Google Distance Matrix first
@@ -17451,23 +17432,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  app.get("/api/app/driver/heatmap", authApp, async (req, res) => {
-    try {
-      const zones = await computeDemandHeatmap();
-      // Filter to relevant info for driver app overlay
-      const driverZones = zones.map(z => ({
-        zoneName: z.zoneName,
-        lat: z.centerLat,
-        lng: z.centerLng,
-        intensity: z.demandIntensity,
-        color: z.color,
-        demandRatio: z.demandRatio,
-        surgeMultiplier: z.surgeMultiplier,
-      }));
-      res.json({ zones: driverZones });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
-  });
-
   // -- 2. SURGE PRICING � Admin CRUD + Calculation ----------------------------
   app.get("/api/app/surge", async (req, res) => {
     try {
@@ -18124,19 +18088,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       const route = await getMultiWaypointRoute(origin, destination, waypoints, optimize);
       if (!route) return res.status(404).json({ message: "Route not available" });
       res.json(route);
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
-  });
-
-  // -- Real-time ETA -------------------------------------------------------
-  app.get("/api/app/eta", authApp, async (req, res) => {
-    try {
-      const dLat = Number(req.query.driverLat);
-      const dLng = Number(req.query.driverLng);
-      const destLat = Number(req.query.destLat);
-      const destLng = Number(req.query.destLng);
-      if (!dLat || !dLng || !destLat || !destLng) return res.status(400).json({ message: "Driver and destination coordinates required" });
-      const eta = await getRealTimeETA(dLat, dLng, destLat, destLng);
-      res.json(eta);
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
