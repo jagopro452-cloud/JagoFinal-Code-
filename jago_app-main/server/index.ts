@@ -222,13 +222,17 @@ async function setupSocketRedisAdapter() {
     const redisUrl = process.env.REDIS_URL || "redis://localhost:6379";
     const pubClient = new IORedis(redisUrl, {
       lazyConnect: true,
-      enableOfflineQueue: false,
-      maxRetriesPerRequest: 0,
-      retryStrategy: () => null,
+      enableOfflineQueue: true,
+      maxRetriesPerRequest: null,
+      retryStrategy: (times) => Math.min(times * 500, 5000),
+      reconnectOnError: () => true,
+      keepAlive: 15000,
     });
     const subClient = pubClient.duplicate();
-    pubClient.on("error", () => { });
-    subClient.on("error", () => { });
+    pubClient.on("error", (error) => { log(`[Socket.IO][Redis] publisher error: ${error.message}`); });
+    subClient.on("error", (error) => { log(`[Socket.IO][Redis] subscriber error: ${error.message}`); });
+    pubClient.on("end", () => { log("[Socket.IO][Redis] publisher connection ended"); });
+    subClient.on("end", () => { log("[Socket.IO][Redis] subscriber connection ended"); });
     const { io: socketIo } = await import("./socket");
 
     await Promise.all([

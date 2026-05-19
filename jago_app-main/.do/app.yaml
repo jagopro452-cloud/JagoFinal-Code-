@@ -11,7 +11,7 @@ services:
     source_dir: /
     github:
       repo: jagopro452-cloud/jago
-      branch: master
+      branch: main
       deploy_on_push: true
     build_command: npm ci && npm run build
     run_command: npm start

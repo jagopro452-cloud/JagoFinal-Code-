@@ -2067,22 +2067,25 @@ function emitCustomerSearchStatus(session: DispatchSession): void {
   if (!io) return;
   const config = session.config;
   const currentRadius = config.radiusStepsKm[Math.min(session.radiusIndex, config.radiusStepsKm.length - 1)];
+  try {
+    io.to(`user:${session.customerId}`).emit("dispatch:status", {
+      tripId: session.tripId,
+      status: "searching",
+      currentRadiusKm: currentRadius,
+      radiusStep: Math.min(session.radiusIndex + 1, config.radiusStepsKm.length),
+      totalRadiusSteps: config.radiusStepsKm.length,
+      driversNotified: session.notifiedDriverIds.size,
+      message: "Looking for a pilot near you...",
+    });
 
-  io.to(`user:${session.customerId}`).emit("dispatch:status", {
-    tripId: session.tripId,
-    status: "searching",
-    currentRadiusKm: currentRadius,
-    radiusStep: Math.min(session.radiusIndex + 1, config.radiusStepsKm.length),
-    totalRadiusSteps: config.radiusStepsKm.length,
-    driversNotified: session.notifiedDriverIds.size,
-    message: "Looking for a pilot near you...",
-  });
-
-  // Also emit legacy event for backward compatibility
-  io.to(`user:${session.customerId}`).emit("trip:searching", {
-    tripId: session.tripId,
-    message: "Looking for another pilot...",
-  });
+    // Also emit legacy event for backward compatibility
+    io.to(`user:${session.customerId}`).emit("trip:searching", {
+      tripId: session.tripId,
+      message: "Looking for another pilot...",
+    });
+  } catch (error: any) {
+    console.error(`[DISPATCH] search status emit failed for trip ${session.tripId}:`, error?.message || error);
+  }
 }
 
 /**

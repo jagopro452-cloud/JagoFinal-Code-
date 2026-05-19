@@ -338,6 +338,11 @@ export function setupSocket(httpServer: HttpServer) {
                 current_lng=COALESCE(${lng ?? null}, current_lng)
             WHERE id=${userId}::uuid
           `);
+          await rawDb.execute(rawSql`
+            UPDATE driver_details
+            SET availability_status=${isOnline ? "online" : "offline"}
+            WHERE user_id=${userId}::uuid
+          `).catch(() => { });
           socket.emit("driver:online_ack", { isOnline });
           // If driver explicitly went offline, cancel any pending grace-period timer
           if (!isOnline) {
@@ -1172,6 +1177,10 @@ export function setupSocket(httpServer: HttpServer) {
             `).catch(() => { });
             await rawDb.execute(rawSql`
               UPDATE users SET is_online=false WHERE id=${userId}::uuid
+            `).catch(() => { });
+            await rawDb.execute(rawSql`
+              UPDATE driver_details SET availability_status='offline'
+              WHERE user_id=${userId}::uuid
             `).catch(() => { });
             console.log(`[SOCKET] Driver ${userId} offline (grace period expired, reason=${reason})`);
           }
