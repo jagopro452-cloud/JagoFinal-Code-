@@ -364,6 +364,36 @@ function canonicalRoleForUserType(_userType: string): string {
   return "user";
 }
 
+function defaultReferralCode(phone: string, userType?: string | null): string {
+  const cleanPhone = normalizePhone(phone);
+  const roleMarker = String(userType || "").toLowerCase().startsWith("driver") ? "D" : "C";
+  return `JAGOPRO${roleMarker}${cleanPhone.slice(-6)}`;
+}
+
+async function assignDefaultReferralCode(trx: any, userId: string, phone: string, userType?: string | null) {
+  const baseCode = defaultReferralCode(phone, userType);
+  for (let suffix = 0; suffix < 5; suffix += 1) {
+    const referralCode = suffix === 0 ? baseCode : `${baseCode}${suffix}`;
+    const result = await trx.execute(rawSql`
+      UPDATE users
+      SET referral_code = COALESCE(referral_code, ${referralCode})
+      WHERE id=${userId}::uuid
+        AND (referral_code IS NOT NULL OR NOT EXISTS (
+          SELECT 1 FROM users WHERE referral_code=${referralCode} AND id <> ${userId}::uuid
+        ))
+      RETURNING referral_code
+    `);
+    if (result.rows.length) return (result.rows[0] as any).referral_code;
+  }
+  const fallback = `${baseCode}${crypto.randomBytes(2).toString("hex").toUpperCase()}`;
+  await trx.execute(rawSql`
+    UPDATE users
+    SET referral_code = COALESCE(referral_code, ${fallback})
+    WHERE id=${userId}::uuid
+  `);
+  return fallback;
+}
+
 function sanitizeRegistrationPayload(body: any) {
   return {
     phone: maskPhone(normalizePhone(body?.phone)),
@@ -621,12 +651,7 @@ async function provisionAppUserSessionTx(
     await upsertCustomerProfileRow(trx, userId, input.city || null);
   }
 
-  const referralCode = `JAGOPRO${input.phone.slice(-6)}`;
-  await trx.execute(rawSql`
-    UPDATE users
-    SET referral_code = COALESCE(referral_code, ${referralCode})
-    WHERE id=${userId}::uuid
-  `);
+  await assignDefaultReferralCode(trx, userId, input.phone, input.userType);
 
   if (input.referralCode) {
     const referrer = await trx.execute(rawSql`SELECT id FROM users WHERE referral_code=${input.referralCode} LIMIT 1`);
@@ -4284,11 +4309,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           String(vehicleType || "bike"),
           resolvedVehicleCategoryId,
         );
-        await trx.execute(rawSql`
-          UPDATE users
-          SET referral_code = COALESCE(referral_code, ${`JAGOPRO${cleanPhone.slice(-6)}`})
-          WHERE id=${driver.id}::uuid
-        `).catch(() => ({ rows: [] }));
+        await assignDefaultReferralCode(trx, String(driver.id), cleanPhone, "driver");
         return driver;
       });
 
