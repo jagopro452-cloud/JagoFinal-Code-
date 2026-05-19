@@ -25,6 +25,7 @@ export let io: SocketIOServer;
 // NOTE: These maps are local to this process. With Redis adapter, socket routing works across processes but these maps still need Redis-backed storage for full HA. TODO: migrate to Redis hashes.
 const driverSockets = new Map<string, Set<string>>();
 const customerSockets = new Map<string, Set<string>>();
+const activeCallSessions = new Map<string, { callerId: string; targetId: string; startedAt: number }>();
 
 // Grace-period timers: when a driver socket disconnects we wait before marking them offline.
 // If they reconnect within the grace window the timer is cancelled and they stay online.
@@ -999,9 +1000,7 @@ export function setupSocket(httpServer: HttpServer) {
     // Only allowed during active trip: accepted → arrived → on_the_way
     // Phone numbers are MASKED — real numbers never exposed over socket
 
-    // Track active call sessions: tripId → { callerId, targetId, startedAt }
-    const activeCallSessions = new Map<string, { callerId: string; targetId: string; startedAt: number }>();
-
+    // Active call sessions are process-wide so caller/receiver sockets share the same state.
     socket.on("call:initiate", async (data: { targetUserId: string; tripId: string; callerName: string }) => {
       try {
         const { targetUserId, tripId, callerName } = data;
@@ -1065,15 +1064,55 @@ export function setupSocket(httpServer: HttpServer) {
       }
     });
 
-    socket.on("call:offer", (data: { targetUserId: string; sdp: any }) => {
+    const isCallSignalAllowed = async (targetUserId: string, tripId?: string): Promise<boolean> => {
+      if (!targetUserId) return false;
+      if (tripId && activeCallSessions.has(tripId)) {
+        const session = activeCallSessions.get(tripId)!;
+        return [session.callerId, session.targetId].includes(userId) &&
+          [session.callerId, session.targetId].includes(targetUserId);
+      }
+      const tripR = await rawDb.execute(rawSql`
+        SELECT id FROM trip_requests
+        WHERE current_status IN ('accepted','arrived','on_the_way')
+          AND (customer_id=${userId}::uuid OR driver_id=${userId}::uuid)
+          AND (customer_id=${targetUserId}::uuid OR driver_id=${targetUserId}::uuid)
+          ${tripId ? rawSql`AND id=${tripId}::uuid` : rawSql``}
+        LIMIT 1
+      `);
+      return tripR.rows.length > 0;
+    };
+
+    socket.on("call:offer", async (data: { targetUserId: string; tripId?: string; sdp: any }) => {
+      if (!await isCallSignalAllowed(data.targetUserId, data.tripId)) {
+        socket.emit("call:error", { message: "Call session is not active." });
+        return;
+      }
       io.to(`user:${data.targetUserId}`).emit("call:offer", { callerId: userId, sdp: data.sdp });
     });
 
-    socket.on("call:answer", (data: { targetUserId: string; sdp: any }) => {
+    socket.on("call:answer", async (data: { targetUserId: string; tripId?: string; sdp: any }) => {
+      if (!await isCallSignalAllowed(data.targetUserId, data.tripId)) {
+        socket.emit("call:error", { message: "Call session is not active." });
+        return;
+      }
+      await rawDb.execute(rawSql`
+        UPDATE call_logs SET status='answered'
+        WHERE receiver_id=${userId}::uuid AND caller_id=${data.targetUserId}::uuid
+          AND status='initiated'
+          ${data.tripId ? rawSql`AND trip_id=${data.tripId}::uuid` : rawSql``}
+      `).catch(async () => {
+        await rawDb.execute(rawSql`
+          UPDATE call_logs SET status='answered'
+          WHERE callee_id=${userId}::uuid AND caller_id=${data.targetUserId}::uuid
+            AND status='initiated'
+            ${data.tripId ? rawSql`AND trip_id=${data.tripId}::uuid` : rawSql``}
+        `).catch(() => { });
+      });
       io.to(`user:${data.targetUserId}`).emit("call:answer", { callerId: userId, sdp: data.sdp });
     });
 
-    socket.on("call:ice", (data: { targetUserId: string; candidate: any }) => {
+    socket.on("call:ice", async (data: { targetUserId: string; tripId?: string; candidate: any }) => {
+      if (!await isCallSignalAllowed(data.targetUserId, data.tripId)) return;
       io.to(`user:${data.targetUserId}`).emit("call:ice", { from: userId, candidate: data.candidate });
     });
 
@@ -1085,8 +1124,15 @@ export function setupSocket(httpServer: HttpServer) {
         activeCallSessions.delete(tripId);
         await rawDb.execute(rawSql`
           UPDATE call_logs SET status='completed', ended_at=NOW(), duration_sec=${durationSec || 0}
-          WHERE caller_id=${userId}::uuid AND trip_id=${tripId}::uuid AND status='initiated'
-        `).catch(() => { });
+          WHERE trip_id=${tripId}::uuid AND status IN ('initiated','answered')
+            AND (caller_id=${userId}::uuid OR receiver_id=${userId}::uuid)
+        `).catch(async () => {
+          await rawDb.execute(rawSql`
+            UPDATE call_logs SET status='completed', duration_seconds=${durationSec || 0}
+            WHERE trip_id=${tripId}::uuid AND status IN ('initiated','answered')
+              AND (caller_id=${userId}::uuid OR callee_id=${userId}::uuid)
+          `).catch(() => { });
+        });
       }
       console.log(`[CALL] Call ended by ${userId}${durationSec ? ` (${durationSec}s)` : ''}`);
     });

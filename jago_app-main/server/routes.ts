@@ -2831,6 +2831,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         )
       `).catch(dbCatch("db"));
       await rawDb.execute(rawSql`
+        ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS receiver_id UUID;
+        ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS callee_id UUID;
+        ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS initiated_at TIMESTAMPTZ DEFAULT NOW();
+        ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS ended_at TIMESTAMPTZ;
+        ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS duration_sec INT DEFAULT 0;
+        ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS duration_seconds INT DEFAULT 0;
+      `).catch(dbCatch("db"));
+      await rawDb.execute(rawSql`
         CREATE TABLE IF NOT EXISTS driver_kyc_documents (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           driver_id UUID NOT NULL,
@@ -7786,7 +7794,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         INSERT INTO support_messages (user_id, sender, message)
         VALUES (${userId}::uuid, ${sender}, ${message}) RETURNING *
       `);
-      res.json({ success: true, data: camelize(r.rows[0]) });
+      const data = camelize(r.rows[0]);
+      io?.to(`user:${userId}`).emit("support:new_message", data);
+      res.json({ success: true, data });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -11835,6 +11845,29 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         RETURNING id
       `);
       const alertId = (r.rows[0] as any)?.id || null;
+      let otherParticipantId: string | null = null;
+      if (tripId) {
+        const tripR = await rawDb.execute(rawSql`
+          SELECT customer_id, driver_id FROM trip_requests WHERE id=${tripId}::uuid LIMIT 1
+        `).catch(() => ({ rows: [] as any[] }));
+        const trip = (tripR.rows[0] as any) || null;
+        if (trip) {
+          otherParticipantId = String(trip.customer_id) === String(user.id) ? trip.driver_id : trip.customer_id;
+        }
+      }
+      const payload = {
+        alertId,
+        tripId: tripId || null,
+        userId: user.id,
+        triggeredBy: user.userType === 'driver' ? 'driver' : 'customer',
+        lat: lat ? Number(lat) : null,
+        lng: lng ? Number(lng) : null,
+        message: message || 'SOS triggered from app',
+        createdAt: new Date().toISOString(),
+      };
+      io?.to("admin:safety").emit("safety:sos", payload);
+      if (tripId) io?.to(`trip:${tripId}`).emit("safety:sos", payload);
+      if (otherParticipantId) io?.to(`user:${otherParticipantId}`).emit("safety:sos", payload);
       console.log(`[SOS] ? ${user.userType} ${user.fullName} (${user.phone}) at ${lat},${lng} alertId=${alertId}`);
       res.json({ success: true, alertId, message: "SOS alert sent. Help is on the way." });
     } catch (e: any) {
@@ -13863,7 +13896,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const r = await rawDb.execute(rawSql`
         INSERT INTO support_messages (user_id, sender, message) VALUES (${user.id}::uuid, 'user', ${message}) RETURNING *
       `);
-      res.json({ success: true, data: camelize(r.rows[0]) });
+      const data = camelize(r.rows[0]);
+      io?.to("admin:support").emit("support:new_message", data);
+      res.json({ success: true, data });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -13887,7 +13922,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const r = await rawDb.execute(rawSql`
         INSERT INTO support_messages (user_id, sender, message) VALUES (${user.id}::uuid, 'user', ${message}) RETURNING *
       `);
-      res.json({ success: true, data: camelize(r.rows[0]) });
+      const data = camelize(r.rows[0]);
+      io?.to("admin:support").emit("support:new_message", data);
+      res.json({ success: true, data });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
