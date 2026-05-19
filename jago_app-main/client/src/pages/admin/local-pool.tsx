@@ -135,8 +135,8 @@ export default function LocalPool() {
     <div className="container-fluid">
       <div className="mb-4 d-flex justify-content-between align-items-start flex-wrap gap-2">
         <div>
-          <h2 className="fs-22 mb-1">Realtime Seat Control</h2>
-          <div className="fs-14 text-muted">Rolling pool sessions, seat occupancy, GST and commission monitoring</div>
+          <h2 className="fs-22 mb-1">Local Pool</h2>
+          <div className="fs-14 text-muted">Rolling city pool sessions, live seat occupancy, and local shared-ride controls</div>
         </div>
         <button className="btn btn-outline-primary btn-sm" onClick={() => setSettingsOpen(true)}>
           <i className="bi bi-gear me-1"></i> Pool Settings

@@ -78,6 +78,12 @@ interface NavSection {
   roles?: string[]; // undefined = visible to all
 }
 
+interface RouteMeta {
+  label: string;
+  href: string;
+  section: string;
+}
+
 // Sections accessible per employee role. Super admin / admin see everything.
 // Undefined roles = visible to all authenticated admins.
 const ROLE_SECTION_ACCESS: Record<string, string[]> = {
@@ -105,13 +111,15 @@ const navSections: NavSection[] = [
     category: "Zone Management",
     items: [
       { label: "Zone Setup", icon: "bi-map", href: "/admin/zones" },
+      { label: "Popular Locations", icon: "bi-geo-alt-fill", href: "/admin/popular-locations" },
     ],
   },
   {
     category: "Trip Management",
     items: [
       { label: "All Trips", icon: "bi-car-front-fill", href: "/admin/trips" },
-      { label: "Local Pool Rides", icon: "bi-people-fill", href: "/admin/local-pool" },
+      { label: "Intercity Pool", icon: "bi-people-fill", href: "/admin/intercity-pool" },
+      { label: "Local Pool", icon: "bi-people-fill", href: "/admin/local-pool" },
       { label: "Outstation Pool", icon: "bi-signpost-2-fill", href: "/admin/outstation-pool" },
       { label: "Intercity Routes", icon: "bi-map", href: "/admin/intercity-routes" },
       { label: "Parcel Refund Request", icon: "bi-arrow-return-left", href: "/admin/parcel-refunds" },
@@ -197,6 +205,7 @@ const navSections: NavSection[] = [
     category: "Developer",
     items: [
       { label: "API Reference", icon: "bi-code-square", href: "/admin/api-docs" },
+      { label: "App UI Design", icon: "bi-phone-fill", href: "/admin/app-design" },
     ],
   },
   {
@@ -217,6 +226,26 @@ const navSections: NavSection[] = [
   },
 ];
 
+const hiddenRouteMeta: RouteMeta[] = [
+  { section: "Hidden Admin", label: "Blogs", href: "/admin/blogs" },
+  { section: "Hidden Admin", label: "Newsletter", href: "/admin/newsletter" },
+  { section: "Hidden Admin", label: "Voice Commands", href: "/admin/voice-commands" },
+  { section: "Hidden Admin", label: "City Services", href: "/admin/city-services" },
+  { section: "Hidden Admin", label: "Parcel Vehicle Types", href: "/admin/parcel-vehicle-types" },
+  { section: "Hidden Admin", label: "AI Brain", href: "/admin/ai-brain" },
+];
+
+const pageRouteMeta: RouteMeta[] = [
+  ...navSections.flatMap((section) =>
+    section.items.map((item) => ({
+      section: section.category,
+      label: item.label,
+      href: item.href,
+    })),
+  ),
+  ...hiddenRouteMeta,
+];
+
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const cssReady = useAdminBootstrap();
   const [location, setLocation] = useLocation();
@@ -226,14 +255,12 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const [navSearch, setNavSearch] = useState("");
 
   const currentPage = (() => {
-    for (const section of navSections) {
-      for (const item of section.items) {
-        if (location === item.href || location.startsWith(item.href + "/")) {
-          return { label: item.label, section: section.category };
-        }
+    for (const item of pageRouteMeta) {
+      if (location === item.href || location.startsWith(item.href + "/")) {
+        return { label: item.label, section: item.section };
       }
     }
-    return { label: "Dashboard", section: "Overview" };
+    return { label: "Module Not Found", section: "Admin" };
   })();
 
   // Persist sidebar fold state across page refreshes

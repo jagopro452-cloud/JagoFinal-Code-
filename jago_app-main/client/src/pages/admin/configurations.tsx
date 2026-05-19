@@ -508,7 +508,7 @@ export default function ConfigurationsPage() {
               <div className="row g-3 mb-4">
                 {[
                   { key: "intercity_enabled", label: "Outstation Pool", icon: "bi-signpost-2-fill", color: "#1a73e8" },
-                  { key: "car_sharing_enabled", label: "Local Pool", icon: "bi-people-fill", color: "#7c3aed" },
+                  { key: "car_sharing_enabled", label: "Intercity Pool", icon: "bi-people-fill", color: "#7c3aed" },
                   { key: "parcel_subscription_enabled", label: "Parcel Subscriptions", icon: "bi-box-seam-fill", color: "#16a34a" },
                   { key: "ride_subscription_enabled", label: "Ride Subscriptions", icon: "bi-car-front-fill", color: "#d97706" },
                   { key: "surge_pricing_enabled", label: "Surge Pricing", icon: "bi-lightning-charge-fill", color: "#dc2626" },

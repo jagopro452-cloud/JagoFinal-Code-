@@ -6267,6 +6267,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Intercity Routes CRUD
   app.get("/api/intercity-routes", async (_req, res) => {
     try {
+      res.set("Cache-Control", "no-store");
       const r = await rawDb.execute(rawSql`
         SELECT ir.*, vc.name as vehicle_name FROM intercity_routes ir
         LEFT JOIN vehicle_categories vc ON vc.id = ir.vehicle_category_id
@@ -6290,11 +6291,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.put("/api/intercity-routes/:id", requireAdminAuth, async (req, res) => {
     try {
       const { fromCity, toCity, estimatedKm, baseFare, farePerKm, tollCharges, vehicleCategoryId, isActive } = req.body;
+      const normalizedFromCity = typeof fromCity === "string" ? fromCity.trim() : "";
+      const normalizedToCity = typeof toCity === "string" ? toCity.trim() : "";
+      const normalizedEstimatedKm = estimatedKm === undefined || estimatedKm === null || estimatedKm === "" ? 0 : Number(estimatedKm);
+      const normalizedBaseFare = baseFare === undefined || baseFare === null || baseFare === "" ? 0 : Number(baseFare);
+      const normalizedFarePerKm = farePerKm === undefined || farePerKm === null || farePerKm === "" ? 0 : Number(farePerKm);
+      const normalizedTollCharges = tollCharges === undefined || tollCharges === null || tollCharges === "" ? 0 : Number(tollCharges);
+      if (!normalizedFromCity || !normalizedToCity) {
+        return res.status(400).json({ message: "Both fromCity and toCity are required" });
+      }
+      if ([normalizedEstimatedKm, normalizedBaseFare, normalizedFarePerKm, normalizedTollCharges].some((value) => Number.isNaN(value))) {
+        return res.status(400).json({ message: "Route fare and distance values must be valid numbers" });
+      }
       let r;
       if (vehicleCategoryId) {
-        r = await rawDb.execute(rawSql`UPDATE intercity_routes SET from_city=${fromCity}, to_city=${toCity}, estimated_km=${estimatedKm || 0}, base_fare=${baseFare || 0}, fare_per_km=${farePerKm || 0}, toll_charges=${tollCharges || 0}, vehicle_category_id=${vehicleCategoryId}::uuid, is_active=${isActive} WHERE id=${req.params.id}::uuid RETURNING *`);
+        r = await rawDb.execute(rawSql`UPDATE intercity_routes SET from_city=${normalizedFromCity}, to_city=${normalizedToCity}, estimated_km=${normalizedEstimatedKm}, base_fare=${normalizedBaseFare}, fare_per_km=${normalizedFarePerKm}, toll_charges=${normalizedTollCharges}, vehicle_category_id=${vehicleCategoryId}::uuid, is_active=${isActive} WHERE id=${req.params.id}::uuid RETURNING *`);
       } else {
-        r = await rawDb.execute(rawSql`UPDATE intercity_routes SET from_city=${fromCity}, to_city=${toCity}, estimated_km=${estimatedKm || 0}, base_fare=${baseFare || 0}, fare_per_km=${farePerKm || 0}, toll_charges=${tollCharges || 0}, vehicle_category_id=NULL, is_active=${isActive} WHERE id=${req.params.id}::uuid RETURNING *`);
+        r = await rawDb.execute(rawSql`UPDATE intercity_routes SET from_city=${normalizedFromCity}, to_city=${normalizedToCity}, estimated_km=${normalizedEstimatedKm}, base_fare=${normalizedBaseFare}, fare_per_km=${normalizedFarePerKm}, toll_charges=${normalizedTollCharges}, vehicle_category_id=NULL, is_active=${isActive} WHERE id=${req.params.id}::uuid RETURNING *`);
+      }
+      if (!r.rows.length) {
+        return res.status(404).json({ message: "Route not found" });
       }
       res.json(camelize(r.rows)[0]);
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
@@ -7831,10 +7847,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.get('/api/support-chat/unread-count', async (_req, res) => {
     try {
+      res.set("Cache-Control", "no-store");
       const r = await rawDb.execute(rawSql`
-        SELECT user_id, COUNT(*) as unread
-        FROM support_messages WHERE sender='user' AND is_read=false
+        SELECT user_id::text AS user_id, COUNT(*)::int AS unread
+        FROM support_messages
+        WHERE sender='user' AND COALESCE(is_read, false)=false
         GROUP BY user_id
+        ORDER BY COUNT(*) DESC
       `);
       res.json({ unreadByUser: r.rows.map(camelize) });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
@@ -14892,16 +14911,28 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     try {
       const { id } = req.params;
       const { name, nativeName, flag, isActive, sortOrder } = req.body;
-      await rawDb.execute(rawSql`
+      const normalizedName = typeof name === "string" ? name.trim() : null;
+      const normalizedNativeName = typeof nativeName === "string" ? nativeName.trim() : null;
+      const normalizedFlag = typeof flag === "string" ? flag.trim() : null;
+      const normalizedIsActive = typeof isActive === "boolean" ? isActive : null;
+      const normalizedSortOrder = sortOrder === undefined || sortOrder === null || sortOrder === "" ? null : Number(sortOrder);
+      if (normalizedSortOrder !== null && Number.isNaN(normalizedSortOrder)) {
+        return res.status(400).json({ message: "sortOrder must be a valid number" });
+      }
+      const result = await rawDb.execute(rawSql`
         UPDATE app_languages SET
-          name = COALESCE(${name}, name),
-          native_name = COALESCE(${nativeName}, native_name),
-          flag = COALESCE(${flag}, flag),
-          is_active = COALESCE(${isActive}, is_active),
-          sort_order = COALESCE(${sortOrder}, sort_order)
+          name = COALESCE(${normalizedName}, name),
+          native_name = COALESCE(${normalizedNativeName}, native_name),
+          flag = COALESCE(${normalizedFlag}, flag),
+          is_active = COALESCE(${normalizedIsActive}::boolean, is_active),
+          sort_order = COALESCE(${normalizedSortOrder}::int, sort_order)
         WHERE id = ${id}::uuid
+        RETURNING *
       `);
-      res.json({ success: true });
+      if (!result.rows.length) {
+        return res.status(404).json({ message: "Language not found" });
+      }
+      res.json(camelize(result.rows)[0]);
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
