@@ -1504,6 +1504,9 @@ async function ensureOperationalSchema() {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_token_expires_at TIMESTAMP;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS refresh_token TEXT;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS refresh_token_expires_at TIMESTAMP;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS fcm_token TEXT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS current_lat NUMERIC(10,7);
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS current_lng NUMERIC(10,7);
 
       -- Fix: missing trip_requests columns for parcel/person-booking flow
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS receiver_name VARCHAR(120);
@@ -1519,6 +1522,12 @@ async function ensureOperationalSchema() {
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS customer_rating NUMERIC(3,1);
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS driver_note TEXT;
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS tips NUMERIC(10,2) DEFAULT 0;
+      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMP;
+      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMP;
+      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS started_at TIMESTAMP;
+      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP;
+      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS ride_started_at TIMESTAMP;
+      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS ride_ended_at TIMESTAMP;
 
       -- Fix: reviews table column name mismatch (code uses review_type and comment)
       ALTER TABLE reviews ADD COLUMN IF NOT EXISTS review_type VARCHAR(50);
@@ -1533,6 +1542,7 @@ async function ensureOperationalSchema() {
       ALTER TABLE safety_alerts ADD COLUMN IF NOT EXISTS police_notified BOOLEAN DEFAULT false;
       ALTER TABLE safety_alerts ADD COLUMN IF NOT EXISTS notes TEXT;
       ALTER TABLE safety_alerts ADD COLUMN IF NOT EXISTS nearby_drivers_notified INTEGER DEFAULT 0;
+
     `);
 
     await rawDb.execute(rawSql`
@@ -2467,6 +2477,15 @@ async function ensureOperationalSchema() {
         created_at TIMESTAMP DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_ride_events_trip_id ON ride_events(trip_id);
+      ALTER TABLE ride_events ADD COLUMN IF NOT EXISTS ride_id UUID;
+      ALTER TABLE ride_events ADD COLUMN IF NOT EXISTS event VARCHAR(100);
+      ALTER TABLE ride_events ADD COLUMN IF NOT EXISTS data JSONB DEFAULT '{}'::jsonb;
+      UPDATE ride_events
+      SET
+        ride_id = COALESCE(ride_id, trip_id),
+        event = COALESCE(event, event_type),
+        data = COALESCE(data, meta, '{}'::jsonb)
+      WHERE ride_id IS NULL OR event IS NULL OR data IS NULL;
     `).catch(dbCatch("db"));
 
   } catch (e: any) {
@@ -6312,6 +6331,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!r.rows.length) {
         return res.status(404).json({ message: "Route not found" });
       }
+      res.set("Cache-Control", "no-store");
       res.json(camelize(r.rows)[0]);
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
@@ -7845,15 +7865,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  app.get('/api/support-chat/unread-count', async (_req, res) => {
+  app.get('/api/support-chat/unread-count', requireAdminAuth, async (_req, res) => {
     try {
       res.set("Cache-Control", "no-store");
       const r = await rawDb.execute(rawSql`
         SELECT user_id::text AS user_id, COUNT(*)::int AS unread
         FROM support_messages
-        WHERE sender='user' AND COALESCE(is_read, false)=false
+        WHERE COALESCE(sender, 'user')='user' AND COALESCE(is_read, false)=false
         GROUP BY user_id
-        ORDER BY COUNT(*) DESC
+        ORDER BY unread DESC
       `);
       res.json({ unreadByUser: r.rows.map(camelize) });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
@@ -14435,6 +14455,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           is_read BOOLEAN DEFAULT false,
           created_at TIMESTAMP DEFAULT NOW()
         );
+        ALTER TABLE support_messages ADD COLUMN IF NOT EXISTS sender VARCHAR(10);
+        ALTER TABLE support_messages ADD COLUMN IF NOT EXISTS is_read BOOLEAN DEFAULT false;
+        ALTER TABLE support_messages ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
       `);
       // Add break_until column to users if not exists
       await rawDb.execute(rawSql`
@@ -18711,11 +18734,53 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   app.get("/api/admin/ai-brain/dashboard", requireAdminAuth, async (_req, res) => {
     try {
       if (!AI_MOBILITY_BRAIN_ENABLED) {
-        return res.status(503).json({ message: "AI mobility brain is disabled in production." });
+        return res.json({
+          metrics: {
+            rideRequestsLast5Min: 0,
+            parcelRequestsLast5Min: 0,
+            driversOnline: 0,
+            driversBusy: 0,
+            driversIdle: 0,
+            averageWaitTimeSec: 0,
+            cancellationRate: 0,
+            activeTrips: 0,
+            activeParcels: 0,
+            zoneDemand: [],
+            surgeZones: [],
+            driverDistribution: [],
+            predictedDemand: [],
+            timestamp: new Date().toISOString(),
+          },
+          brainStatus: { ...getBrainStatus(), running: false, degraded: true, message: "AI mobility brain is disabled in production." },
+        });
       }
-      const data = await getAIDashboardData();
+      const data = await Promise.race([
+        getAIDashboardData(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("AI dashboard timeout")), 2500)),
+      ]);
       res.json(data);
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+    } catch (e: any) {
+      console.warn("[AI_BRAIN] dashboard degraded:", e?.message || e);
+      res.json({
+        metrics: {
+          rideRequestsLast5Min: 0,
+          parcelRequestsLast5Min: 0,
+          driversOnline: 0,
+          driversBusy: 0,
+          driversIdle: 0,
+          averageWaitTimeSec: 0,
+          cancellationRate: 0,
+          activeTrips: 0,
+          activeParcels: 0,
+          zoneDemand: [],
+          surgeZones: [],
+          driverDistribution: [],
+          predictedDemand: [],
+          timestamp: new Date().toISOString(),
+        },
+        brainStatus: { ...getBrainStatus(), degraded: true, message: safeErrMsg(e) },
+      });
+    }
   });
 
   app.get("/api/admin/ai-brain/status", requireAdminAuth, async (_req, res) => {

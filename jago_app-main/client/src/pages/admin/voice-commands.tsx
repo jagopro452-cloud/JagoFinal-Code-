@@ -10,6 +10,15 @@ const PRIMARY = "#2F7BFF";
 const CARD_BG = "#fff";
 const BORDER = "#E8EEF8";
 
+function getAdminBearerToken() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("jago-admin") || "{}");
+    return saved?.token ? `Bearer ${saved.token}` : "";
+  } catch {
+    return "";
+  }
+}
+
 export default function VoiceCommandsPage() {
   const qc = useQueryClient();
   const [testText, setTestText] = useState("");
@@ -23,9 +32,8 @@ export default function VoiceCommandsPage() {
   const { data: logs = [], isLoading: logsLoading } = useQuery<any[]>({
     queryKey: ["/api/admin/voice-logs"],
     queryFn: async () => {
-      const token = localStorage.getItem("admin_token");
       const r = await fetch("/api/admin/voice-logs?limit=50", {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: getAdminBearerToken() },
       });
       if (!r.ok) return [];
       const d = await r.json();
@@ -38,9 +46,8 @@ export default function VoiceCommandsPage() {
   useQuery({
     queryKey: ["/api/admin/business-settings/anthropic_api_key"],
     queryFn: async () => {
-      const token = localStorage.getItem("admin_token");
       const r = await fetch("/api/admin/business-settings/anthropic_api_key", {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: getAdminBearerToken() },
       });
       if (r.ok) {
         const d = await r.json();
@@ -53,10 +60,9 @@ export default function VoiceCommandsPage() {
   // ── Save API key ──────────────────────────────────────────────────────────
   const handleSave = async () => {
     if (!apiKey || apiKey.includes("•")) return;
-    const token = localStorage.getItem("admin_token");
     const r = await fetch("/api/admin/business-settings", {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      headers: { Authorization: getAdminBearerToken(), "Content-Type": "application/json" },
       body: JSON.stringify({ key_name: "anthropic_api_key", value: apiKey }),
     });
     if (r.ok) {
@@ -71,10 +77,9 @@ export default function VoiceCommandsPage() {
     setTestLoading(true);
     setTestResult(null);
     try {
-      const token = localStorage.getItem("admin_token");
       const r = await fetch("/api/app/voice-booking/parse", {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        headers: { Authorization: getAdminBearerToken(), "Content-Type": "application/json" },
         body: JSON.stringify({ text: testText }),
       });
       const d = await r.json();

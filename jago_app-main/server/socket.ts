@@ -15,7 +15,7 @@ import {
   checkSpeedAnomaly,
 } from "./ai";
 import { parseEnv } from "./config/env";
-import { getMatchingDriverCategoryIds } from "./vehicle-matching";
+import { getMatchingDriverCategoryIds, uuidArraySql } from "./vehicle-matching";
 import { addSocketPresence, hasSocketPresence, removeSocketPresence } from "./socket-presence";
 import { enforceDriverRevenuePolicy, revenueModuleFromTripRow } from "./revenue-policy";
 
@@ -407,7 +407,8 @@ export function setupSocket(httpServer: HttpServer) {
 
           // Verify trip is still in searching/driver_assigned state
           const tripR = await rawDb.execute(rawSql`
-            SELECT t.*, u.full_name as customer_name, u.fcm_token as customer_fcm,
+            SELECT t.*, u.full_name as customer_name,
+              (SELECT ud.fcm_token FROM user_devices ud WHERE ud.user_id = u.id AND ud.fcm_token IS NOT NULL LIMIT 1) as customer_fcm,
               dd.vehicle_category_id, dl.lat as driver_lat, dl.lng as driver_lng,
               vc.type as vc_type, vc.service_type, vc.vehicle_type, vc.slug, vc.name as vehicle_name, vc.is_carpool
             FROM trip_requests t
@@ -1339,7 +1340,7 @@ async function notifyDriverNearbyTrips(driverId: string, lat: number, lng: numbe
         AND t.driver_id IS NULL
         AND NOT (${driverId}::uuid = ANY(COALESCE(t.rejected_driver_ids, '{}'::uuid[])))
         ${matchingCategoryIds?.length
-        ? rawSql`AND t.vehicle_category_id = ANY(${matchingCategoryIds}::uuid[])`
+        ? rawSql`AND t.vehicle_category_id = ANY(${uuidArraySql(matchingCategoryIds)})`
         : driverVehicleCategoryId
           ? rawSql`AND t.vehicle_category_id = ${driverVehicleCategoryId}::uuid`
           : rawSql``}

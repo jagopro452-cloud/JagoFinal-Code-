@@ -162,7 +162,16 @@ test.describe("Admin Live CRUD And Security", () => {
     await expect(page.getByTestId(`row-route-${created!.id}`)).toBeVisible();
     await page.getByTestId(`btn-edit-route-${created!.id}`).click();
     await page.getByTestId("input-base-fare").fill(String(updatedFare));
+    const updateUiResponse = page.waitForResponse((response) =>
+      response.request().method() === "PUT"
+      && response.url().includes(`/api/intercity-routes/${created!.id}`),
+    );
     await page.getByTestId("btn-save-route").click();
+    const persistedUpdate = await updateUiResponse;
+    expect(
+      persistedUpdate.ok(),
+      `Intercity route update failed with status ${persistedUpdate.status()}: ${await persistedUpdate.text()}`,
+    ).toBeTruthy();
 
     const updateResponse = await adminJson("GET", "/api/intercity-routes");
     const updatedRoutes = await updateResponse.json() as Array<{ id: string; baseFare: number; isActive: boolean }>;
