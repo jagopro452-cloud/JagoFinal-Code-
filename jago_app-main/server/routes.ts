@@ -1,7 +1,7 @@
 import express from "express";
 import type { Express, Request, Response, NextFunction } from "express";
 import { log } from "./index";
-import { getFirebaseAdminAsync, getLastFcmError, notifyDriverNewRide, notifyDriverNewParcel, notifyCustomerDriverAccepted, notifyCustomerDriverArrived, notifyCustomerTripCompleted, notifyTripCancelled, sendFcmNotification } from "./fcm";
+import { getFirebaseAdminAsync, notifyDriverNewRide, notifyDriverNewParcel, notifyCustomerDriverAccepted, notifyCustomerDriverArrived, notifyCustomerTripCompleted, notifyTripCancelled, sendFcmNotification } from "./fcm";
 import { sendCustomSms } from "./sms";
 import { notifyNearbyDriversNewTrip, io } from "./socket";
 import type { Server } from "http";
@@ -49,12 +49,14 @@ import {
   getActiveDispatchCount,
   startScheduledRideDispatcher,
   startDispatchCleanup,
+  restartDispatchForTrip,
+  getCurrentOfferedTripForDriver,
+  isDriverCurrentlyOfferedTrip,
   resolveServiceType,
   type TripMeta,
 } from "./dispatch";
 import { diagnoseDispatch, TripNotFoundError } from "./dispatch-diag";
-import { activeDriverEligibilitySql } from "./driver-state";
-import { getPlatformServiceKeyForCategory, getVehicleCategoryMeta, resolveBookingVehicleSelection } from "./vehicle-matching";
+import { getPlatformServiceKeyForCategory, getVehicleCategoryMeta } from "./vehicle-matching";
 import {
   computeDemandHeatmap,
   calculateSurgeMultiplier,
@@ -69,16 +71,6 @@ import {
   initIntelligenceTables,
   startIntelligenceJobs,
 } from "./intelligence";
-import {
-  enforceDriverRevenuePolicy,
-  listRevenueModuleConfigs,
-  normalizeRevenueModule,
-  reconcileRevenueModuleAliases,
-  revenueModuleFromTripRow,
-  revenueModuleFromVehicleCategory,
-  syncAllRevenueModuleConfigs,
-  upsertRevenueModuleConfig,
-} from "./revenue-policy";
 import {
   geocodeWithCache,
   getDistanceWithCache,
@@ -113,10 +105,19 @@ import {
   initParcelAdvancedTables,
 } from "./parcel-advanced";
 import {
+  appendTripStatus as appendTripStatusTelemetry,
+  buildRealtimeOpsSnapshot,
+  loadRealtimeOpsConfig,
+  logRideLifecycleEvent as logRideLifecycleEventTelemetry,
+  noteRecoveryAudit,
+  saveRealtimeOpsConfig,
+} from "./realtime-ops";
+import {
   searchPlaces,
   getPlaceDetails,
   reverseGeocode,
   getMultiWaypointRoute,
+  getRealTimeETA,
   extractShortName,
   searchNearbyPlaces,
   getMappingStats,
@@ -137,13 +138,6 @@ import {
   SUPPORTED_UPI_PROVIDERS,
   loadRevenueSettings,
 } from "./revenue-engine";
-import {
-  getRuntimeConfigSnapshot,
-  initRuntimeConfigTables,
-  listRuntimeConfigAuditLogs,
-  rollbackRuntimeConfigAuditLog,
-  upsertRuntimeConfigEntries,
-} from "./runtime-config";
 import type { ServiceCategory, PaymentMethod } from "./revenue-engine";
 import {
   initDynamicServicesTables,
@@ -159,10 +153,9 @@ import {
   addParcelVehicle,
 } from "./dynamic-services";
 import {
-  ensureOutstationPoolV2Schema,
-  registerOutstationPoolV2Routes,
-} from "./outstation-pool-v2";
-import { registerRollingPoolRoutes } from "./rolling-pool";
+  isDriverEligibleForDispatch,
+  resolveDispatchRequirementsFromTrip,
+} from "./dispatch-eligibility";
 import {
   startAIMobilityBrain,
   getCurrentMetrics,
@@ -170,13 +163,6 @@ import {
   getBrainStatus,
 } from "./ai-brain";
 import { featureFlags } from "./config/featureFlags";
-import {
-  getAlertEngineStatus,
-  getEngineConfig,
-  reloadEngineConfig,
-  getMetricHistory,
-  executeManualAction,
-} from "./alert-engine";
 import {
   checkBookingRateLimit,
   detectBookingFraud,
@@ -203,15 +189,7 @@ const diskStorage = multer.diskStorage({
     cb(null, `${Date.now()}-${crypto.randomBytes(6).toString("hex")}${ext}`);
   },
 });
-const ALLOWED_UPLOAD_MIMETYPES = new Set([
-  'image/jpeg',
-  'image/jpg',
-  'image/png',
-  'image/webp',
-  'image/heic',
-  'image/heif',
-  'application/pdf',
-]);
+const ALLOWED_UPLOAD_MIMETYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'application/pdf']);
 const upload = multer({
   storage: diskStorage,
   limits: { fileSize: 8 * 1024 * 1024 },
@@ -223,46 +201,6 @@ const upload = multer({
     }
   },
 });
-
-function runUploadSingle(req: Request, res: Response, fieldName: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    upload.single(fieldName)(req as any, res as any, (err: any) => {
-      if (!err) {
-        resolve();
-        return;
-      }
-      if (err instanceof multer.MulterError) {
-        if (err.code === "LIMIT_FILE_SIZE") {
-          reject(new Error("Image upload failed. File is too large. Please use an image under 8 MB."));
-          return;
-        }
-        reject(new Error(`Image upload failed. ${err.message}`));
-        return;
-      }
-      reject(err);
-    });
-  });
-}
-
-async function ensureDriverDocumentsTable() {
-  return;
-}
-
-async function ensureDriverDetailsRow(userId: string, vehicleType?: string | null) {
-  const existing = await rawDb.execute(rawSql`SELECT id FROM driver_details WHERE user_id=${userId}::uuid LIMIT 1`);
-  if (!existing.rows.length) {
-    await rawDb.execute(rawSql`
-      INSERT INTO driver_details (user_id, vehicle_type, availability_status, is_online, total_trips, avg_rating, created_at, updated_at)
-      VALUES (${userId}::uuid, ${vehicleType || 'bike'}, 'offline', false, 0, 5.0, now(), now())
-    `);
-    return;
-  }
-  if (vehicleType) {
-    await rawDb.execute(rawSql`
-      UPDATE driver_details SET vehicle_type=${vehicleType}, updated_at=now() WHERE user_id=${userId}::uuid
-    `);
-  }
-}
 
 function generateRefId(): string {
   return "TRP" + Math.random().toString(36).substr(2, 7).toUpperCase();
@@ -349,343 +287,6 @@ function dbCatch(label: string) {
 /** dbCatchRows � logs DB read errors and returns empty rows fallback. */
 function dbCatchRows(label: string): (err: any) => { rows: any[] } {
   return (err: any) => { console.error(`[db:${label}]`, formatDbError(err)); return { rows: [] as any[] }; };
-}
-
-function normalizePhone(phone: unknown): string {
-  return String(phone || "").replace(/\D/g, "").slice(-10);
-}
-
-function maskPhone(phone: string): string {
-  if (!phone) return "";
-  return phone.slice(-4).padStart(phone.length, "*");
-}
-
-function canonicalRoleForUserType(_userType: string): string {
-  return "user";
-}
-
-function defaultReferralCode(phone: string, userType?: string | null): string {
-  const cleanPhone = normalizePhone(phone);
-  const roleMarker = String(userType || "").toLowerCase().startsWith("driver") ? "D" : "C";
-  return `JAGOPRO${roleMarker}${cleanPhone.slice(-6)}`;
-}
-
-async function assignDefaultReferralCode(trx: any, userId: string, phone: string, userType?: string | null) {
-  const baseCode = defaultReferralCode(phone, userType);
-  for (let suffix = 0; suffix < 5; suffix += 1) {
-    const referralCode = suffix === 0 ? baseCode : `${baseCode}${suffix}`;
-    const result = await trx.execute(rawSql`
-      UPDATE users
-      SET referral_code = COALESCE(referral_code, ${referralCode})
-      WHERE id=${userId}::uuid
-        AND (referral_code IS NOT NULL OR NOT EXISTS (
-          SELECT 1 FROM users WHERE referral_code=${referralCode} AND id <> ${userId}::uuid
-        ))
-      RETURNING referral_code
-    `);
-    if (result.rows.length) return (result.rows[0] as any).referral_code;
-  }
-  const fallback = `${baseCode}${crypto.randomBytes(2).toString("hex").toUpperCase()}`;
-  await trx.execute(rawSql`
-    UPDATE users
-    SET referral_code = COALESCE(referral_code, ${fallback})
-    WHERE id=${userId}::uuid
-  `);
-  return fallback;
-}
-
-function sanitizeRegistrationPayload(body: any) {
-  return {
-    phone: maskPhone(normalizePhone(body?.phone)),
-    userType: body?.userType || null,
-    fullName: typeof body?.fullName === "string" ? body.fullName.trim() : null,
-    hasPassword: typeof body?.password === "string" && body.password.length >= 6,
-    email: typeof body?.email === "string" ? body.email.trim() : null,
-    city: typeof body?.city === "string" ? body.city.trim() : null,
-    vehicleType: body?.vehicleType || null,
-    vehicleNumber: body?.vehicleNumber || null,
-    docType: body?.docType || null,
-  };
-}
-
-function logRegistrationAudit(event: string, body: any, extra?: Record<string, unknown>) {
-  console.info(`[registration] ${event}`, JSON.stringify({
-    ...sanitizeRegistrationPayload(body),
-    ...(extra || {}),
-  }));
-}
-
-async function findUserByPhone(trx: any, phone: string, userType?: string) {
-  if (userType) {
-    return trx.execute(rawSql`
-      SELECT *
-      FROM users
-      WHERE (phone=${phone} OR mobile=${phone})
-        AND (
-          user_type=${userType}
-          OR (${userType}='customer' AND (user_type IS NULL OR role IN ('user', 'customer')))
-        )
-      LIMIT 1
-    `);
-  }
-  return trx.execute(rawSql`
-    SELECT *
-    FROM users
-    WHERE phone=${phone} OR mobile=${phone}
-    LIMIT 1
-  `);
-}
-
-async function upsertCustomerProfileRow(trx: any, userId: string, city?: string | null) {
-  await trx.execute(rawSql`
-    INSERT INTO customer_profiles (user_id, city, created_at, updated_at)
-    VALUES (${userId}::uuid, ${city || null}, NOW(), NOW())
-    ON CONFLICT (user_id) DO UPDATE
-    SET city = COALESCE(EXCLUDED.city, customer_profiles.city),
-        updated_at = NOW()
-  `);
-}
-
-async function upsertVehicleRow(
-  trx: any,
-  userId: string,
-  vehicle: {
-    vehicleType?: string | null;
-    vehicleBrand?: string | null;
-    vehicleModel?: string | null;
-    vehicleColor?: string | null;
-    vehicleYear?: number | null;
-    vehicleNumber?: string | null;
-    verificationStatus?: string | null;
-  },
-) {
-  await trx.execute(rawSql`
-    INSERT INTO vehicles (
-      user_id, vehicle_type, brand, model, color, vehicle_year,
-      registration_number, verification_status, created_at, updated_at
-    )
-    VALUES (
-      ${userId}::uuid, ${vehicle.vehicleType || null}, ${vehicle.vehicleBrand || null},
-      ${vehicle.vehicleModel || null}, ${vehicle.vehicleColor || null}, ${vehicle.vehicleYear || null},
-      ${vehicle.vehicleNumber || null}, ${vehicle.verificationStatus || 'pending'}, NOW(), NOW()
-    )
-    ON CONFLICT (user_id) DO UPDATE
-    SET vehicle_type = COALESCE(EXCLUDED.vehicle_type, vehicles.vehicle_type),
-        brand = COALESCE(EXCLUDED.brand, vehicles.brand),
-        model = COALESCE(EXCLUDED.model, vehicles.model),
-        color = COALESCE(EXCLUDED.color, vehicles.color),
-        vehicle_year = COALESCE(EXCLUDED.vehicle_year, vehicles.vehicle_year),
-        registration_number = COALESCE(EXCLUDED.registration_number, vehicles.registration_number),
-        verification_status = COALESCE(EXCLUDED.verification_status, vehicles.verification_status),
-        updated_at = NOW()
-  `);
-}
-
-async function upsertDriverDetailsRow(
-  trx: any,
-  userId: string,
-  vehicleType?: string | null,
-  vehicleCategoryId?: string | null,
-) {
-  await trx.execute(rawSql`
-    INSERT INTO driver_details (
-      user_id, vehicle_type, vehicle_category_id, availability_status,
-      is_online, total_trips, avg_rating, created_at, updated_at
-    )
-    VALUES (
-      ${userId}::uuid, ${vehicleType || 'bike'}, ${vehicleCategoryId || null}::uuid,
-      'offline', false, 0, 5.0, NOW(), NOW()
-    )
-    ON CONFLICT (user_id) DO UPDATE
-    SET vehicle_type = COALESCE(EXCLUDED.vehicle_type, driver_details.vehicle_type),
-        vehicle_category_id = COALESCE(EXCLUDED.vehicle_category_id, driver_details.vehicle_category_id),
-        updated_at = NOW()
-  `);
-}
-
-async function upsertDriverDocumentRow(
-  trx: any,
-  userId: string,
-  docType: string,
-  fileUrl: string,
-  expiryDate?: string | null,
-) {
-  await trx.execute(rawSql`
-    INSERT INTO driver_documents (
-      driver_id, doc_type, file_url, doc_url, status, verification_status,
-      expiry_date, created_at, updated_at
-    )
-    VALUES (
-      ${userId}::uuid, ${docType}, ${fileUrl}, ${fileUrl},
-      'pending', 'pending', ${expiryDate || null}, NOW(), NOW()
-    )
-    ON CONFLICT (driver_id, doc_type) DO UPDATE
-    SET file_url = EXCLUDED.file_url,
-        doc_url = EXCLUDED.doc_url,
-        status = 'pending',
-        verification_status = 'pending',
-        expiry_date = COALESCE(EXCLUDED.expiry_date, driver_documents.expiry_date),
-        updated_at = NOW()
-  `);
-
-  await trx.execute(rawSql`
-    INSERT INTO documents (
-      id, user_id, document_type, document_name, document_url, status, submitted_at
-    )
-    VALUES (
-      gen_random_uuid()::text, ${userId}::uuid, ${docType}, ${docType}, ${fileUrl}, 'pending', NOW()
-    )
-    ON CONFLICT (user_id, document_type) DO UPDATE
-    SET document_name = EXCLUDED.document_name,
-        document_url = EXCLUDED.document_url,
-        status = EXCLUDED.status,
-        submitted_at = NOW()
-  `);
-}
-
-function normalizeAppRole(user: any): string {
-  return String(user?.userType || user?.user_type || user?.role || "").toLowerCase();
-}
-
-function canUseCustomerApp(user: any): boolean {
-  const userType = String(user?.userType || user?.user_type || "").toLowerCase();
-  const role = String(user?.role || "").toLowerCase();
-  return userType === "customer" || role === "customer" || role === "user";
-}
-
-function canUseDriverApp(user: any): boolean {
-  const userType = String(user?.userType || user?.user_type || "").toLowerCase();
-  const role = String(user?.role || "").toLowerCase();
-  return userType === "driver" || role === "driver" || role === "pilot";
-}
-
-function persistBase64Upload(imageData: string, docType: string): string {
-  const match = String(imageData).match(/^data:([^;]+);base64,(.+)$/);
-  const mimeType = match?.[1] || "image/jpeg";
-  const base64Body = match?.[2] || String(imageData);
-  const allowed: Record<string, string> = {
-    "image/jpeg": "jpg",
-    "image/jpg": "jpg",
-    "image/png": "png",
-    "image/webp": "webp",
-    "image/heic": "heic",
-    "image/heif": "heif",
-  };
-  const ext = allowed[mimeType.toLowerCase()];
-  if (!ext) throw new Error("Unsupported image format. Please upload JPG, PNG, WEBP, HEIC, or HEIF.");
-
-  const buffer = Buffer.from(base64Body, "base64");
-  if (!buffer.length) throw new Error("Image upload failed. Empty file.");
-  if (buffer.length > 8 * 1024 * 1024) throw new Error("Image is too large. Please retake a smaller photo.");
-
-  const uploadDir = path.join(process.cwd(), "uploads");
-  if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-  const safeType = String(docType || "document").replace(/[^a-z0-9_-]/gi, "_").toLowerCase();
-  const filename = `${Date.now()}-${crypto.randomBytes(8).toString("hex")}-${safeType}.${ext}`;
-  fs.writeFileSync(path.join(uploadDir, filename), buffer);
-  return `/uploads/${filename}`;
-}
-
-async function provisionAppUserSessionTx(
-  trx: any,
-  input: {
-    phone: string;
-    userType: string;
-    fullName?: string | null;
-    email?: string | null;
-    passwordHash?: string | null;
-    referralCode?: string | null;
-    city?: string | null;
-    vehicleType?: string | null;
-  },
-) {
-  const anyUserRes = await findUserByPhone(trx, input.phone);
-  const anyUser = anyUserRes.rows.length ? (camelize(anyUserRes.rows[0]) as any) : null;
-  const isNew = !anyUser;
-  const fullName = (input.fullName || anyUser?.fullName || anyUser?.name || `User_${input.phone.slice(-4)}`).trim();
-  const role = canonicalRoleForUserType(input.userType);
-  const verificationStatus =
-    input.userType === "driver"
-      ? (anyUser?.verificationStatus && String(anyUser.verificationStatus).trim()) || "pending"
-      : (anyUser?.verificationStatus && String(anyUser.verificationStatus).trim()) || "verified";
-
-  let userId = anyUser?.id as string | undefined;
-  if (anyUser) {
-    await trx.execute(rawSql`
-      UPDATE users
-      SET name=${fullName},
-          full_name=${fullName},
-          mobile=${input.phone},
-          phone=${input.phone},
-          email=${input.email || anyUser.email || null},
-          role=COALESCE(role, ${role}),
-          user_type=${input.userType},
-          password_hash=COALESCE(${input.passwordHash || null}, password_hash),
-          verification_status=${verificationStatus},
-          is_active=true,
-          updated_at=NOW()
-      WHERE id=${anyUser.id}::uuid
-    `);
-  } else {
-    const inserted = await trx.execute(rawSql`
-      INSERT INTO users (
-        name, full_name, mobile, phone, email, role, user_type,
-        is_active, wallet_balance, password_hash, verification_status
-      )
-      VALUES (
-        ${fullName}, ${fullName}, ${input.phone}, ${input.phone}, ${input.email || null},
-        ${role}, ${input.userType}, true, 0, ${input.passwordHash || null}, ${verificationStatus}
-      )
-      RETURNING id
-    `);
-    userId = (inserted.rows[0] as any)?.id;
-  }
-
-  if (!userId) {
-    throw new Error("Failed to resolve user id during registration");
-  }
-
-  if (input.userType === "driver") {
-    await upsertDriverDetailsRow(trx, userId, input.vehicleType || "bike");
-  } else {
-    await upsertCustomerProfileRow(trx, userId, input.city || null);
-  }
-
-  await assignDefaultReferralCode(trx, userId, input.phone, input.userType);
-
-  if (input.referralCode) {
-    const referrer = await trx.execute(rawSql`SELECT id FROM users WHERE referral_code=${input.referralCode} LIMIT 1`);
-    if (referrer.rows.length) {
-      await trx.execute(rawSql`
-        INSERT INTO referrals (referrer_id, referred_id, referral_type, status, reward_amount)
-        VALUES (${(referrer.rows[0] as any).id}::uuid, ${userId}::uuid, ${input.userType}, 'pending', 50)
-        ON CONFLICT DO NOTHING
-      `);
-    }
-  }
-
-  const finalUserRes = await findUserByPhone(trx, input.phone, input.userType);
-  const finalUser = camelize(finalUserRes.rows[0]) as any;
-  const token = `${userId}:${crypto.randomBytes(32).toString("hex")}`;
-  const refreshToken = `${userId}:refresh:${crypto.randomBytes(32).toString("hex")}`;
-  const tokenExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-  const refreshTokenExpiry = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
-  await trx.execute(rawSql`
-    UPDATE users
-    SET auth_token=${token},
-        auth_token_expires_at=${tokenExpiry},
-        refresh_token=${refreshToken},
-        refresh_token_expires_at=${refreshTokenExpiry},
-        last_login_at=NOW()
-    WHERE id=${userId}::uuid
-  `);
-
-  return {
-    isNew,
-    token,
-    refreshToken,
-    user: finalUser,
-  };
 }
 
 const TRIP_UI_STATE_MAP: Record<string, string> = {
@@ -874,19 +475,11 @@ async function geocodePlaceWithCache(apiKey: string, place: string): Promise<Geo
 }
 
 async function appendTripStatus(tripId: string, status: string, source = "system", note?: string) {
-  if (!tripId) return;
-  await rawDb.execute(rawSql`
-    INSERT INTO trip_status (trip_id, status, source, note)
-    VALUES (${tripId}::uuid, ${status}, ${source}, ${note || null})
-  `).catch(dbCatch("db"));
+  await appendTripStatusTelemetry(tripId, status, source, note).catch(dbCatch("db"));
 }
 
 async function logRideLifecycleEvent(tripId: string, eventType: string, actorId?: string, actorType = "system", meta: any = {}) {
-  if (!tripId) return;
-  await rawDb.execute(rawSql`
-    INSERT INTO ride_events (trip_id, event_type, actor_id, actor_type, meta)
-    VALUES (${tripId}::uuid, ${eventType}, ${actorId || null}::uuid, ${actorType}, ${JSON.stringify(meta)}::jsonb)
-  `).catch(dbCatch("db"));
+  await logRideLifecycleEventTelemetry(tripId, eventType, actorId, actorType, meta).catch(dbCatch("db"));
 }
 
 async function logAdminAction(action: string, entityType: string, entityId?: string, details: any = {}, adminEmail?: string) {
@@ -894,6 +487,12 @@ async function logAdminAction(action: string, entityType: string, entityId?: str
     INSERT INTO admin_logs (admin_email, action, entity_type, entity_id, details)
     VALUES (${adminEmail || null}, ${action}, ${entityType}, ${entityId || null}::uuid, ${JSON.stringify(details)}::jsonb)
   `).catch(dbCatch("db"));
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  if (value == null || value === "") return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
 }
 
 
@@ -1119,7 +718,9 @@ async function parseVoiceIntentOrchestrated(text: string): Promise<{ parsed: any
 }
 const runtimeEnv = parseEnv();
 // In production 2FA is ON by default � disable only with ADMIN_2FA_REQUIRED=false
-const requireAdminTwoFactor = false;
+const requireAdminTwoFactor = runtimeEnv.NODE_ENV === "production"
+  ? !isFalse(runtimeEnv.ADMIN_2FA_REQUIRED)
+  : isTrue(runtimeEnv.ADMIN_2FA_REQUIRED);
 
 function extractBearerToken(req: Request): string | null {
   const auth = req.headers.authorization || "";
@@ -1186,12 +787,7 @@ async function ensureAdminExists() {
     return;
   }
 
-  const maskedAdminEmail = (() => {
-    const [local, domain] = String(adminEmail || "").split("@");
-    if (!domain) return "[REDACTED_EMAIL]";
-    return `${(local || "").slice(0, 2)}***@${domain}`;
-  })();
-  console.log(`[admin-bootstrap] Starting admin sync for ${maskedAdminEmail}, sync_on_restart=${process.env.ADMIN_PASSWORD_SYNC_ON_RESTART}`);
+  console.log(`[admin-bootstrap] Starting admin sync for ${adminEmail}, sync_on_restart=${process.env.ADMIN_PASSWORD_SYNC_ON_RESTART}`);
 
 
   // -- Step 1: Guarantee the tables exist using rawDb (same path as ensureOperationalSchema)
@@ -1278,11 +874,11 @@ async function ensureAdminExists() {
       const shouldSyncPassword =
         process.env.ADMIN_PASSWORD_SYNC_ON_RESTART === 'true' ||
         runtimeEnv.NODE_ENV !== 'production';
-      console.log(`[admin-bootstrap] Admin exists: ${maskedAdminEmail}, should_sync_password=${shouldSyncPassword}`);
+      console.log(`[admin-bootstrap] Admin exists: ${adminEmail}, should_sync_password=${shouldSyncPassword}`);
       if (shouldSyncPassword) {
-        console.log(`[admin-bootstrap] Hashing new password for ${maskedAdminEmail}...`);
+        console.log(`[admin-bootstrap] Hashing new password for ${adminEmail}...`);
         const hash = await hashPassword(adminPassword);
-        console.log(`[admin-bootstrap] Password hash generated successfully`);
+        console.log(`[admin-bootstrap] Password hash generated: ${hash.substring(0, 20)}...`);
         const updateResult = await rawDb.execute(rawSql`
           UPDATE admins 
           SET password=${hash}, is_active=true, auth_token=NULL, auth_token_expires_at=NULL 
@@ -1291,7 +887,8 @@ async function ensureAdminExists() {
         `);
         if (updateResult.rows.length > 0) {
           const updated: any = updateResult.rows[0];
-          console.log(`[admin-bootstrap] Password synced for ${maskedAdminEmail} (ID: ${updated.id})`);
+          console.log(`[admin-bootstrap] ? Password synced for ${adminEmail} (ID: ${updated.id})`);
+          console.log(`[admin-bootstrap] New password hash: ${(updated.password || '').substring(0, 20)}...`);
         } else {
           console.warn(`[admin-bootstrap] ? Update returned no rows - admin may not exist or email doesn't match`);
         }
@@ -1351,7 +948,6 @@ async function ensureOperationalSchema() {
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS cancel_reason TEXT;
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS cancelled_by VARCHAR(50);
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS rejected_driver_ids UUID[] DEFAULT '{}'::uuid[];
-      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 0;
 
       ALTER TABLE users ADD COLUMN IF NOT EXISTS vehicle_status VARCHAR(30) DEFAULT 'pending';
       ALTER TABLE users ADD COLUMN IF NOT EXISTS wallet_balance NUMERIC(12,2) DEFAULT 0;
@@ -1432,22 +1028,31 @@ async function ensureOperationalSchema() {
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS pending_payment_amount NUMERIC(10,2) DEFAULT 0;
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS seats_booked INTEGER DEFAULT 1;
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS seat_price NUMERIC(10,2) DEFAULT 0;
-      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS driver_accepted_at TIMESTAMPTZ;
-      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS driver_arriving_at TIMESTAMPTZ;
-      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS driver_arrived_at TIMESTAMPTZ;
+      ALTER TABLE discounts ADD COLUMN IF NOT EXISTS service_type VARCHAR(30);
+      ALTER TABLE discounts ADD COLUMN IF NOT EXISTS vehicle_category_id UUID;
 
       ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS vehicle_type VARCHAR(50);
-      ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS type VARCHAR(50) DEFAULT 'ride';
-      ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS service_type VARCHAR(30) DEFAULT 'ride';
       ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS base_fare NUMERIC(10,2) DEFAULT 0;
       ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS fare_per_km NUMERIC(10,2) DEFAULT 0;
       ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS minimum_fare NUMERIC(10,2) DEFAULT 0;
       ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS waiting_charge_per_min NUMERIC(10,2) DEFAULT 0;
       ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS total_seats INTEGER DEFAULT 0;
       ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS is_carpool BOOLEAN DEFAULT false;
+      ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS service_key VARCHAR(100);
+      ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS subcategory VARCHAR(120);
 
       ALTER TABLE vehicle_brands ADD COLUMN IF NOT EXISTS logo_url TEXT;
       ALTER TABLE vehicle_brands ADD COLUMN IF NOT EXISTS category VARCHAR(50) DEFAULT 'two_wheeler';
+
+      ALTER TABLE driver_details ADD COLUMN IF NOT EXISTS vehicle_subcategory VARCHAR(120);
+      ALTER TABLE driver_details ADD COLUMN IF NOT EXISTS service_eligibility TEXT[] DEFAULT '{}'::text[];
+      ALTER TABLE driver_details ADD COLUMN IF NOT EXISTS parcel_eligibility BOOLEAN;
+      ALTER TABLE driver_details ADD COLUMN IF NOT EXISTS pool_eligibility BOOLEAN;
+      ALTER TABLE driver_details ADD COLUMN IF NOT EXISTS outstation_eligibility BOOLEAN;
+      ALTER TABLE driver_details ADD COLUMN IF NOT EXISTS intercity_eligibility BOOLEAN;
+      ALTER TABLE driver_details ADD COLUMN IF NOT EXISTS seat_capacity INTEGER;
+      ALTER TABLE driver_details ADD COLUMN IF NOT EXISTS approval_state VARCHAR(30);
+      ALTER TABLE driver_details ADD COLUMN IF NOT EXISTS city_eligibility TEXT[] DEFAULT '{}'::text[];
 
       ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS max_rides INTEGER DEFAULT 0;
       ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS plan_type VARCHAR(30) DEFAULT 'both';
@@ -1458,19 +1063,6 @@ async function ensureOperationalSchema() {
       UPDATE users SET referral_code = 'JAGO' || RIGHT(phone, 4) || UPPER(SUBSTRING(id::text from 1 for 4))
         WHERE referral_code IS NULL AND phone IS NOT NULL AND LENGTH(phone) >= 4;
       CREATE UNIQUE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code) WHERE referral_code IS NOT NULL;
-
-      UPDATE vehicle_categories
-      SET service_type = CASE
-        WHEN COALESCE(is_carpool, false) = true THEN 'pool'
-        WHEN LOWER(COALESCE(type, '')) IN ('parcel', 'cargo') THEN LOWER(type)
-        WHEN LOWER(COALESCE(vehicle_type, '')) SIMILAR TO '%(parcel|cargo|courier|delivery|pickup|truck|tempo|ace)%' THEN 'parcel'
-        ELSE 'ride'
-      END
-      WHERE service_type IS NULL
-         OR TRIM(service_type) = ''
-         OR (LOWER(COALESCE(type, '')) IN ('parcel', 'cargo') AND LOWER(COALESCE(service_type, '')) NOT IN ('parcel', 'cargo'))
-         OR (COALESCE(is_carpool, false) = true AND LOWER(COALESCE(service_type, '')) NOT IN ('pool', 'carpool'))
-         OR (COALESCE(is_carpool, false) = false AND LOWER(COALESCE(type, '')) NOT IN ('parcel', 'cargo') AND LOWER(COALESCE(service_type, '')) <> 'ride');
 
       -- Commission Settlement: per-driver pending balance tracking
       ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_commission_balance NUMERIC(12,2) NOT NULL DEFAULT 0;
@@ -1502,15 +1094,6 @@ async function ensureOperationalSchema() {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS rating NUMERIC(3,2) NOT NULL DEFAULT 5.0;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS total_ratings INTEGER NOT NULL DEFAULT 0;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_token_expires_at TIMESTAMP;
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS refresh_token TEXT;
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS refresh_token_expires_at TIMESTAMP;
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS fcm_token TEXT;
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS current_lat NUMERIC(10,7);
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS current_lng NUMERIC(10,7);
-      ALTER TABLE driver_locations ADD COLUMN IF NOT EXISTS heading NUMERIC(10,2) DEFAULT 0;
-      ALTER TABLE driver_locations ADD COLUMN IF NOT EXISTS speed NUMERIC(10,2) DEFAULT 0;
-      ALTER TABLE driver_locations ADD COLUMN IF NOT EXISTS is_online BOOLEAN DEFAULT false;
-      ALTER TABLE driver_locations ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
 
       -- Fix: missing trip_requests columns for parcel/person-booking flow
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS receiver_name VARCHAR(120);
@@ -1522,36 +1105,9 @@ async function ensureOperationalSchema() {
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS destination_short_name VARCHAR(120);
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS tip_amount NUMERIC(10,2) DEFAULT 0;
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS driver_rating NUMERIC(3,1);
-      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMP;
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS customer_rating NUMERIC(3,1);
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS driver_note TEXT;
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS tips NUMERIC(10,2) DEFAULT 0;
-      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMP;
-      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMP;
-      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS started_at TIMESTAMP;
-      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP;
-      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS ride_started_at TIMESTAMP;
-      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS ride_ended_at TIMESTAMP;
-      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'REQUESTED';
-      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS driver_assigned_at TIMESTAMP;
-      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS auto_cancelled BOOLEAN DEFAULT false;
-      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS auto_cancelled_at TIMESTAMP;
-      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS cancellation_reason TEXT;
-
-      UPDATE trip_requests
-      SET status = CASE LOWER(COALESCE(current_status, 'searching'))
-        WHEN 'scheduled' THEN 'SCHEDULED'
-        WHEN 'searching' THEN 'REQUESTED'
-        WHEN 'driver_assigned' THEN 'DRIVER_ASSIGNED'
-        WHEN 'accepted' THEN 'ACCEPTED'
-        WHEN 'arrived' THEN 'STARTED'
-        WHEN 'on_the_way' THEN 'IN_PROGRESS'
-        WHEN 'payment_pending' THEN 'PAYMENT_PENDING'
-        WHEN 'completed' THEN 'COMPLETED'
-        WHEN 'cancelled' THEN 'CANCELLED'
-        ELSE UPPER(COALESCE(current_status, 'REQUESTED'))
-      END
-      WHERE status IS NULL OR TRIM(status) = '';
 
       -- Fix: reviews table column name mismatch (code uses review_type and comment)
       ALTER TABLE reviews ADD COLUMN IF NOT EXISTS review_type VARCHAR(50);
@@ -1566,7 +1122,6 @@ async function ensureOperationalSchema() {
       ALTER TABLE safety_alerts ADD COLUMN IF NOT EXISTS police_notified BOOLEAN DEFAULT false;
       ALTER TABLE safety_alerts ADD COLUMN IF NOT EXISTS notes TEXT;
       ALTER TABLE safety_alerts ADD COLUMN IF NOT EXISTS nearby_drivers_notified INTEGER DEFAULT 0;
-
     `);
 
     await rawDb.execute(rawSql`
@@ -1601,6 +1156,8 @@ async function ensureOperationalSchema() {
         amount NUMERIC(12,2) NOT NULL DEFAULT 0,
         reason TEXT,
         payment_method VARCHAR(30) DEFAULT 'wallet',
+        refund_reference_id VARCHAR(120),
+        razorpay_payment_id VARCHAR(120),
         status VARCHAR(30) DEFAULT 'pending',
         admin_note TEXT,
         approved_by VARCHAR(120),
@@ -1729,7 +1286,7 @@ async function ensureOperationalSchema() {
       -- Module-based revenue config: each service has independent revenue model
       CREATE TABLE IF NOT EXISTS service_revenue_config (
         module_name VARCHAR(30) PRIMARY KEY,
-        revenue_model VARCHAR(20) NOT NULL DEFAULT 'commission',
+        revenue_model VARCHAR(20) NOT NULL DEFAULT 'free',
         commission_percentage NUMERIC(5,2) NOT NULL DEFAULT 15.00,
         commission_gst_percentage NUMERIC(5,2) NOT NULL DEFAULT 18.00,
         subscription_required BOOLEAN NOT NULL DEFAULT false,
@@ -1739,11 +1296,11 @@ async function ensureOperationalSchema() {
       );
       INSERT INTO service_revenue_config (module_name, revenue_model, commission_percentage, commission_gst_percentage, subscription_required)
       VALUES
-        ('ride',       'commission', 15.00, 18.00, false),
-        ('parcel',     'commission', 12.00, 18.00, false),
-        ('carpool',    'commission', 10.00, 18.00, false),
-        ('outstation', 'commission', 12.00, 18.00, false),
-        ('b2b',        'subscription', 0.00, 0.00, true)
+        ('ride',       'free', 0.00, 0.00, false),
+        ('parcel',     'free', 0.00, 0.00, false),
+        ('carpool',    'free', 0.00, 0.00, false),
+        ('outstation', 'free', 0.00, 0.00, false),
+        ('b2b',        'free', 0.00, 0.00, false)
       ON CONFLICT (module_name) DO NOTHING;
 
       CREATE TABLE IF NOT EXISTS business_settings (
@@ -1766,13 +1323,6 @@ async function ensureOperationalSchema() {
       );
 
       ALTER TABLE police_stations ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
-      ALTER TABLE system_logs ADD COLUMN IF NOT EXISTS details JSONB DEFAULT '{}'::jsonb;
-      ALTER TABLE system_logs ADD COLUMN IF NOT EXISTS data JSONB DEFAULT '{}'::jsonb;
-      UPDATE system_logs
-      SET
-        details = COALESCE(details, data, '{}'::jsonb),
-        data = COALESCE(data, details, '{}'::jsonb)
-      WHERE details IS NULL OR data IS NULL;
 
       -- Commission settlements: records every driver payment toward pending balance
       CREATE TABLE IF NOT EXISTS commission_settlements (
@@ -1836,8 +1386,6 @@ async function ensureOperationalSchema() {
       );
     `);
 
-    await reconcileRevenueModuleAliases().catch(dbCatch("db"));
-
     await rawDb.execute(rawSql`
       CREATE INDEX IF NOT EXISTS idx_popular_locations_city_active
       ON popular_locations(city_name, is_active);
@@ -1867,17 +1415,17 @@ async function ensureOperationalSchema() {
         ('ride_gst_rate','5'),
         ('commission_lock_threshold','200'),
         ('commission_rate','15'),
-        ('rides_model','subscription'),
-        ('parcels_model','commission'),
-        ('cargo_model','commission'),
-        ('intercity_model','commission'),
-        ('outstation_pool_model','commission'),
+        ('rides_model','free'),
+        ('parcels_model','free'),
+        ('cargo_model','free'),
+        ('intercity_model','free'),
+        ('outstation_pool_model','free'),
+        ('city_pool_model','free'),
         ('outstation_pool_mode','off'),
         ('subscription_mode','off'),
         ('commission_mode','on')
       ON CONFLICT (key_name) DO NOTHING;
     `);
-    await syncAllRevenueModuleConfigs().catch(dbCatch("db"));
 
     // -- Company GST wallet (single-row ledger) -----------------------------
     await rawDb.execute(rawSql`
@@ -1959,18 +1507,12 @@ async function ensureOperationalSchema() {
         ('Pickup Truck',    'pickup_truck',  '??',  200, 22, 200, 1),
         ('Auto Parcel',     'auto_parcel',   '??',   50, 13,  50, 7),
         ('Bolero Cargo',    'bolero_cargo',  '??',  200, 22, 200, 3),
-        ('Tempo 407',       'tempo_407',     '??',  800, 28, 800, 1)
+        ('Tata 407 / Tempo','tempo_407',     '??',  800, 28, 800, 1)
       ) AS v(vname, vtype, icon, base_fare, fare_per_km, minimum_fare, weight_rate)
       WHERE NOT EXISTS (
         SELECT 1 FROM vehicle_categories WHERE LOWER(name) = LOWER(v.vname)
       )
     `);
-    await rawDb.execute(rawSql`
-      UPDATE vehicle_categories
-      SET is_active=false
-      WHERE LOWER(COALESCE(vehicle_type, '')) IN ('cargo_' || 'car', 'car_' || 'parcel', 'parcel_' || 'car')
-         OR LOWER(name) IN ('cargo ' || 'car', 'car ' || 'parcel', 'parcel ' || 'car')
-    `).catch(dbCatch("db"));
     console.log('[seed] Parcel vehicle categories seeded/updated');
     // Back-fill pricing + vehicle_type for any rows still missing them
     await rawDb.execute(rawSql`
@@ -2038,12 +1580,6 @@ async function ensureOperationalSchema() {
       UPDATE vehicle_categories vc
       SET is_active = COALESCE((SELECT service_status='active' FROM platform_services WHERE service_key='parcel_delivery' LIMIT 1), vc.is_active)
       WHERE vc.type = 'parcel'
-    `).catch(dbCatch("db"));
-    await rawDb.execute(rawSql`
-      UPDATE vehicle_categories
-      SET is_active=false
-      WHERE LOWER(COALESCE(vehicle_type, '')) IN ('cargo_' || 'car', 'car_' || 'parcel', 'parcel_' || 'car')
-         OR LOWER(name) IN ('cargo ' || 'car', 'car ' || 'parcel', 'parcel ' || 'car')
     `).catch(dbCatch("db"));
     console.log('[seed] vehicle_categories.is_active synced with platform_services');
 
@@ -2153,22 +1689,6 @@ async function ensureOperationalSchema() {
         ('parcel_delivery', 'Parcel Delivery',     'parcel',  'active',   'commission',   15.0,  9, '??',  '#FF6B35', 'Porter-style parcel and goods delivery')
       ON CONFLICT (service_key) DO NOTHING;
     `).catch(dbCatch("db"));
-    await rawDb.execute(rawSql`
-      UPDATE platform_services
-      SET service_status='active', updated_at=NOW()
-      WHERE service_key IN ('bike_ride', 'auto_ride', 'mini_car', 'sedan', 'suv')
-    `).catch(dbCatch("db"));
-    await rawDb.execute(rawSql`
-      UPDATE vehicle_categories
-      SET is_active=true
-      WHERE type='ride' AND vehicle_type IN ('bike', 'auto', 'mini_car', 'sedan', 'suv')
-    `).catch(dbCatch("db"));
-    await rawDb.execute(rawSql`
-      UPDATE vehicle_categories
-      SET is_active=false
-      WHERE LOWER(COALESCE(vehicle_type, '')) IN ('cargo_' || 'car', 'car_' || 'parcel', 'parcel_' || 'car')
-         OR LOWER(name) IN ('cargo ' || 'car', 'car ' || 'parcel', 'parcel ' || 'car')
-    `).catch(dbCatch("db"));
 
     // -- parcel_orders: multi-drop Porter-style delivery -----------------------
     await rawDb.execute(rawSql`
@@ -2200,14 +1720,12 @@ async function ensureOperationalSchema() {
         payment_status VARCHAR(30) DEFAULT 'pending',
         notes TEXT DEFAULT '',
         cancelled_reason TEXT DEFAULT '',
-        version INTEGER NOT NULL DEFAULT 0,
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_parcel_orders_customer ON parcel_orders(customer_id);
       CREATE INDEX IF NOT EXISTS idx_parcel_orders_driver  ON parcel_orders(driver_id);
       CREATE INDEX IF NOT EXISTS idx_parcel_orders_status  ON parcel_orders(current_status);
-      ALTER TABLE parcel_orders ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 0;
     `).catch(dbCatch("db"));
 
     // -- FCM device registry: stores one push token per user ------------------
@@ -2261,39 +1779,6 @@ async function ensureOperationalSchema() {
         created_at TIMESTAMP DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_notification_logs_sent_at ON notification_logs(sent_at DESC);
-    `).catch(dbCatch("db"));
-    await rawDb.execute(rawSql`
-      ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS title VARCHAR(200);
-      ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS message TEXT;
-      ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS target VARCHAR(30) DEFAULT 'all';
-      ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS user_type VARCHAR(30) DEFAULT 'all';
-      ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS recipient_count INTEGER DEFAULT 0;
-      ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS delivered_count INTEGER DEFAULT 0;
-      ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS status VARCHAR(30) DEFAULT 'sent';
-      ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS notification_type VARCHAR(50) DEFAULT 'broadcast';
-      ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS fcm_result TEXT;
-      ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS error_message TEXT;
-      ALTER TABLE notification_logs ALTER COLUMN target TYPE VARCHAR(80);
-      ALTER TABLE notification_logs ALTER COLUMN user_type TYPE VARCHAR(80);
-      ALTER TABLE notification_logs ALTER COLUMN status TYPE VARCHAR(80);
-      ALTER TABLE notification_logs ALTER COLUMN notification_type TYPE VARCHAR(80);
-      ALTER TABLE notification_logs ALTER COLUMN notification_type DROP NOT NULL;
-      ALTER TABLE notification_logs ALTER COLUMN notification_type SET DEFAULT 'broadcast';
-    `).catch(dbCatch("db"));
-    await rawDb.execute(rawSql`
-      CREATE TABLE IF NOT EXISTS notification_log (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_id UUID NOT NULL,
-        title VARCHAR(255) NOT NULL,
-        message TEXT NOT NULL,
-        type VARCHAR(80) DEFAULT 'broadcast',
-        data JSONB DEFAULT '{}'::jsonb,
-        is_read BOOLEAN DEFAULT false,
-        created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW()
-      );
-      CREATE INDEX IF NOT EXISTS idx_notification_log_user_created ON notification_log(user_id, created_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_notification_log_user_unread ON notification_log(user_id, is_read);
     `).catch(dbCatch("db"));
 
     // -- Driver payment ledger: records every commission debt/payment ----------
@@ -2356,6 +1841,17 @@ async function ensureOperationalSchema() {
     // -- Migration: add refunded_at to customer_payments ----------------------
     await rawDb.execute(rawSql`
       ALTER TABLE customer_payments ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMP;
+    `).catch(dbCatch("db"));
+    await rawDb.execute(rawSql`
+      ALTER TABLE withdraw_requests ADD COLUMN IF NOT EXISTS driver_payment_id UUID;
+      CREATE INDEX IF NOT EXISTS idx_withdraw_requests_driver_payment
+        ON withdraw_requests(driver_payment_id) WHERE driver_payment_id IS NOT NULL;
+    `).catch(dbCatch("db"));
+    await rawDb.execute(rawSql`
+      ALTER TABLE refund_requests ADD COLUMN IF NOT EXISTS refund_reference_id VARCHAR(120);
+      ALTER TABLE refund_requests ADD COLUMN IF NOT EXISTS razorpay_payment_id VARCHAR(120);
+      CREATE INDEX IF NOT EXISTS idx_refund_requests_ref ON refund_requests(refund_reference_id) WHERE refund_reference_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_refund_requests_payment ON refund_requests(razorpay_payment_id) WHERE razorpay_payment_id IS NOT NULL;
     `).catch(dbCatch("db"));
     // -- Migration: add GST/insurance columns to driver_subscriptions ---------
     await rawDb.execute(rawSql`
@@ -2501,15 +1997,6 @@ async function ensureOperationalSchema() {
         created_at TIMESTAMP DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_ride_events_trip_id ON ride_events(trip_id);
-      ALTER TABLE ride_events ADD COLUMN IF NOT EXISTS ride_id UUID;
-      ALTER TABLE ride_events ADD COLUMN IF NOT EXISTS event VARCHAR(100);
-      ALTER TABLE ride_events ADD COLUMN IF NOT EXISTS data JSONB DEFAULT '{}'::jsonb;
-      UPDATE ride_events
-      SET
-        ride_id = COALESCE(ride_id, trip_id),
-        event = COALESCE(event, event_type),
-        data = COALESCE(data, meta, '{}'::jsonb)
-      WHERE ride_id IS NULL OR event IS NULL OR data IS NULL;
     `).catch(dbCatch("db"));
 
   } catch (e: any) {
@@ -2521,7 +2008,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Always run schema bootstrap on startup to ensure all columns/tables exist
   try {
     await ensureOperationalSchema();
-    await ensureOutstationPoolV2Schema();
     console.log("[schema] Operational schema verified OK");
   } catch (e: any) {
     console.error("[schema] startup schema error:", e.message);
@@ -2561,6 +2047,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // Health check endpoint
+  app.get("/api/health", async (_req, res) => {
+    try {
+      const { pool: dbPool } = await import("./db");
+      await dbPool.query("SELECT 1");
+      res.json({ status: "ok", db: "connected", ts: new Date().toISOString() });
+    } catch (e: any) {
+      res.status(503).json({ status: "error", db: "disconnected" });
+    }
+  });
+
   // Public env/config diagnostic — reports which critical keys are configured.
   // Returns booleans only (never exposes values). Safe to expose publicly.
   app.get("/api/health/env", async (_req, res) => {
@@ -2587,10 +2083,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         RAZORPAY_KEY_ID: has("RAZORPAY_KEY_ID"),
         RAZORPAY_KEY_SECRET: has("RAZORPAY_KEY_SECRET"),
         RAZORPAY_WEBHOOK_SECRET: has("RAZORPAY_WEBHOOK_SECRET"),
-        ALERT_WEBHOOK_URL: has("ALERT_WEBHOOK_URL"),
-        APP_BASE_URL: has("APP_BASE_URL"),
-        AI_ASSISTANT_SERVICE_URL: has("AI_ASSISTANT_SERVICE_URL"),
-        ADMIN_RESET_KEY: has("ADMIN_RESET_KEY"),
+        TWO_FACTOR_API_KEY: has("TWO_FACTOR_API_KEY"),
+        FAST2SMS_API_KEY: has("FAST2SMS_API_KEY"),
         ANTHROPIC_API_KEY: has("ANTHROPIC_API_KEY"),
         REDIS_URL: has("REDIS_URL"),
         OPS_API_KEY: has("OPS_API_KEY"),
@@ -2625,8 +2119,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         dbKey = String((keyR.rows[0] as any)?.value || "").trim();
       } catch {}
 
-      const resolvedKey = envKey || dbKey;
-      const resolvedSource = envKey ? "env" : dbKey ? "db" : null;
+      const resolvedKey = dbKey || envKey;
+      const resolvedSource = dbKey ? "db" : envKey ? "env" : null;
 
       const probeKey = async (apiKey: string) => {
         if (!apiKey) {
@@ -2715,6 +2209,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       ADMIN_PASSWORD: process.env.ADMIN_PASSWORD ? "***set***" : "NOT-SET",
       ADMIN_PASSWORD_SYNC_ON_RESTART: process.env.ADMIN_PASSWORD_SYNC_ON_RESTART || "default-false",
       ADMIN_SESSION_TTL_HOURS: process.env.ADMIN_SESSION_TTL_HOURS || "24",
+      ADMIN_2FA_REQUIRED: process.env.ADMIN_2FA_REQUIRED || "false",
       ADMIN_RESET_KEY: process.env.ADMIN_RESET_KEY ? "***set***" : "NOT-SET",
       OPS_API_KEY: process.env.OPS_API_KEY ? "***set***" : "NOT-SET",
     };
@@ -2861,32 +2356,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         },
         // PARCEL / PORTER-style services
         {
-          name: "Bike Delivery", type: "parcel", vehicle_type: "bike_parcel", icon: "/vehicles/parcel_bike.svg",
+          name: "Bike Delivery", type: "motor_bike", vehicle_type: "bike_parcel", icon: "/vehicles/parcel_bike.svg",
           base_fare: 70, fare_per_km: 8, minimum_fare: 70, waiting_charge_per_min: 0.5, service_type: "parcel",
           description: "Upto 10 kg � 0.3 CBM � Small packages, documents"
         },
         {
-          name: "3-Wheeler / Auto", type: "parcel", vehicle_type: "auto_parcel", icon: "/vehicles/parcel_auto.svg",
+          name: "3-Wheeler / Auto", type: "auto", vehicle_type: "auto_parcel", icon: "/vehicles/parcel_auto.svg",
           base_fare: 140, fare_per_km: 12, minimum_fare: 140, waiting_charge_per_min: 1, service_type: "parcel",
           description: "Upto 150 kg � 1.5 CBM � Medium goods, household items"
         },
         {
-          name: "Tata Ace", type: "parcel", vehicle_type: "tata_ace", icon: "/vehicles/tata_ace.svg",
+          name: "Tata Ace", type: "car", vehicle_type: "tata_ace", icon: "/vehicles/tata_ace.svg",
           base_fare: 350, fare_per_km: 18, minimum_fare: 350, waiting_charge_per_min: 2, service_type: "parcel",
           description: "Upto 750 kg � 6 CBM � Furniture, appliances, bulk goods"
         },
         {
-          name: "Pickup Truck", type: "parcel", vehicle_type: "pickup_truck", icon: "/vehicles/pickup_truck.svg",
-          base_fare: 450, fare_per_km: 20, minimum_fare: 450, waiting_charge_per_min: 2.25, service_type: "parcel",
-          description: "Upto 2000 kg - commercial pickup goods"
-        },
-        {
-          name: "Bolero Pickup", type: "parcel", vehicle_type: "bolero_cargo", icon: "/vehicles/bolero.svg",
+          name: "Bolero Pickup", type: "car", vehicle_type: "bolero_pickup", icon: "/vehicles/bolero.svg",
           base_fare: 500, fare_per_km: 22, minimum_fare: 500, waiting_charge_per_min: 2.5, service_type: "parcel",
           description: "Upto 1500 kg � 10 CBM � Heavy goods, office shifting"
         },
         {
-          name: "Tata 407 / Tempo", type: "parcel", vehicle_type: "tempo_407", icon: "/vehicles/tempo_407.svg",
+          name: "Tata 407 / Tempo", type: "car", vehicle_type: "tempo_407", icon: "/vehicles/tempo_407.svg",
           base_fare: 800, fare_per_km: 28, minimum_fare: 800, waiting_charge_per_min: 3, service_type: "parcel",
           description: "Upto 2500 kg � 20 CBM � Large loads, factory goods, full shifting"
         },
@@ -2905,14 +2395,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           ended_at TIMESTAMPTZ,
           created_at TIMESTAMPTZ DEFAULT NOW()
         )
-      `).catch(dbCatch("db"));
-      await rawDb.execute(rawSql`
-        ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS receiver_id UUID;
-        ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS callee_id UUID;
-        ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS initiated_at TIMESTAMPTZ DEFAULT NOW();
-        ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS ended_at TIMESTAMPTZ;
-        ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS duration_sec INT DEFAULT 0;
-        ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS duration_seconds INT DEFAULT 0;
       `).catch(dbCatch("db"));
       await rawDb.execute(rawSql`
         CREATE TABLE IF NOT EXISTS driver_kyc_documents (
@@ -2980,29 +2462,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // Add extra columns if not exists
       await rawDb.execute(rawSql`ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS description TEXT`).catch(dbCatch("db"));
       await rawDb.execute(rawSql`ALTER TABLE vehicle_categories ADD COLUMN IF NOT EXISTS service_type VARCHAR(30) DEFAULT 'ride'`).catch(dbCatch("db"));
-      await rawDb.execute(rawSql`
-        UPDATE vehicle_categories
-        SET type = CASE
-          WHEN LOWER(COALESCE(service_type, '')) IN ('parcel', 'cargo') THEN COALESCE(NULLIF(type, ''), LOWER(service_type))
-          WHEN COALESCE(is_carpool, false) = true THEN COALESCE(NULLIF(type, ''), 'pool')
-          ELSE COALESCE(NULLIF(type, ''), 'ride')
-        END
-        WHERE type IS NULL OR TRIM(type) = ''
-      `).catch(dbCatch("db"));
-      await rawDb.execute(rawSql`
-        UPDATE vehicle_categories
-        SET service_type = CASE
-          WHEN COALESCE(is_carpool, false) = true THEN 'pool'
-          WHEN LOWER(COALESCE(type, '')) IN ('parcel', 'cargo') THEN LOWER(type)
-          WHEN LOWER(COALESCE(vehicle_type, '')) SIMILAR TO '%(parcel|cargo|courier|delivery|pickup|truck|tempo|ace)%' THEN 'parcel'
-          ELSE 'ride'
-        END
-        WHERE service_type IS NULL
-           OR TRIM(service_type) = ''
-           OR (LOWER(COALESCE(type, '')) IN ('parcel', 'cargo') AND LOWER(COALESCE(service_type, '')) NOT IN ('parcel', 'cargo'))
-           OR (COALESCE(is_carpool, false) = true AND LOWER(COALESCE(service_type, '')) NOT IN ('pool', 'carpool'))
-           OR (COALESCE(is_carpool, false) = false AND LOWER(COALESCE(type, '')) NOT IN ('parcel', 'cargo') AND LOWER(COALESCE(service_type, '')) <> 'ride')
-      `).catch(dbCatch("db"));
 
       const insertedVehicles: any[] = [];
       for (const v of vehicles) {
@@ -3194,15 +2653,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const pwHash = await hashPassword("Test@123");
       // Fetch vehicle categories for driver assignment
-      const vcRes = await rawDb.execute(rawSql`SELECT id, name, vehicle_type, slug FROM vehicle_categories ORDER BY created_at ASC`);
+      const vcRes = await rawDb.execute(rawSql`SELECT id, name FROM vehicle_categories ORDER BY created_at ASC`);
       const vcRows = vcRes.rows as any[];
       const bikeVc = vcRows.find((v: any) => v.name?.toLowerCase() === 'bike') || vcRows[0];
       const autoVc = vcRows.find((v: any) => v.name?.toLowerCase().includes('auto')) || vcRows[1] || bikeVc;
       const cabVc = vcRows.find((v: any) => v.name?.toLowerCase().includes('cab') || v.name?.toLowerCase().includes('sedan')) || vcRows[2] || bikeVc;
-      const parcelVc = vcRows.find((v: any) => {
-        const blob = `${v.name || ""} ${(v as any).vehicle_type || ""} ${(v as any).slug || ""}`.toLowerCase();
-        return blob.includes("bike_parcel") || blob.includes("bike delivery") || (blob.includes("bike") && blob.includes("parcel"));
-      });
+      const parcelVc = vcRows.find((v: any) => v.name?.toLowerCase().includes('bike delivery') || v.name?.toLowerCase().includes('bike_parcel')) || bikeVc;
 
       const customers = [
         { name: 'Test Customer 1', phone: '9000000001' },
@@ -3220,7 +2676,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         { name: 'Test Driver 7 (Auto)', phone: '9100000007', vc: autoVc, vNum: 'TS09AC5003', vModel: 'TVS King' },
         { name: 'Test Driver 8 (Cab)', phone: '9100000008', vc: cabVc, vNum: 'TS07CD8001', vModel: 'Swift Dzire' },
         { name: 'Test Driver 9 (Cab)', phone: '9100000009', vc: cabVc, vNum: 'TS07CD8002', vModel: 'Maruti WagonR' },
-        ...(parcelVc ? [{ name: 'Test Driver 10 (Parcel)', phone: '9100000010', vc: parcelVc, vNum: 'TS01AB1010', vModel: 'Hero Splendor' }] : []),
+        { name: 'Test Driver 10 (Parcel)', phone: '9100000010', vc: parcelVc, vNum: 'TS01AB1010', vModel: 'Hero Splendor' },
       ];
 
       const createdCustomers: any[] = [];
@@ -3311,23 +2767,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const { db: hDb } = await import("./db");
       const { sql: hSql } = await import("drizzle-orm");
       const r = await hDb.execute(hSql`
-        SELECT *
-        FROM (
-          SELECT pickup_lat AS lat, pickup_lng AS lng, 1::numeric AS intensity
-          FROM trip_requests
-          WHERE pickup_lat IS NOT NULL
-          ORDER BY created_at DESC
-          LIMIT 5000
-        ) pickup_points
+        SELECT pickup_lat as lat, pickup_lng as lng, 1 as intensity FROM trip_requests WHERE pickup_lat IS NOT NULL ORDER BY created_at DESC LIMIT 5000
         UNION ALL
-        SELECT *
-        FROM (
-          SELECT destination_lat AS lat, destination_lng AS lng, 0.6::numeric AS intensity
-          FROM trip_requests
-          WHERE destination_lat IS NOT NULL
-          ORDER BY created_at DESC
-          LIMIT 5000
-        ) drop_points
+        SELECT destination_lat as lat, destination_lng as lng, 0.6 as intensity FROM trip_requests WHERE destination_lat IS NOT NULL ORDER BY created_at DESC LIMIT 5000
       `);
       res.json(r.rows);
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
@@ -3346,9 +2788,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           t.destination_lat, t.destination_lng,
           t.estimated_fare, t.estimated_distance,
           t.payment_method, t.current_status,
-          t.created_at,
+          t.created_at, t.zone_id,
           u.full_name as customer_name, u.phone as customer_phone,
           vc.name as vehicle_type,
+          z.name as zone_name,
           dl.lat as driver_lat,
           dl.lng as driver_lng,
           dl.heading as driver_heading,
@@ -3357,6 +2800,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         FROM trip_requests t
         LEFT JOIN users u ON u.id = t.customer_id
         LEFT JOIN vehicle_categories vc ON vc.id = t.vehicle_category_id
+        LEFT JOIN zones z ON z.id = t.zone_id
         LEFT JOIN driver_locations dl ON dl.driver_id = t.driver_id
         WHERE t.current_status IN ('accepted', 'arrived', 'on_the_way', 'ongoing')
           AND t.pickup_lat IS NOT NULL
@@ -3365,6 +2809,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       `);
 
       const trips = r.rows.map((t: any) => {
+        const normalizedTripType =
+          t.trip_type === "parcel" || t.trip_type === "delivery" ? "parcel" : "ride";
         const pickupLat = Number(t.pickup_lat);
         const pickupLng = Number(t.pickup_lng);
         const destinationLat = Number(t.destination_lat);
@@ -3382,10 +2828,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return {
           id: t.id,
           refId: t.ref_id,
-          type: t.trip_type,
+          type: normalizedTripType,
+          rawType: t.trip_type,
           vehicleType: t.vehicle_type || 'Car',
           customerName: t.customer_name || 'Customer',
           customerPhone: t.customer_phone,
+          zoneId: t.zone_id || null,
+          zoneName: t.zone_name || null,
           pickupAddress: t.pickup_address,
           destinationAddress: t.destination_address,
           pickupLat,
@@ -3412,19 +2861,78 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.get("/api/fleet-drivers", requireAdminAuth, async (_req, res) => {
     try {
-      const drivers = await storage.getUsers('driver');
-      const result = drivers.data
-        .filter((d: any) => d.currentLat && d.currentLng && d.currentLat !== 0 && d.currentLng !== 0)
+      const driverRows = await rawDb.execute(rawSql`
+        SELECT
+          u.id,
+          u.full_name,
+          u.first_name,
+          u.last_name,
+          u.phone,
+          COALESCE(dl.is_online, u.is_online, false) as is_online,
+          COALESCE(dl.lat, u.current_lat) as lat,
+          COALESCE(dl.lng, u.current_lng) as lng,
+          dd.zone_id,
+          z.name as zone_name,
+          vc.name as vehicle_category_name
+        FROM users u
+        LEFT JOIN driver_locations dl ON dl.driver_id = u.id
+        LEFT JOIN driver_details dd ON dd.user_id = u.id
+        LEFT JOIN zones z ON z.id = dd.zone_id
+        LEFT JOIN vehicle_categories vc ON vc.id = dd.vehicle_category_id
+        WHERE u.user_type = 'driver'
+        ORDER BY COALESCE(dl.updated_at, u.updated_at, u.created_at) DESC
+      `);
+      const result = driverRows.rows
+        .filter((d: any) => d.lat && d.lng && d.lat !== 0 && d.lng !== 0)
         .map((d: any) => ({
           id: d.id,
-          name: d.fullName || `${d.firstName || ""} ${d.lastName || ""}`.trim() || "Driver",
+          name: d.full_name || `${d.first_name || ""} ${d.last_name || ""}`.trim() || "Driver",
           phone: d.phone,
-          status: (d.isOnline ?? d.is_online) ? 'active' : 'inactive',
-          lat: d.currentLat,
-          lng: d.currentLng,
+          status: d.is_online ? 'active' : 'inactive',
+          lat: Number(d.lat),
+          lng: Number(d.lng),
+          zoneId: d.zone_id || null,
+          zoneName: d.zone_name || null,
+          vehicleCategoryName: d.vehicle_category_name || null,
         }));
       res.json(result);
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  app.get("/api/admin/realtime-ops/bootstrap", requireAdminAuth, async (_req, res) => {
+    try {
+      const snapshot = await buildRealtimeOpsSnapshot();
+      res.json(snapshot);
+    } catch (e: any) {
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
+  });
+
+  app.get("/api/admin/realtime-ops/config", requireAdminAuth, async (_req, res) => {
+    try {
+      res.json({ config: await loadRealtimeOpsConfig() });
+    } catch (e: any) {
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
+  });
+
+  app.patch("/api/admin/realtime-ops/config", requireAdminAuth, requireAdminRole(["admin", "superadmin"]), async (req, res) => {
+    try {
+      const admin = (req as any).adminUser;
+      const config = await saveRealtimeOpsConfig({
+        trackingFreshnessTimeoutSec: numberOrUndefined(req.body?.trackingFreshnessTimeoutSec),
+        frozenMovementTimeoutSec: numberOrUndefined(req.body?.frozenMovementTimeoutSec),
+        socketHeartbeatTimeoutSec: numberOrUndefined(req.body?.socketHeartbeatTimeoutSec),
+        reconnectStormThreshold: numberOrUndefined(req.body?.reconnectStormThreshold),
+        recoveryCooldownSec: numberOrUndefined(req.body?.recoveryCooldownSec),
+        replayLimit: numberOrUndefined(req.body?.replayLimit),
+        heartbeatCadenceSec: numberOrUndefined(req.body?.heartbeatCadenceSec),
+        gpsUpdateCadenceSec: numberOrUndefined(req.body?.gpsUpdateCadenceSec),
+      }, admin?.email || null);
+      res.json({ success: true, config });
+    } catch (e: any) {
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
   });
 
   // Dashboard
@@ -4025,19 +3533,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           INSERT INTO admin_login_otp (admin_id, otp, expires_at)
           VALUES (${admin.id}::uuid, ${otp}, ${expiresAt.toISOString()})
         `);
-        const smsDelivered = await sendCustomSms(
-          adminPhone as string,
-          `JAGO Admin login OTP: ${otp}. Valid 5 minutes. Do not share.`,
-        ).catch((e: any) => {
-          console.error(`[ADMIN-2FA] SMS delivery failed to ${adminPhone}:`, e.message);
-          return false;
-        });
-        if (!smsDelivered) {
-          return res.status(503).json({
-            message: "Admin 2FA delivery is not configured correctly. Configure SMS provider credentials before enabling MFA.",
+        // Deliver OTP via SMS to the configured admin phone
+        if (adminPhone) {
+          sendCustomSms(adminPhone as string, `JAGO Admin login OTP: ${otp}. Valid 5 minutes. Do not share.`).catch((e: any) => {
+            console.error(`[ADMIN-2FA] SMS delivery failed to ${adminPhone}:`, e.message);
           });
+          console.log(`[ADMIN-2FA] OTP sent to ${adminPhone} for admin ${admin.email}`);
         }
-        console.log(`[ADMIN-2FA] OTP sent to ${adminPhone} for admin ${admin.email}`);
         const response: any = {
           requiresTwoFactor: true,
           admin: { id: admin.id, name: admin.name, email: admin.email, role: admin.role },
@@ -4078,9 +3580,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.post("/api/admin/login/verify-2fa", loginLimiter, async (req, res) => {
     try {
-      return res.status(410).json({
-        message: "Admin SMS-based 2FA is disabled. Use password login and session security controls.",
-      });
       const { email, otp } = req.body;
       if (!email || !otp) return res.status(400).json({ message: "Email and OTP are required" });
       const adminR = await rawDb.execute(rawSql`
@@ -4233,14 +3732,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // Skip paths handled by their own auth mechanism or that are truly public
     if (
       p === "/health" ||  // public health check
-      p.startsWith("/health/") ||  // nested health probes like /api/health/maps
       p === "/ping" ||  // simple test endpoint
       p.startsWith("/diag/") ||  // diagnostic endpoints
       p.startsWith("/ops/") ||  // requireOpsKey
       p.startsWith("/app/") ||  // mobile app routes � each has authApp
       p.startsWith("/admin/") ||  // global admin middleware at line 1101
       p.startsWith("/driver/") ||  // mobile driver routes � each has authApp
-      p === "/vehicle-categories" ||  // apps need this before auth/session exists
       p.startsWith("/webhook")       // payment callbacks (Razorpay, etc.)
     ) return next();
     // Everything else is a legacy admin route ? require admin auth
@@ -4250,12 +3747,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Users
   app.get("/api/users", async (req, res) => {
     try {
-      const { userType, search, page, limit } = req.query as Record<string, string>;
+      const { userType, search, page, limit, isActive } = req.query as Record<string, string>;
+      const activeFilter =
+        isActive === "true" ? true :
+        isActive === "false" ? false :
+        undefined;
       const result = await storage.getUsers(
         userType,
         search,
         Number(page) || 1,
-        Math.min(Number(limit) || 15, 100)
+        Math.min(Number(limit) || 15, 100),
+        activeFilter,
       );
       res.json(result);
     } catch (e: any) {
@@ -4291,20 +3793,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.post("/api/admin/drivers", requireAdminAuth, requireAdminRole(["admin", "superadmin"]), async (req, res) => {
     try {
-      const {
-        fullName,
-        phone,
-        email,
-        password,
-        vehicleNumber,
-        vehicleModel,
-        licenseNumber,
-        vehicleType = "bike",
-        vehicleCategoryId,
-      } = req.body || {};
-
+      const { fullName, phone, email, password, vehicleNumber, vehicleModel, licenseNumber, vehicleCategoryId } = req.body || {};
       const cleanName = String(fullName || "").trim();
-      const cleanPhone = normalizePhone(phone);
+      const cleanPhone = String(phone || "").replace(/\D/g, "").slice(-10);
       const cleanEmail = String(email || "").trim().toLowerCase();
       const cleanPassword = String(password || "");
 
@@ -4316,19 +3807,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (cleanPassword.length < 8) return res.status(400).json({ message: "Password must be at least 8 characters" });
 
       const existingPhone = await rawDb.execute(rawSql`
-        SELECT id, user_type FROM users WHERE phone=${cleanPhone} OR mobile=${cleanPhone} LIMIT 1
+        SELECT id FROM users WHERE phone=${cleanPhone} OR mobile=${cleanPhone} LIMIT 1
       `);
-      if (existingPhone.rows.length) {
-        return res.status(409).json({ message: "A user with this phone number already exists" });
-      }
+      if (existingPhone.rows.length) return res.status(409).json({ message: "A user with this phone number already exists" });
 
       if (cleanEmail) {
-        const existingEmail = await rawDb.execute(rawSql`
-          SELECT id FROM users WHERE LOWER(email)=${cleanEmail} LIMIT 1
-        `);
-        if (existingEmail.rows.length) {
-          return res.status(409).json({ message: "A user with this email already exists" });
-        }
+        const existingEmail = await rawDb.execute(rawSql`SELECT id FROM users WHERE LOWER(email)=${cleanEmail} LIMIT 1`);
+        if (existingEmail.rows.length) return res.status(409).json({ message: "A user with this email already exists" });
       }
 
       const passwordHash = await hashPassword(cleanPassword);
@@ -4351,22 +3836,29 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           RETURNING *
         `);
         const driver = inserted.rows[0] as any;
-        const resolvedVehicleCategoryId = vehicleCategoryId
-          ? String(vehicleCategoryId)
-          : await resolveVehicleCategoryIdForType(String(vehicleType || "bike"));
-        await upsertDriverDetailsRow(
-          trx,
-          String(driver.id),
-          String(vehicleType || "bike"),
-          resolvedVehicleCategoryId,
-        );
-        await assignDefaultReferralCode(trx, String(driver.id), cleanPhone, "driver");
+        await trx.execute(rawSql`
+          INSERT INTO driver_details (
+            user_id, vehicle_category_id, availability_status, is_online, total_trips, avg_rating
+          )
+          VALUES (
+            ${driver.id}::uuid,
+            ${vehicleCategoryId ? rawSql`${String(vehicleCategoryId)}::uuid` : rawSql`NULL`},
+            'offline', false, 0, 5.0
+          )
+          ON CONFLICT (user_id) DO UPDATE
+          SET vehicle_category_id = COALESCE(EXCLUDED.vehicle_category_id, driver_details.vehicle_category_id),
+              availability_status = 'offline'
+        `);
+        await trx.execute(rawSql`
+          UPDATE users
+          SET referral_code = COALESCE(referral_code, ${`JAGOPRO${cleanPhone.slice(-6)}`})
+          WHERE id=${driver.id}::uuid
+        `).catch(() => ({ rows: [] }));
         return driver;
       });
 
       await logAdminAction("driver_created", "driver", String((created as any).id), {
         phone: cleanPhone,
-        vehicleType,
         source: "admin_panel",
       });
 
@@ -4440,7 +3932,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Vehicle Categories (filtered by is_active; optional ?type=ride|parcel|pool)
   app.get("/api/vehicle-categories", async (req, res) => {
     try {
-      const typeFilter = req.query.type?.toString().trim().toLowerCase() || '';
+      const typeFilter = req.query.type?.toString() || '';
       const q = typeFilter
         ? rawSql`
             SELECT *
@@ -4448,6 +3940,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             WHERE is_active = true
               AND (
                 LOWER(COALESCE(service_type, '')) = LOWER(${typeFilter})
+                OR LOWER(type) = LOWER(${typeFilter})
                 OR (
                   LOWER(${typeFilter}) IN ('pool', 'carpool')
                   AND (COALESCE(is_carpool, false) = true OR LOWER(COALESCE(service_type, '')) IN ('pool', 'carpool'))
@@ -4465,15 +3958,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             FROM vehicle_categories
             WHERE is_active = true
             ORDER BY
-              CASE COALESCE(
-                NULLIF(service_type, ''),
-                CASE WHEN COALESCE(is_carpool, false) = true THEN 'pool' ELSE 'ride' END
-              )
+              CASE COALESCE(service_type, CASE WHEN type='parcel' THEN 'parcel' ELSE 'ride' END)
                 WHEN 'ride' THEN 1
                 WHEN 'pool' THEN 2
                 WHEN 'carpool' THEN 2
                 WHEN 'parcel' THEN 3
-                WHEN 'cargo' THEN 4
                 ELSE 4
               END,
               name
@@ -5127,11 +4616,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.json({ saved: results.length, settings: results });
       }
       const { keyName, value, settingsType } = req.body;
-      const setting = await storage.upsertBusinessSetting(
-        keyName,
-        value,
-        settingsType || "business_settings",
-      );
+      const setting = await storage.upsertBusinessSetting(keyName, value, settingsType);
       res.json(setting);
     } catch (e: any) {
       res.status(500).json({ message: safeErrMsg(e) });
@@ -5178,203 +4663,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const settingsType = req.body.settingsType || "business_settings";
       const setting = await storage.upsertBusinessSetting(keyName, value, settingsType);
       res.json(setting);
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
-  });
-
-  // -- ADMIN: Runtime configuration control ---------------------------------
-  app.get("/api/admin/runtime-config", requireAdminAuth, async (_req, res) => {
-    try {
-      await initRuntimeConfigTables();
-      const snapshot = await getRuntimeConfigSnapshot(true);
-      res.json({ success: true, data: snapshot });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
-  });
-
-  app.put("/api/admin/runtime-config", requireAdminAuth, requireAdminRole(["admin", "superadmin"]), async (req, res) => {
-    try {
-      await initRuntimeConfigTables();
-      const entries = Array.isArray(req.body?.entries) ? req.body.entries : [];
-      if (!entries.length) return res.status(400).json({ message: "At least one runtime config entry is required" });
-      const snapshot = await upsertRuntimeConfigEntries({
-        scopeType: req.body?.scopeType || "global",
-        scopeKey: req.body?.scopeKey || "default",
-        entries,
-        reason: req.body?.reason || "admin_runtime_update",
-        updatedBy: (req as any).adminUser?.email || "admin",
-      });
-      res.json({ success: true, data: snapshot });
-    } catch (e: any) { res.status(400).json({ message: safeErrMsg(e) }); }
-  });
-
-  app.get("/api/admin/runtime-config/audit", requireAdminAuth, async (req, res) => {
-    try {
-      await initRuntimeConfigTables();
-      const limit = Number(req.query.limit || 50);
-      const logs = await listRuntimeConfigAuditLogs(limit);
-      res.json({ success: true, data: logs });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
-  });
-
-  app.post("/api/admin/runtime-config/rollback", requireAdminAuth, requireAdminRole(["admin", "superadmin"]), async (req, res) => {
-    try {
-      await initRuntimeConfigTables();
-      const auditLogId = String(req.body?.auditLogId || "");
-      if (!auditLogId) return res.status(400).json({ message: "auditLogId is required" });
-      const snapshot = await rollbackRuntimeConfigAuditLog({
-        auditLogId,
-        updatedBy: (req as any).adminUser?.email || "admin",
-      });
-      res.json({ success: true, data: snapshot });
-    } catch (e: any) { res.status(400).json({ message: safeErrMsg(e) }); }
-  });
-
-  async function ensureLocalPoolTables() {
-    await rawDb.execute(rawSql`
-      CREATE TABLE IF NOT EXISTS local_pool_rides (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        driver_id UUID,
-        vehicle_category_id UUID,
-        pickup_lat DOUBLE PRECISION,
-        pickup_lng DOUBLE PRECISION,
-        destination_lat DOUBLE PRECISION,
-        destination_lng DOUBLE PRECISION,
-        route_bearing_deg DOUBLE PRECISION,
-        pickup_address TEXT,
-        destination_address TEXT,
-        max_seats INTEGER DEFAULT 4,
-        booked_seats INTEGER DEFAULT 0,
-        fare_per_seat NUMERIC(10,2) DEFAULT 0,
-        distance_km DOUBLE PRECISION DEFAULT 0,
-        status VARCHAR(30) DEFAULT 'collecting',
-        collection_deadline TIMESTAMP,
-        zone_id UUID,
-        dispatch_trip_id UUID,
-        created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW()
-      )
-    `);
-    await rawDb.execute(rawSql`
-      CREATE TABLE IF NOT EXISTS local_pool_passengers (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        pool_ride_id UUID NOT NULL,
-        trip_request_id UUID,
-        customer_id UUID NOT NULL,
-        pickup_lat DOUBLE PRECISION,
-        pickup_lng DOUBLE PRECISION,
-        drop_lat DOUBLE PRECISION,
-        drop_lng DOUBLE PRECISION,
-        pickup_address TEXT,
-        drop_address TEXT,
-        seats_booked INTEGER DEFAULT 1,
-        fare_per_seat NUMERIC(10,2) DEFAULT 0,
-        total_fare NUMERIC(10,2) DEFAULT 0,
-        distance_km DOUBLE PRECISION DEFAULT 0,
-        payment_method VARCHAR(40) DEFAULT 'cash',
-        status VARCHAR(30) DEFAULT 'booked',
-        pickup_order INTEGER DEFAULT 1,
-        created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW()
-      )
-    `);
-    await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_local_pool_rides_status_created ON local_pool_rides(status, created_at DESC)`);
-    await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_local_pool_passengers_ride ON local_pool_passengers(pool_ride_id, status)`);
-  }
-
-  // -- ADMIN: Local pool monitoring -----------------------------------------
-  app.get("/api/admin/local-pool/stats", requireAdminAuth, async (_req, res) => {
-    try {
-      const r = await rawDb.execute(rawSql`
-        SELECT
-          COUNT(*)::int AS total_rides,
-          COUNT(*) FILTER (WHERE status='active')::int AS active,
-          COUNT(*) FILTER (WHERE status='active' AND accepting_new_requests=true)::int AS accepting,
-          COUNT(*) FILTER (WHERE status='active' AND accepting_new_requests=false)::int AS paused,
-          COUNT(*) FILTER (WHERE status='ended')::int AS completed,
-          COUNT(*) FILTER (WHERE status='cancelled')::int AS cancelled,
-          COALESCE(SUM(total_passengers_served), 0)::int AS total_passengers,
-          COALESCE(SUM(total_earnings), 0)::numeric AS driver_earnings
-        FROM driver_pool_sessions
-      `);
-      const money = await rawDb.execute(rawSql`
-        SELECT
-          COALESCE(SUM(total_fare), 0)::numeric AS total_revenue,
-          COALESCE(SUM(commission_amount), 0)::numeric AS total_commission,
-          COALESCE(SUM(gst_amount), 0)::numeric AS total_gst
-        FROM pool_ride_requests
-        WHERE status IN ('matched','picked_up','dropped')
-      `).catch(() => ({ rows: [] as any[] }));
-      res.json(camelize({ ...((r.rows[0] as any) || {}), ...((money.rows[0] as any) || {}) }));
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
-  });
-
-  app.get("/api/admin/local-pool/rides", requireAdminAuth, async (req, res) => {
-    try {
-      const status = String(req.query.status || "all");
-      const normalizedStatus = status === "completed" ? "ended" : status;
-      const validStatus = ["active", "ended", "cancelled"].includes(normalizedStatus) ? normalizedStatus : "all";
-      const r = await rawDb.execute(rawSql`
-        SELECT
-          dps.*,
-          u.full_name AS driver_name,
-          u.phone AS driver_phone,
-          (dps.max_seats - dps.available_seats)::int AS booked_seats,
-          COUNT(prr.id) FILTER (WHERE prr.status <> 'cancelled')::int AS passenger_count,
-          COALESCE(AVG(prr.fare_per_seat), 0)::numeric AS fare_per_seat,
-          COALESCE(SUM(prr.total_fare), 0)::numeric AS total_revenue,
-          COALESCE(SUM(prr.commission_amount), 0)::numeric AS total_commission,
-          COALESCE(SUM(prr.gst_amount), 0)::numeric AS total_gst,
-          COALESCE(SUM(prr.driver_earnings), 0)::numeric AS total_driver_earnings
-        FROM driver_pool_sessions dps
-        LEFT JOIN users u ON u.id = dps.driver_id
-        LEFT JOIN pool_ride_requests prr ON prr.session_id = dps.id AND prr.status <> 'cancelled'
-        ${validStatus !== "all" ? rawSql`WHERE dps.status = ${validStatus}` : rawSql``}
-        GROUP BY dps.id, u.full_name, u.phone
-        ORDER BY dps.created_at DESC
-        LIMIT 500
-      `);
-      res.json({ success: true, data: camelize(r.rows) });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
-  });
-
-  app.get("/api/admin/local-pool/rides/:rideId/passengers", requireAdminAuth, async (req, res) => {
-    try {
-      const r = await rawDb.execute(rawSql`
-        SELECT
-          prr.*,
-          prr.seats_requested AS seats_booked,
-          u.full_name AS customer_name,
-          u.phone AS customer_phone
-        FROM pool_ride_requests prr
-        LEFT JOIN users u ON u.id = prr.customer_id
-        WHERE prr.session_id = ${req.params.rideId}::uuid
-        ORDER BY prr.pickup_order ASC NULLS LAST, prr.created_at ASC
-      `);
-      res.json({ success: true, data: camelize(r.rows) });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
-  });
-
-  app.patch("/api/admin/local-pool/settings", requireAdminAuth, requireAdminRole(["admin", "superadmin"]), async (req, res) => {
-    try {
-      const mode = String(req.body?.mode || "on").toLowerCase() === "off" ? "off" : "on";
-      const collectionSecs = Math.max(60, Math.min(600, Number(req.body?.collectionSecs || 300)));
-      const matchRadiusKm = Math.max(1, Math.min(12, Number(req.body?.matchRadiusKm || 4)));
-      const maxDetourKm = Math.max(0.5, Math.min(8, Number(req.body?.maxDetourKm || 2.5)));
-      const directionToleranceDeg = Math.max(15, Math.min(90, Number(req.body?.directionToleranceDeg || 50)));
-      const pairs = [
-        ["local_pool_mode", mode],
-        ["local_pool_collection_secs", String(collectionSecs)],
-        ["local_pool_match_radius_km", String(matchRadiusKm)],
-        ["local_pool_max_detour_km", String(maxDetourKm)],
-        ["local_pool_direction_tolerance_deg", String(directionToleranceDeg)],
-      ];
-      for (const [key, value] of pairs) {
-        await rawDb.execute(rawSql`
-          INSERT INTO business_settings (key_name, value, settings_type)
-          VALUES (${key}, ${value}, 'pool_settings')
-          ON CONFLICT (key_name) DO UPDATE SET value=EXCLUDED.value, settings_type=EXCLUDED.settings_type, updated_at=NOW()
-        `);
-      }
-      res.json({ success: true, mode, collectionSecs, matchRadiusKm, maxDetourKm, directionToleranceDeg });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -5469,11 +4757,41 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/withdrawals", async (req, res) => {
     try {
       const { status } = req.query as Record<string, string>;
-      const result = await storage.getWithdrawRequests(status);
-      // Normalize keys: storage returns { withdraw, user } but frontend expects { withdrawal, driver }
-      const normalized = result.map((r: any) => ({
-        withdrawal: r.withdraw || r.withdrawal || r,
-        driver: r.user || r.driver || null,
+      const result = await rawDb.execute(rawSql`
+        SELECT
+          wr.id,
+          wr.user_id,
+          wr.driver_payment_id,
+          wr.amount,
+          wr.note,
+          COALESCE(dp.status, wr.status) as status,
+          wr.created_at,
+          u.full_name,
+          u.email,
+          u.phone
+        FROM withdraw_requests wr
+        LEFT JOIN users u ON u.id = wr.user_id
+        LEFT JOIN driver_payments dp ON dp.id = wr.driver_payment_id
+        WHERE ${status && status !== "all" ? rawSql`COALESCE(dp.status, wr.status) = ${status}` : rawSql`TRUE`}
+        ORDER BY wr.created_at DESC
+      `);
+      const normalized = (result.rows as any[]).map((row) => ({
+        withdrawal: {
+          id: row.id,
+          userId: row.user_id,
+          driverPaymentId: row.driver_payment_id,
+          amount: row.amount,
+          note: row.note,
+          method: row.note?.startsWith("UPI:") ? "upi" : "bank",
+          accountNumber: row.note?.startsWith("UPI:") ? row.note.replace(/^UPI:\s*/, "") : row.note,
+          status: row.status,
+          createdAt: row.created_at,
+        },
+        driver: {
+          fullName: row.full_name,
+          email: row.email,
+          phone: row.phone,
+        },
       }));
       res.json(normalized);
     } catch (e: any) {
@@ -5493,16 +4811,35 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         if (wdRes.rows.length) {
           const wd = wdRes.rows[0] as any;
           if (wd.status === "pending") {
-            // Deduct from driver wallet
-            await rawDb.execute(rawSql`
-              UPDATE users SET wallet_balance = wallet_balance - ${parseFloat(wd.amount)}
-              WHERE id=${wd.user_id}::uuid
-            `);
-            // Record transaction
-            await rawDb.execute(rawSql`
-              INSERT INTO transactions (user_id, account, debit, credit, balance, transaction_type)
-              VALUES (${wd.user_id}::uuid, ${'Withdrawal processed'}, ${parseFloat(wd.amount)}, 0, 0, ${'withdrawal'})
-            `).catch(dbCatch("db"));
+            if (wd.driver_payment_id) {
+              await approveWithdrawal(String(wd.driver_payment_id));
+            } else {
+              // Deduct from driver wallet atomically so stale pending requests cannot overdraw.
+              const debitR = await rawDb.execute(rawSql`
+                UPDATE users
+                SET wallet_balance = wallet_balance - ${parseFloat(wd.amount)}
+                WHERE id=${wd.user_id}::uuid
+                  AND wallet_balance >= ${parseFloat(wd.amount)}
+                RETURNING wallet_balance
+              `);
+              if (!debitR.rows.length) {
+                return res.status(409).json({ message: "Driver wallet balance is no longer sufficient for this withdrawal" });
+              }
+              const newBal = parseFloat((debitR.rows[0] as any)?.wallet_balance || 0);
+              // Record transaction
+              await rawDb.execute(rawSql`
+                INSERT INTO transactions (user_id, account, debit, credit, balance, transaction_type)
+                VALUES (${wd.user_id}::uuid, ${'Withdrawal processed'}, ${parseFloat(wd.amount)}, 0, ${newBal}, ${'withdrawal'})
+              `).catch(dbCatch("db"));
+            }
+          }
+        }
+      } else if (status === "rejected") {
+        const wdRes = await rawDb.execute(rawSql`SELECT * FROM withdraw_requests WHERE id=${req.params.id}::uuid`);
+        if (wdRes.rows.length) {
+          const wd = wdRes.rows[0] as any;
+          if (wd.status === "pending" && wd.driver_payment_id) {
+            await rejectWithdrawal(String(wd.driver_payment_id));
           }
         }
       }
@@ -5664,26 +5001,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const flags: Record<string, boolean> = {};
       (r.rows as any[]).forEach(row => { flags[row.key] = row.enabled; });
       res.json({ flags });
-    } catch (e: any) { res.status(e?.statusCode || 500).json({ message: safeErrMsg(e), code: e?.code, allowed: e?.allowed }); }
-  });
-
-  app.get("/api/app/runtime-config", async (_req, res) => {
-    try {
-      const cfg = await getRuntimeConfigSnapshot();
-      res.json({
-        config: {
-          mapsEnabled: true,
-          paymentsEnabled: true,
-          parcelsEnabled: true,
-          poolEnabled: true,
-          realtimeEnabled: true,
-        },
-        featureFlags: cfg.featureFlags,
-        services: cfg.services,
-      });
-    } catch (e: any) {
-      res.status(500).json({ message: safeErrMsg(e) });
-    }
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
   app.get("/api/app/popular-locations", async (req, res) => {
@@ -5734,10 +5052,56 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Discounts
   app.get("/api/discounts", async (_req, res) => {
     try {
-      const r = await rawDb.execute(rawSql`SELECT * FROM discounts ORDER BY created_at DESC`);
+      const r = await rawDb.execute(rawSql`
+        SELECT d.*, vc.name AS vehicle_category_name
+        FROM discounts d
+        LEFT JOIN vehicle_categories vc ON vc.id = d.vehicle_category_id
+        ORDER BY d.created_at DESC
+      `);
       res.json(camelize(r.rows));
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
+  const normalizeDiscountTargetService = (value: any) => {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (!normalized || normalized === "all") return null;
+    if (normalized === "delivery") return "parcel";
+    if (normalized === "carpool") return "pool";
+    if (normalized === "normal") return "ride";
+    return normalized;
+  };
+  const resolveDiscountTarget = async (payload: any) => {
+    const requestedVehicleCategoryId = String(
+      payload.vehicleCategoryId ?? payload.vehicle_category_id ?? "",
+    ).trim();
+    let serviceType = normalizeDiscountTargetService(
+      payload.serviceType ?? payload.service_type,
+    );
+    if (!requestedVehicleCategoryId) {
+      return {
+        serviceType,
+        vehicleCategoryId: null as string | null,
+      };
+    }
+    const vehicleR = await rawDb.execute(rawSql`
+      SELECT id, service_type, type
+      FROM vehicle_categories
+      WHERE id = ${requestedVehicleCategoryId}::uuid
+      LIMIT 1
+    `);
+    if (!vehicleR.rows.length) {
+      throw new Error("Selected vehicle category was not found");
+    }
+    const vehicle = camelize(vehicleR.rows[0]) as any;
+    serviceType =
+      normalizeDiscountTargetService(vehicle.serviceType) ||
+      normalizeDiscountTargetService(vehicle.type) ||
+      serviceType ||
+      "ride";
+    return {
+      serviceType,
+      vehicleCategoryId: String(vehicle.id),
+    };
+  };
   app.post("/api/discounts", requireAdminAuth, async (req, res) => {
     try {
       const b = req.body;
@@ -5747,7 +5111,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const min_order_amount = b.minOrderAmount ?? b.min_order_amount ?? null;
       const max_discount_amount = b.maxDiscountAmount ?? b.max_discount_amount ?? null;
       const is_active = b.isActive ?? b.is_active ?? true;
-      const r = await rawDb.execute(rawSql`INSERT INTO discounts (name, discount_amount, discount_type, min_order_amount, max_discount_amount, is_active) VALUES (${name}, ${discount_amount}, ${discount_type}, ${min_order_amount}, ${max_discount_amount}, ${is_active}) RETURNING *`);
+      const target = await resolveDiscountTarget(b);
+      const r = await rawDb.execute(rawSql`
+        INSERT INTO discounts (
+          name, discount_amount, discount_type, min_order_amount,
+          max_discount_amount, is_active, service_type, vehicle_category_id
+        ) VALUES (
+          ${name}, ${discount_amount}, ${discount_type}, ${min_order_amount},
+          ${max_discount_amount}, ${is_active}, ${target.serviceType},
+          ${target.vehicleCategoryId ? rawSql`${target.vehicleCategoryId}::uuid` : rawSql`NULL`}
+        ) RETURNING *
+      `);
       res.status(201).json(camelize(r.rows[0]));
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
@@ -5774,6 +5148,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const min_order_amount = b.minOrderAmount ?? b.min_order_amount ?? null;
       const max_discount_amount = b.maxDiscountAmount ?? b.max_discount_amount ?? null;
       const active = b.isActive ?? b.is_active ?? null;
+      const hasTargetFields =
+        Object.prototype.hasOwnProperty.call(b, "serviceType") ||
+        Object.prototype.hasOwnProperty.call(b, "service_type") ||
+        Object.prototype.hasOwnProperty.call(b, "vehicleCategoryId") ||
+        Object.prototype.hasOwnProperty.call(b, "vehicle_category_id");
+      const target = hasTargetFields ? await resolveDiscountTarget(b) : null;
       const r = await rawDb.execute(rawSql`
         UPDATE discounts SET
           name=COALESCE(${name}, name),
@@ -5781,12 +5161,120 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           discount_type=COALESCE(${discount_type}, discount_type),
           min_order_amount=COALESCE(${min_order_amount}, min_order_amount),
           max_discount_amount=COALESCE(${max_discount_amount}, max_discount_amount),
-          is_active=COALESCE(${active}, is_active)
+          is_active=COALESCE(${active}, is_active),
+          service_type=${target ? target.serviceType : rawSql`service_type`},
+          vehicle_category_id=${target ? (target.vehicleCategoryId ? rawSql`${target.vehicleCategoryId}::uuid` : rawSql`NULL`) : rawSql`vehicle_category_id`}
         WHERE id=${req.params.id}::uuid RETURNING *
       `);
       res.json(camelize(r.rows[0]));
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
+
+  type AutomaticDiscountCandidate = {
+    source: "discount_setup" | "launch_offer";
+    name: string;
+    amount: number;
+    originalAmount?: number;
+  };
+
+  const normalizeMoney = (value: number) =>
+    Math.max(0, Math.round(value * 100) / 100);
+
+  const computeAdminDiscountAmount = (discount: any, fareAmount: number) => {
+    const minOrder = parseFloat(discount.min_order_amount ?? discount.minOrderAmount ?? "0");
+    if (fareAmount < minOrder) return 0;
+
+    const discountType = String(
+      discount.discount_type ?? discount.discountType ?? "percentage",
+    ).toLowerCase();
+    const discountValue = parseFloat(
+      discount.discount_amount ?? discount.discountAmount ?? "0",
+    );
+    if (!Number.isFinite(discountValue) || discountValue <= 0) return 0;
+
+    let amount =
+      discountType === "amount" || discountType === "fixed"
+        ? discountValue
+        : (fareAmount * discountValue) / 100;
+
+    const maxCap = parseFloat(
+      discount.max_discount_amount ?? discount.maxDiscountAmount ?? "0",
+    );
+    if (Number.isFinite(maxCap) && maxCap > 0) {
+      amount = Math.min(amount, maxCap);
+    }
+    return normalizeMoney(Math.min(amount, fareAmount));
+  };
+
+  const getBestAutomaticDiscount = async (
+    userId: string | null | undefined,
+    fareAmount: number,
+    tripContext?: {
+      serviceType?: string | null;
+      vehicleCategoryId?: string | null;
+    },
+  ): Promise<AutomaticDiscountCandidate | null> => {
+    const normalizedFare = normalizeMoney(fareAmount);
+    if (!userId || normalizedFare <= 0) return null;
+    const normalizedServiceType = normalizeDiscountTargetService(
+      tripContext?.serviceType,
+    );
+    const normalizedVehicleCategoryId = String(
+      tripContext?.vehicleCategoryId || "",
+    ).trim();
+
+    const [userR, discountsR] = await Promise.all([
+      rawDb
+        .execute(
+          rawSql`SELECT completed_rides_count FROM users WHERE id=${userId}::uuid LIMIT 1`,
+        )
+        .catch(() => ({ rows: [] as any[] })),
+      rawDb
+        .execute(rawSql`SELECT * FROM discounts WHERE is_active=true ORDER BY created_at DESC`)
+        .catch(() => ({ rows: [] as any[] })),
+    ]);
+
+    const completedCount =
+      parseInt((userR.rows[0] as any)?.completed_rides_count ?? "0", 10) || 0;
+    let best: AutomaticDiscountCandidate | null = null;
+
+    if (completedCount < 2) {
+      const launchAmount = normalizeMoney(normalizedFare * 0.5);
+      best = {
+        source: "launch_offer",
+        name: "Launch Offer",
+        amount: launchAmount,
+        originalAmount: launchAmount,
+      };
+    }
+
+    for (const row of discountsR.rows as any[]) {
+      const rowServiceType = normalizeDiscountTargetService(
+        row.service_type ?? row.serviceType,
+      );
+      const rowVehicleCategoryId = String(
+        row.vehicle_category_id ?? row.vehicleCategoryId ?? "",
+      ).trim();
+      if (rowVehicleCategoryId && rowVehicleCategoryId !== normalizedVehicleCategoryId) {
+        continue;
+      }
+      if (!rowVehicleCategoryId && rowServiceType && rowServiceType !== normalizedServiceType) {
+        continue;
+      }
+      const discountAmount = computeAdminDiscountAmount(row, normalizedFare);
+      if (discountAmount <= 0) continue;
+      if (!best || discountAmount > best.amount) {
+        best = {
+          source: "discount_setup",
+          name: String(row.name || "Discount Offer"),
+          amount: discountAmount,
+          originalAmount: discountAmount,
+        };
+      }
+    }
+
+    return best;
+  };
 
   // Spin Wheel
   app.get("/api/spin-wheel", async (_req, res) => {
@@ -6310,7 +5798,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Intercity Routes CRUD
   app.get("/api/intercity-routes", async (_req, res) => {
     try {
-      res.set("Cache-Control", "no-store");
       const r = await rawDb.execute(rawSql`
         SELECT ir.*, vc.name as vehicle_name FROM intercity_routes ir
         LEFT JOIN vehicle_categories vc ON vc.id = ir.vehicle_category_id
@@ -6334,28 +5821,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.put("/api/intercity-routes/:id", requireAdminAuth, async (req, res) => {
     try {
       const { fromCity, toCity, estimatedKm, baseFare, farePerKm, tollCharges, vehicleCategoryId, isActive } = req.body;
-      const normalizedFromCity = typeof fromCity === "string" ? fromCity.trim() : "";
-      const normalizedToCity = typeof toCity === "string" ? toCity.trim() : "";
-      const normalizedEstimatedKm = estimatedKm === undefined || estimatedKm === null || estimatedKm === "" ? 0 : Number(estimatedKm);
-      const normalizedBaseFare = baseFare === undefined || baseFare === null || baseFare === "" ? 0 : Number(baseFare);
-      const normalizedFarePerKm = farePerKm === undefined || farePerKm === null || farePerKm === "" ? 0 : Number(farePerKm);
-      const normalizedTollCharges = tollCharges === undefined || tollCharges === null || tollCharges === "" ? 0 : Number(tollCharges);
-      if (!normalizedFromCity || !normalizedToCity) {
-        return res.status(400).json({ message: "Both fromCity and toCity are required" });
-      }
-      if ([normalizedEstimatedKm, normalizedBaseFare, normalizedFarePerKm, normalizedTollCharges].some((value) => Number.isNaN(value))) {
-        return res.status(400).json({ message: "Route fare and distance values must be valid numbers" });
-      }
       let r;
       if (vehicleCategoryId) {
-        r = await rawDb.execute(rawSql`UPDATE intercity_routes SET from_city=${normalizedFromCity}, to_city=${normalizedToCity}, estimated_km=${normalizedEstimatedKm}, base_fare=${normalizedBaseFare}, fare_per_km=${normalizedFarePerKm}, toll_charges=${normalizedTollCharges}, vehicle_category_id=${vehicleCategoryId}::uuid, is_active=${isActive} WHERE id=${req.params.id}::uuid RETURNING *`);
+        r = await rawDb.execute(rawSql`UPDATE intercity_routes SET from_city=${fromCity}, to_city=${toCity}, estimated_km=${estimatedKm || 0}, base_fare=${baseFare || 0}, fare_per_km=${farePerKm || 0}, toll_charges=${tollCharges || 0}, vehicle_category_id=${vehicleCategoryId}::uuid, is_active=${isActive} WHERE id=${req.params.id}::uuid RETURNING *`);
       } else {
-        r = await rawDb.execute(rawSql`UPDATE intercity_routes SET from_city=${normalizedFromCity}, to_city=${normalizedToCity}, estimated_km=${normalizedEstimatedKm}, base_fare=${normalizedBaseFare}, fare_per_km=${normalizedFarePerKm}, toll_charges=${normalizedTollCharges}, vehicle_category_id=NULL, is_active=${isActive} WHERE id=${req.params.id}::uuid RETURNING *`);
+        r = await rawDb.execute(rawSql`UPDATE intercity_routes SET from_city=${fromCity}, to_city=${toCity}, estimated_km=${estimatedKm || 0}, base_fare=${baseFare || 0}, fare_per_km=${farePerKm || 0}, toll_charges=${tollCharges || 0}, vehicle_category_id=NULL, is_active=${isActive} WHERE id=${req.params.id}::uuid RETURNING *`);
       }
-      if (!r.rows.length) {
-        return res.status(404).json({ message: "Route not found" });
-      }
-      res.set("Cache-Control", "no-store");
       res.json(camelize(r.rows)[0]);
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
@@ -6496,6 +5967,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
+  // Admin password change
+  app.post("/api/admin/change-password", async (req, res) => {
+    try {
+      const { currentPassword, newPassword } = req.body;
+      if (!currentPassword || !newPassword) return res.status(400).json({ message: "Current and new passwords required" });
+      if (newPassword.length < 8) return res.status(400).json({ message: "New password must be at least 8 characters" });
+      const r = await rawDb.execute(rawSql`SELECT id, password FROM admins WHERE role='superadmin' LIMIT 1`);
+      if (!r.rows.length) return res.status(404).json({ message: "Admin not found" });
+      const admin = r.rows[0] as any;
+      const valid = await verifyPassword(String(currentPassword), admin.password);
+      if (!valid) return res.status(401).json({ message: "Current password is incorrect" });
+      const hash = await hashPassword(String(newPassword));
+      await rawDb.execute(rawSql`UPDATE admins SET password=${hash} WHERE id=${admin.id}::uuid`);
+      res.json({ success: true, message: "Password changed successfully" });
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
   // Newsletter subscribers (from existing users table)
   app.get("/api/newsletter", requireAdminAuth, async (_req, res) => {
     try {
@@ -6562,170 +6050,48 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Notifications send � broadcasts real FCM push to all matching user devices
   app.post("/api/notifications/send", requireAdminAuth, async (req, res) => {
     try {
-      const safeLogValue = (value: unknown, fallback = "all", max = 70) => {
-        const v = String(value ?? fallback).trim();
-        return (v || fallback).slice(0, max);
-      };
-      const target = safeLogValue(req.body?.target, "all");
-      const title = String(req.body?.title || "").trim();
-      const message = String(req.body?.message || "").trim();
-      const requestedUserType = String(req.body?.userType || "all").toLowerCase();
-      const userType = ["all", "customer", "driver"].includes(requestedUserType)
-        ? requestedUserType
-        : "all";
+      const { title, message, target = "all", userType = "all" } = req.body;
       if (!title || !message) return res.status(400).json({ message: "title and message required" });
-      const audienceWhere = userType === "driver"
-        ? rawSql`AND (
-            LOWER(COALESCE(NULLIF(u.user_type, ''), NULLIF(u.role, ''), '')) IN ('driver', 'pilot')
-            OR LOWER(COALESCE(u.role, '')) IN ('driver', 'pilot')
-          )`
-        : userType === "customer"
-          ? rawSql`AND (
-              LOWER(COALESCE(NULLIF(u.user_type, ''), NULLIF(u.role, ''), 'customer')) IN ('customer', 'user')
-              OR LOWER(COALESCE(u.role, '')) IN ('customer', 'user')
-            )`
-          : rawSql`AND (
-              LOWER(COALESCE(NULLIF(u.user_type, ''), NULLIF(u.role, ''), 'customer')) IN ('customer', 'user', 'driver', 'pilot')
-              OR LOWER(COALESCE(u.role, '')) IN ('customer', 'user', 'driver', 'pilot')
-            )`;
 
       // Fetch FCM tokens for matching active users
-      const devRes = await rawDb.execute(rawSql`
-        SELECT DISTINCT
-          u.id AS user_id,
-          TRIM(COALESCE(ud.fcm_token, u.fcm_token)) AS fcm_token
-        FROM users u
-        LEFT JOIN user_devices ud ON ud.user_id = u.id
-        WHERE COALESCE(u.is_active, true) = true
-          ${audienceWhere}
-          AND COALESCE(ud.fcm_token, u.fcm_token) IS NOT NULL
-          AND LENGTH(TRIM(COALESCE(ud.fcm_token, u.fcm_token))) > 20
-      `).catch((tokenErr: any) => {
-        console.error("[Notification] token query failed:", tokenErr?.message || tokenErr);
-        return { rows: [] as any[] };
-      });
-      const fcmRows = devRes.rows as any[];
-      const targetUsersRes = await rawDb.execute(rawSql`
-        SELECT DISTINCT u.id
-        FROM users u
-        WHERE COALESCE(u.is_active, true) = true
-          ${audienceWhere}
-      `).catch(() => ({ rows: [] as any[] }));
-      const targetUserIds = (targetUsersRes.rows as any[]).map((row) => String(row.id)).filter(Boolean);
+      let fcmRows: any[] = [];
+      if (target === "all") {
+        const devRes = await rawDb.execute(rawSql`
+          SELECT ud.fcm_token FROM user_devices ud
+          INNER JOIN users u ON u.id = ud.user_id
+          WHERE u.is_active = true
+            AND (${userType} = 'all' OR u.user_type = ${userType})
+        `);
+        fcmRows = devRes.rows;
+      }
 
       const recipientCount = fcmRows.length;
-      const targetedUserCount = targetUserIds.length;
 
       // Fire FCM pushes (non-blocking � best effort)
       let deliveredCount = 0;
-      let failedCount = 0;
       if (fcmRows.length > 0) {
         const pushPromises = fcmRows.map(async (r: any) => {
           if (!r.fcm_token) return;
-          try {
-            const ok = await sendFcmNotification({
-              fcmToken: r.fcm_token,
-              title,
-              body: message,
-              data: { type: "broadcast", target, userType, title, message },
-              channelId: "general_alerts",
-              sound: "default",
-            });
-            if (ok) deliveredCount++;
-            else failedCount++;
-          } catch (pushErr: any) {
-            failedCount++;
-            console.warn("[Notification] FCM delivery failed:", pushErr?.message || pushErr);
-          }
+          const ok = await sendFcmNotification({
+            fcmToken: r.fcm_token,
+            title,
+            body: message,
+            data: { type: "broadcast", target, userType },
+            channelId: "general_alerts",
+            sound: "default",
+          });
+          if (ok) deliveredCount++;
         });
         await Promise.allSettled(pushPromises);
       }
 
-      const status = recipientCount === 0
-        ? "no_devices"
-        : deliveredCount > 0 && failedCount > 0
-          ? "partial"
-          : deliveredCount > 0
-            ? "sent"
-            : "queued";
-      const fcmResult = `devices=${recipientCount}; delivered=${deliveredCount}; failed=${failedCount}`;
-      const fcmError = getLastFcmError();
-      const errorMessage = failedCount > 0
-        ? `FCM delivery failed for ${failedCount} device(s). ${fcmError ? `Firebase: ${fcmError}` : "Refresh app tokens if this repeats."}`
-        : recipientCount === 0
-          ? "No registered FCM devices matched this audience yet."
-          : null;
-
-      try {
-        await rawDb.execute(rawSql`
-          INSERT INTO notification_log (user_id, title, message, type, data, is_read, created_at, updated_at)
-          SELECT
-            u.id,
-            ${title.slice(0, 240)},
-            ${message},
-            'broadcast',
-            ${JSON.stringify({ target, userType, source: "admin", status })}::jsonb,
-            false,
-            NOW(),
-            NOW()
-          FROM users u
-          WHERE COALESCE(u.is_active, true) = true
-            ${audienceWhere}
-        `);
-      } catch (appLogErr: any) {
-        console.error("[Notification] app notification insert failed:", appLogErr?.message || appLogErr);
-      }
-      for (const userId of targetUserIds) {
-        try {
-          io?.to(`user:${userId}`).emit("notification:broadcast", {
-            title,
-            message,
-            type: "broadcast",
-            target,
-            userType,
-            createdAt: new Date().toISOString(),
-          });
-        } catch (socketErr: any) {
-          console.warn("[Notification] socket broadcast failed:", socketErr?.message || socketErr);
-        }
-      }
-
-      try {
-        await rawDb.execute(rawSql`
-          INSERT INTO notification_logs (
-            title, message, target, user_type, recipient_count, delivered_count,
-            status, notification_type, fcm_result, error_message, sent_at
-          )
-          VALUES (
-            ${title.slice(0, 190)}, ${message}, ${target}, ${userType}, ${recipientCount}, ${deliveredCount},
-            ${status}, 'broadcast',
-            ${fcmResult},
-            ${errorMessage},
-            NOW()
-          )
-        `);
-      } catch (logErr: any) {
-        console.error("[Notification] history insert failed:", logErr?.message || logErr);
-        await rawDb.execute(rawSql`
-          INSERT INTO notification_logs (title, message, target, user_type, recipient_count, status, sent_at)
-          VALUES (${title.slice(0, 190)}, ${message}, ${target}, ${userType}, ${recipientCount}, ${status}, NOW())
-        `).catch((fallbackErr: any) => {
-          console.error("[Notification] fallback history insert failed:", fallbackErr?.message || fallbackErr);
-        });
-      }
-      const statusMessage = status === "sent"
-        ? "Notification sent"
-        : status === "partial"
-          ? "Notification sent with partial device delivery"
-          : status === "no_devices"
-            ? "Notification saved in app. No registered push devices matched this audience."
-            : "Notification saved in app. Devices will receive push after token refresh.";
-      console.log(`[Notification] To=${target}/${userType} Users=${targetedUserCount} Devices=${recipientCount} Delivered=${deliveredCount} Failed=${failedCount}`);
-      res.json({ success: true, message: statusMessage, recipientCount, targetedUserCount, deliveredCount, failedCount, status, pushWarning: status !== "sent" });
-    } catch (e: any) {
-      console.error("[Notification] send failed:", e?.message || e);
-      res.status(500).json({ message: safeErrMsg(e) });
-    }
+      await rawDb.execute(rawSql`
+        INSERT INTO notification_logs (title, message, target, user_type, recipient_count, delivered_count, status, sent_at)
+        VALUES (${title}, ${message}, ${target}, ${userType}, ${recipientCount}, ${deliveredCount}, 'sent', NOW())
+      `);
+      console.log(`[Notification] To=${target}/${userType} Title=${title} Recipients=${recipientCount} Delivered=${deliveredCount}`);
+      res.json({ success: true, message: "Notification sent", recipientCount, deliveredCount });
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
   // --- Car Sharing APIs --------------------------------------------------------
@@ -6854,15 +6220,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // GET /api/app/revenue-config � used by both apps to determine commission/subscription
   app.get("/api/app/revenue-config", authApp, async (_req, res) => {
     try {
-      const rows = await listRevenueModuleConfigs();
+      const rows = await rawDb.execute(rawSql`SELECT * FROM service_revenue_config ORDER BY module_name`);
       const config: Record<string, any> = {};
-      for (const r of rows) {
-        config[r.moduleName] = {
-          revenueModel: r.revenueModel,
-          commissionPercentage: r.commissionPercentage,
-          commissionGstPercentage: r.commissionGstPercentage,
-          subscriptionRequired: r.subscriptionRequired,
-          isActive: r.isActive,
+      for (const row of rows.rows) {
+        const r = row as any;
+        config[r.module_name] = {
+          revenueModel: r.revenue_model,
+          commissionPercentage: parseFloat(r.commission_percentage),
+          commissionGstPercentage: parseFloat(r.commission_gst_percentage),
+          subscriptionRequired: r.subscription_required,
+          isActive: r.is_active,
         };
       }
       res.json({ config });
@@ -6872,45 +6239,67 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // GET /api/admin/module-revenue � admin read all module configs
   app.get("/api/admin/module-revenue", requireAdminAuth, async (_req, res) => {
     try {
-      await reconcileRevenueModuleAliases().catch(dbCatch("db"));
-      const rows = await listRevenueModuleConfigs();
-      res.json({
-        modules: rows.map((r) => ({
-          moduleName: r.moduleName,
-          revenueModel: r.revenueModel,
-          commissionPercentage: r.commissionPercentage,
-          commissionGstPercentage: r.commissionGstPercentage,
-          subscriptionRequired: r.subscriptionRequired,
-          isActive: r.isActive,
-          notes: r.notes,
-        })),
-      });
+      const rows = await rawDb.execute(rawSql`SELECT * FROM service_revenue_config ORDER BY module_name`);
+      res.json({ modules: rows.rows.map(camelize) });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
   // PUT /api/admin/module-revenue/:module � admin update one module
   app.put("/api/admin/module-revenue/:module", requireAdminAuth, async (req, res) => {
     try {
-      const module = normalizeRevenueModule(req.params.module);
-      if (!module) return res.status(400).json({ message: "Invalid module name" });
+      const module = req.params.module as string;
+      const ALLOWED = ['ride', 'parcel', 'carpool', 'outstation', 'b2b'];
+      if (!ALLOWED.includes(module)) return res.status(400).json({ message: "Invalid module name" });
       const { revenueModel, commissionPercentage, commissionGstPercentage, subscriptionRequired, isActive, notes } = req.body;
-      const updated = await upsertRevenueModuleConfig(module, {
-        revenueModel,
-        commissionPercentage,
-        commissionGstPercentage,
-        subscriptionRequired,
-        isActive,
-        notes,
-      });
-      res.json({
-        moduleName: updated.moduleName,
-        revenueModel: updated.revenueModel,
-        commissionPercentage: updated.commissionPercentage,
-        commissionGstPercentage: updated.commissionGstPercentage,
-        subscriptionRequired: updated.subscriptionRequired,
-        isActive: updated.isActive,
-        notes: updated.notes,
-      });
+      const nextRevenueModel = ['free', 'commission', 'subscription', 'hybrid'].includes(String(revenueModel))
+        ? String(revenueModel)
+        : 'free';
+      await rawDb.execute(rawSql`
+        INSERT INTO service_revenue_config
+          (module_name, revenue_model, commission_percentage, commission_gst_percentage, subscription_required, is_active, notes, updated_at)
+        VALUES
+          (${module}, ${nextRevenueModel}, ${commissionPercentage ?? 15}::numeric, ${commissionGstPercentage ?? 18}::numeric,
+           ${subscriptionRequired ?? false}::boolean, ${isActive ?? true}::boolean, ${notes || null}, NOW())
+        ON CONFLICT (module_name) DO UPDATE SET
+          revenue_model             = EXCLUDED.revenue_model,
+          commission_percentage     = EXCLUDED.commission_percentage,
+          commission_gst_percentage = EXCLUDED.commission_gst_percentage,
+          subscription_required     = EXCLUDED.subscription_required,
+          is_active                 = EXCLUDED.is_active,
+          notes                     = EXCLUDED.notes,
+          updated_at                = NOW()
+      `);
+      const settingKeyMap: Record<string, string> = {
+        ride: 'rides_model',
+        parcel: 'parcels_model',
+        carpool: 'city_pool_model',
+        outstation: 'outstation_pool_model',
+        b2b: 'parcels_model',
+      };
+      const platformKeyMap: Record<string, string[]> = {
+        ride: ['bike_ride', 'auto_ride', 'mini_car', 'sedan', 'suv'],
+        parcel: ['parcel_delivery'],
+        carpool: ['city_pool'],
+        outstation: ['outstation_pool', 'intercity_pool'],
+        b2b: ['parcel_delivery'],
+      };
+      const settingKey = settingKeyMap[module];
+      if (settingKey) {
+        await rawDb.execute(rawSql`
+          INSERT INTO revenue_model_settings (key_name, value)
+          VALUES (${settingKey}, ${nextRevenueModel})
+          ON CONFLICT (key_name) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+        `);
+      }
+      for (const serviceKey of platformKeyMap[module] || []) {
+        await rawDb.execute(rawSql`
+          UPDATE platform_services
+          SET revenue_model = ${nextRevenueModel}, updated_at = NOW()
+          WHERE service_key = ${serviceKey}
+        `).catch(dbCatch("db"));
+      }
+      const updated = await rawDb.execute(rawSql`SELECT * FROM service_revenue_config WHERE module_name = ${module} LIMIT 1`);
+      res.json(camelize(updated.rows[0]));
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -7340,10 +6729,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         RETURNING *
       `);
       if (!r.rows.length) return res.status(409).json({ message: "Refund already processed or not found" });
-      // Credit wallet only on first-time approval (guaranteed by atomic WHERE above)
+      // Credit wallet only on first-time approval for wallet refunds.
       if (status === 'approved') {
         const refund: any = r.rows[0];
-        if (refund?.customer_id && refund?.amount) {
+        if (refund?.payment_method === 'wallet' && refund?.customer_id && refund?.amount) {
           const refundAmt = Math.round(parseFloat(refund.amount) * 100) / 100;
           await rawDb.execute(rawSql`UPDATE users SET wallet_balance = wallet_balance + ${refundAmt} WHERE id=${refund.customer_id}::uuid`);
           const newBalRes = await rawDb.execute(rawSql`SELECT wallet_balance FROM users WHERE id=${refund.customer_id}::uuid`);
@@ -7381,8 +6770,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // Create a refund request record if customerId provided
       if (customerId) {
         await rawDb.execute(rawSql`
-          INSERT INTO refund_requests (customer_id, trip_id, amount, reason, payment_method, status, admin_note, approved_by, approved_at)
-          VALUES (${customerId}::uuid, ${tripId || null}::uuid, ${amt}, ${reason || 'Razorpay refund'}, 'razorpay', 'approved',
+          INSERT INTO refund_requests (customer_id, trip_id, amount, reason, payment_method, refund_reference_id, razorpay_payment_id, status, admin_note, approved_by, approved_at)
+          VALUES (${customerId}::uuid, ${tripId || null}::uuid, ${amt}, ${reason || 'Razorpay refund'}, 'razorpay',
+                  ${refundResult.id}, ${paymentId}, 'approved',
                   ${'Razorpay refund ID: ' + refundResult.id}, 'Admin', NOW())
           ON CONFLICT DO NOTHING
         `).catch(dbCatch("db"));
@@ -7501,15 +6891,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const driver = (req as any).currentUser;
       const { fromCity, toCity, routeKm, departureDate, departureTime, totalSeats, vehicleNumber, vehicleModel, farePerSeat, note } = req.body;
       if (!fromCity || !toCity) return res.status(400).json({ message: "fromCity and toCity are required" });
-      try {
-        await enforceDriverRevenuePolicy(driver.id, 'outstation');
-      } catch (policyErr: any) {
-        return res.status(policyErr.statusCode || 403).json({
-          message: policyErr.message || "Subscription required for outstation pool service",
-          code: policyErr.code || "SUBSCRIPTION_REQUIRED",
-          moduleName: "outstation",
-        });
-      }
 
       const r = await rawDb.execute(rawSql`
         INSERT INTO outstation_pool_rides
@@ -7694,6 +7075,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!rideId) return res.status(400).json({ message: "rideId is required" });
 
       const seats = clampSeatRequest(seatsBooked);
+      const normalizedPaymentMethod = String(paymentMethod || 'cash').toLowerCase();
 
       const bookingRes = await rawDb.execute(rawSql`
         WITH ride_claim AS (
@@ -7719,9 +7101,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             rc.to_city,
             ${pickupAddress || null},
             ${dropoffAddress || null},
-            ${paymentMethod},
+            ${normalizedPaymentMethod},
             'confirmed',
-            'pending'
+            ${normalizedPaymentMethod === 'wallet' ? 'paid' : 'pending'}
           FROM ride_claim rc
           RETURNING *
         )
@@ -7740,7 +7122,36 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         }
         return res.status(409).json({ message: "Not enough seats available", available: ride.available_seats });
       }
-      res.json({ success: true, booking: camelize(bookingRes.rows[0]) });
+      const booking = bookingRes.rows[0] as any;
+      if (normalizedPaymentMethod === 'wallet') {
+        const totalFare = parseFloat(booking.total_fare || '0');
+        const walletDebit = await rawDb.execute(rawSql`
+          UPDATE users
+          SET wallet_balance = wallet_balance - ${totalFare}
+          WHERE id = ${customer.id}::uuid
+            AND wallet_balance >= ${totalFare}
+          RETURNING wallet_balance
+        `);
+        if (!walletDebit.rows.length) {
+          await rawDb.execute(rawSql`
+            DELETE FROM outstation_pool_bookings WHERE id = ${booking.id}::uuid
+          `).catch(dbCatch("db"));
+          await rawDb.execute(rawSql`
+            UPDATE outstation_pool_rides
+            SET available_seats = available_seats + ${seats},
+                updated_at = NOW()
+            WHERE id = ${rideId}::uuid
+          `).catch(dbCatch("db"));
+          const walletR = await rawDb.execute(rawSql`
+            SELECT wallet_balance FROM users WHERE id = ${customer.id}::uuid LIMIT 1
+          `).catch(() => ({ rows: [] as any[] }));
+          const balance = parseFloat((walletR.rows[0] as any)?.wallet_balance || '0');
+          return res.status(402).json({
+            message: `Insufficient wallet balance. Required: ₹${totalFare.toFixed(0)}, available: ₹${balance.toFixed(0)}`,
+          });
+        }
+      }
+      res.json({ success: true, booking: camelize(booking) });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -7883,29 +7294,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         INSERT INTO support_messages (user_id, sender, message)
         VALUES (${userId}::uuid, ${sender}, ${message}) RETURNING *
       `);
-      const data = camelize(r.rows[0]);
-      io?.to(`user:${userId}`).emit("support:new_message", data);
-      res.json({ success: true, data });
+      res.json({ success: true, data: camelize(r.rows[0]) });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  app.get('/api/support-chat/unread-count', requireAdminAuth, async (_req, res) => {
+  app.get('/api/support-chat/unread-count', async (_req, res) => {
     try {
-      res.set("Cache-Control", "no-store");
       const r = await rawDb.execute(rawSql`
-        WITH grouped AS (
-          SELECT
-            sm.user_id::text AS user_id,
-            COUNT(*)::int AS unread
-          FROM support_messages sm
-          WHERE sm.user_id IS NOT NULL
-            AND COALESCE(sm.sender, 'user') = 'user'
-            AND COALESCE(sm.is_read, false) = false
-          GROUP BY sm.user_id
-        )
-        SELECT grouped.user_id, grouped.unread
-        FROM grouped
-        ORDER BY grouped.unread DESC, grouped.user_id ASC
+        SELECT user_id, COUNT(*) as unread
+        FROM support_messages WHERE sender='user' AND is_read=false
+        GROUP BY user_id
       `);
       res.json({ unreadByUser: r.rows.map(camelize) });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
@@ -8491,7 +7889,127 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // ========== REFERRAL SYSTEM ==========
-  app.get("/api/referrals/stats", async (req, res) => {
+  const normalizeReferralCode = (code: string) =>
+    code.replace(/\s+/g, "").trim().toUpperCase();
+
+  const getReferralRewardAmount = async (referralType: "customer" | "driver") => {
+    const keyName =
+      referralType === "driver"
+        ? "referral_bonus_driver"
+        : "referral_bonus_customer";
+    const fallback = referralType === "driver" ? 100 : 50;
+    try {
+      const r = await rawDb.execute(
+        rawSql`SELECT value FROM business_settings WHERE key_name=${keyName} LIMIT 1`,
+      );
+      const amount = parseFloat((r.rows[0] as any)?.value || `${fallback}`);
+      return Number.isFinite(amount) && amount > 0 ? amount : fallback;
+    } catch (_) {
+      return fallback;
+    }
+  };
+
+  const settleReferralReward = async (referralId: string) => {
+    const r = await rawDb.execute(rawSql`
+      UPDATE referrals
+      SET status = 'paid', paid_at = NOW()
+      WHERE id = ${referralId}::uuid AND status = 'pending'
+      RETURNING *
+    `);
+    if (!r.rows.length) return null;
+    const ref = r.rows[0] as any;
+    const rewardAmount = parseFloat(ref.reward_amount || "0");
+    if (ref.referrer_id && rewardAmount > 0) {
+      await rawDb.execute(rawSql`
+        UPDATE users
+        SET wallet_balance = COALESCE(wallet_balance, 0) + ${rewardAmount}
+        WHERE id = ${ref.referrer_id}::uuid
+      `).catch(dbCatch("db"));
+      const newBal = await rawDb
+        .execute(
+          rawSql`SELECT wallet_balance FROM users WHERE id = ${ref.referrer_id}::uuid`,
+        )
+        .catch(() => ({ rows: [] as any[] }));
+      const bal = parseFloat((newBal.rows[0] as any)?.wallet_balance || "0");
+      await rawDb.execute(rawSql`
+        INSERT INTO transactions (user_id, account, credit, debit, balance, transaction_type, ref_transaction_id)
+        VALUES (${ref.referrer_id}::uuid, ${"Referral bonus"}, ${rewardAmount}, 0, ${bal}, ${"referral_bonus"}, ${ref.id}::uuid)
+        ON CONFLICT (ref_transaction_id, transaction_type) WHERE ref_transaction_id IS NOT NULL DO NOTHING
+      `).catch(dbCatch("db"));
+    }
+    return camelize(ref);
+  };
+
+  const createPendingReferral = async ({
+    referralCode,
+    referredUserId,
+    referralType,
+  }: {
+    referralCode?: string;
+    referredUserId: string;
+    referralType: "customer" | "driver";
+  }) => {
+    const normalizedCode = normalizeReferralCode(referralCode || "");
+    if (!normalizedCode) return;
+
+    const alreadyExists = await rawDb.execute(rawSql`
+      SELECT id FROM referrals WHERE referred_id=${referredUserId}::uuid LIMIT 1
+    `);
+    if (alreadyExists.rows.length) return;
+
+    const referrer = await rawDb.execute(rawSql`
+      SELECT id FROM users
+      WHERE UPPER(REPLACE(COALESCE(referral_code, ''), ' ', ''))=${normalizedCode}
+      LIMIT 1
+    `);
+    if (!referrer.rows.length) return;
+
+    const referrerId = (referrer.rows[0] as any).id?.toString();
+    if (!referrerId || referrerId === referredUserId) return;
+
+    const rewardAmount = await getReferralRewardAmount(referralType);
+    await rawDb.execute(rawSql`
+      INSERT INTO referrals (referrer_id, referred_id, referral_type, status, reward_amount)
+      VALUES (${referrerId}::uuid, ${referredUserId}::uuid, ${referralType}, 'pending', ${rewardAmount})
+    `).catch(dbCatch("db"));
+  };
+
+  const processEligibleReferralRewards = async (referredUserId: string) => {
+    const userR = await rawDb.execute(rawSql`
+      SELECT id, user_type, COALESCE(completed_rides_count, 0) as completed_rides_count
+      FROM users WHERE id=${referredUserId}::uuid LIMIT 1
+    `);
+    if (!userR.rows.length) return;
+    const user = userR.rows[0] as any;
+    const userType = String(user.user_type || "");
+    let eligible = false;
+
+    if (userType === "customer") {
+      const completedCount = parseInt(user.completed_rides_count || "0", 10) || 0;
+      eligible = completedCount >= 1;
+    } else if (userType === "driver") {
+      const driverTripsR = await rawDb.execute(rawSql`
+        SELECT COUNT(*) as completed
+        FROM trip_requests
+        WHERE driver_id=${referredUserId}::uuid AND current_status='completed'
+      `);
+      const completedTrips =
+        parseInt((driverTripsR.rows[0] as any)?.completed || "0", 10) || 0;
+      eligible = completedTrips >= 10;
+    }
+
+    if (!eligible) return;
+
+    const pendingReferrals = await rawDb.execute(rawSql`
+      SELECT id FROM referrals
+      WHERE referred_id=${referredUserId}::uuid AND status='pending'
+    `);
+    for (const row of pendingReferrals.rows as any[]) {
+      await settleReferralReward(String(row.id)).catch(dbCatch("db"));
+    }
+  };
+
+  app.get("/api/referrals/stats", requireAdminAuth, async (req, res) => {
     try {
       const stats = await rawDb.execute(rawSql`
         SELECT
@@ -8509,12 +8027,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  app.get("/api/referrals", async (req, res) => {
+  app.get("/api/referrals", requireAdminAuth, async (req, res) => {
     try {
       const { status = "all", referralType = "all", limit = 50, offset = 0 } = req.query;
       const rows = await rawDb.execute(rawSql`
         SELECT r.*,
                ru.full_name as referrer_name, ru.phone as referrer_phone, ru.user_type as referrer_type,
+               ru.referral_code as referral_code,
                rd.full_name as referred_name, rd.phone as referred_phone
         FROM referrals r
         LEFT JOIN users ru ON ru.id = r.referrer_id
@@ -8530,31 +8049,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.patch("/api/referrals/:id/pay", requireAdminAuth, async (req, res) => {
     try {
-      // Atomic: only pay if still pending (prevents double-credit)
-      const r = await rawDb.execute(rawSql`
-        UPDATE referrals SET status = 'paid', paid_at = NOW()
-        WHERE id = ${req.params.id}::uuid AND status = 'pending'
-        RETURNING *
-      `);
-      if (!r.rows.length) return res.status(404).json({ message: "Referral not found or already paid/expired" });
-      const ref = r.rows[0] as any;
-      const rewardAmount = parseFloat(ref.reward_amount || '0');
-      // Credit referrer's wallet and log transaction
-      if (ref.referrer_id && rewardAmount > 0) {
-        await rawDb.execute(rawSql`
-          UPDATE users SET wallet_balance = wallet_balance + ${rewardAmount}
-          WHERE id = ${ref.referrer_id}::uuid
-        `).catch(dbCatch("db"));
-        const newBal = await rawDb.execute(rawSql`
-          SELECT wallet_balance FROM users WHERE id = ${ref.referrer_id}::uuid
-        `).catch(() => ({ rows: [] as any[] }));
-        const bal = parseFloat((newBal.rows[0] as any)?.wallet_balance || '0');
-        await rawDb.execute(rawSql`
-          INSERT INTO transactions (user_id, account, credit, debit, balance, transaction_type, ref_transaction_id)
-          VALUES (${ref.referrer_id}::uuid, ${'Referral bonus'}, ${rewardAmount}, 0, ${bal}, ${'referral_bonus'}, ${ref.id}::uuid)
-        `).catch(dbCatch("db"));
+      const paid = await settleReferralReward(String(req.params.id));
+      if (!paid) {
+        return res
+          .status(404)
+          .json({ message: "Referral not found or already paid/expired" });
       }
-      res.json(camelize(r.rows[0]));
+      res.json(paid);
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -8572,8 +8073,275 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // ��  MOBILE APP APIs � Driver App + Customer App                       ��
   // -----------------------------------------------------------------------
 
-  // Mobile authentication is password/session based only. FCM remains available through /api/app/fcm-token.
-  // Phone-auth, app OTP login, and token-verification auth routes are intentionally not registered.
+  // -- OTP SEND (Firebase Only) ----------------------------------------------
+  // Mobile apps use Firebase Phone Auth on-device. The server keeps only a
+  // lightweight request marker for rate limiting / telemetry and never sends SMS.
+  app.post("/api/app/send-otp", otpLimiter, async (req, res) => {
+    return res.status(410).json({
+      success: false,
+      code: "AUTH_OTP_REMOVED",
+      message: "OTP login has been removed. Use mobile number and password.",
+    });
+    try {
+      const { phone, userType = "customer" } = req.body;
+      if (!phone) return res.status(400).json({ message: "Phone required" });
+      const phoneStr = phone.toString().replace(/\D/g, "");
+      if (phoneStr.length < 10) return res.status(400).json({ message: "Invalid phone number" });
+
+      // Rate limiting: max 5 OTPs per phone per hour
+      const recentCount = await rawDb.execute(rawSql`
+        SELECT COUNT(*) as cnt FROM otp_logs WHERE phone=${phoneStr} AND created_at > NOW() - INTERVAL '1 hour'
+      `);
+      if (parseInt((recentCount.rows[0] as any)?.cnt || "0") >= 5) {
+        return res.status(429).json({ message: "Too many OTP requests. Try again after 1 hour." });
+      }
+
+      await rawDb.execute(rawSql`
+        INSERT INTO otp_logs (phone, otp, user_type, created_at, expires_at)
+        VALUES (${phoneStr}, ${'firebase'}, ${userType}, NOW(), NOW() + INTERVAL '10 minutes')
+        ON CONFLICT DO NOTHING
+      `).catch(dbCatch("db"));
+      console.log(`[OTP] ${phoneStr.slice(-4).padStart(phoneStr.length, '*')} -> Firebase`);
+      return res.json({ success: true, provider: 'firebase', message: 'Use Firebase OTP for verification.' });
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  // -- OTP VERIFY + LOGIN / REGISTER ----------------------------------------
+  app.post("/api/app/verify-otp", otpLimiter, async (req, res) => {
+    return res.status(410).json({
+      success: false,
+      code: "AUTH_OTP_REMOVED",
+      message: "OTP verification has been removed. Use mobile number and password.",
+    });
+    try {
+      const { phone, otp, userType = "customer", name, referralCode } = req.body;
+      if (!phone || !otp) return res.status(400).json({ message: "Phone and OTP required" });
+      const phoneStr = phone.toString().replace(/\D/g, "");
+      if (phoneStr.length < 10) return res.status(400).json({ message: "Invalid phone number" });
+
+      // Per-phone OTP brute force protection (max_attempts from otp_settings, default 3)
+      const otpCfg = await rawDb.execute(rawSql`SELECT max_attempts FROM otp_settings LIMIT 1`)
+        .catch(() => ({ rows: [] as any[] }));
+      const maxAttempts = parseInt((otpCfg.rows[0] as any)?.max_attempts ?? '3', 10);
+      const failedAttempts = await rawDb.execute(rawSql`
+        SELECT COUNT(*) AS cnt FROM otp_logs
+        WHERE phone=${phoneStr} AND is_used=false AND created_at > NOW() - INTERVAL '15 minutes'
+          AND attempt_count >= ${maxAttempts}
+        LIMIT 1
+      `).catch(() => ({ rows: [{ cnt: 0 }] as any[] }));
+      const recentFails = parseInt((failedAttempts.rows[0] as any)?.cnt || '0', 10);
+      if (recentFails >= 1) {
+        return res.status(429).json({ message: "Too many failed OTP attempts. Please request a new OTP after 15 minutes." });
+      }
+
+      // Check OTP
+      const otpRow = await rawDb.execute(rawSql`
+        SELECT * FROM otp_logs WHERE phone=${phoneStr} AND otp=${otp} AND is_used=false AND expires_at > NOW()
+        ORDER BY created_at DESC LIMIT 1
+      `);
+      if (!otpRow.rows.length) {
+        // Increment failed attempt counter
+        await rawDb.execute(rawSql`
+          UPDATE otp_logs SET attempt_count = COALESCE(attempt_count, 0) + 1
+          WHERE phone=${phoneStr} AND is_used=false AND expires_at > NOW()
+        `).catch(dbCatch("db"));
+        return res.status(400).json({ message: "Invalid or expired OTP" });
+      }
+
+      // Mark used
+      await rawDb.execute(rawSql`UPDATE otp_logs SET is_used=true WHERE id=${(otpRow.rows[0] as any).id}::uuid`);
+
+      // Find or create user
+      let userRes = await rawDb.execute(rawSql`SELECT * FROM users WHERE phone=${phoneStr} AND user_type=${userType} LIMIT 1`);
+      let user: any;
+      let isNew = false;
+
+      if (!userRes.rows.length) {
+        // Register new user
+        isNew = true;
+        const fullName = name || `User_${phone.slice(-4)}`;
+        const newUser = await rawDb.execute(rawSql`
+          INSERT INTO users (full_name, phone, user_type, is_active, wallet_balance)
+          VALUES (${fullName}, ${phoneStr}, ${userType}, true, 0)
+          RETURNING *
+        `);
+        await rawDb.execute(rawSql`UPDATE users SET referral_code=${'JAGOPRO' + phoneStr.slice(-6)} WHERE phone=${phoneStr} AND user_type=${userType}`).catch(dbCatch("db"));
+        user = camelize(newUser.rows[0]);
+      } else {
+        user = camelize(userRes.rows[0]);
+        if (!user.isActive) return res.status(403).json({ message: "Account deactivated. Contact support." });
+      }
+
+      // Generate secure auth token (30-day expiry)
+      const token = `${user.id}:${crypto.randomBytes(32).toString("hex")}`;
+      const tokenExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+      // Store auth token in users.auth_token (NOT in fcm_token � that's for Firebase)
+      await rawDb.execute(rawSql`UPDATE users SET auth_token=${token}, auth_token_expires_at=${tokenExpiry}, last_login_at=NOW() WHERE id=${user.id}::uuid`);
+
+      // If driver, get wallet info
+      let walletBalance = 0;
+      let isLocked = false;
+      if (userType === "driver") {
+        const walletR = await rawDb.execute(rawSql`SELECT wallet_balance, is_locked, is_online FROM users WHERE id=${user.id}::uuid`);
+        if (walletR.rows.length) {
+          walletBalance = parseFloat((walletR.rows[0] as any).wallet_balance || 0);
+          isLocked = (walletR.rows[0] as any).is_locked || false;
+        }
+      }
+
+      res.json({
+        success: true,
+        isNew,
+        token,
+        user: {
+          id: user.id,
+          fullName: user.fullName,
+          phone: user.phone,
+          email: user.email || null,
+          userType: user.userType,
+          profilePhoto: user.profilePhoto || null,
+          rating: parseFloat(user.rating || "5.0"),
+          isActive: user.isActive,
+          walletBalance,
+          isLocked,
+        }
+      });
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  // -- FIREBASE TOKEN VERIFICATION -------------------------------------------
+  app.post("/api/app/verify-firebase-token", async (req, res) => {
+    return res.status(410).json({
+      success: false,
+      code: "FIREBASE_AUTH_REMOVED",
+      message: "Firebase Phone Auth has been removed. Use password login.",
+    });
+    try {
+      const { firebaseIdToken, phone, userType = "customer" } = req.body;
+      if (!firebaseIdToken) return res.status(400).json({ message: "Firebase ID token required" });
+      if (!['customer', 'driver'].includes(userType)) return res.status(400).json({ message: "Invalid user type" });
+
+      let phoneStr = "";
+
+      // Try Firebase Admin SDK first (needs service account key � reads from DB or env)
+      const { getFirebaseAdminAsync } = await import("./fcm.js");
+      const adminInst = await getFirebaseAdminAsync();
+      if (adminInst) {
+        const decoded = await adminInst.auth().verifyIdToken(firebaseIdToken);
+        const firebasePhone = (decoded.phone_number || "").replace(/\D/g, "").slice(-10);
+        const clientPhone = (phone?.toString() || "").replace(/\D/g, "").slice(-10);
+        phoneStr = firebasePhone || clientPhone;
+        if (clientPhone && firebasePhone && clientPhone !== firebasePhone) {
+          return res.status(400).json({ message: "Phone number mismatch. Please retry login." });
+        }
+      } else {
+        // Fallback: verify token via Firebase REST API (only needs Web API key � no service account needed)
+        // Try the Web API key from env var first, then fall back to the known app key
+        const webApiKey = process.env.FIREBASE_WEB_API_KEY || '';
+        let restVerified = false;
+        let restLookupMessage = "";
+        const allowUnsafeFallback = String(
+          process.env.ALLOW_UNVERIFIED_FIREBASE_PHONE_FALLBACK || "true",
+        ).toLowerCase() === "true";
+        if (webApiKey) try {
+          const lookupRes = await fetch(
+            `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${webApiKey}`,
+            { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ idToken: firebaseIdToken }) }
+          );
+          if (lookupRes.ok) {
+            const lookupData = (await lookupRes.json()) as any;
+            const firebaseUser = lookupData.users?.[0];
+            if (firebaseUser) {
+              const firebasePhone = (firebaseUser.phoneNumber || "").replace(/\D/g, "").slice(-10);
+              const clientPhone = (phone?.toString() || "").replace(/\D/g, "").slice(-10);
+              phoneStr = firebasePhone || clientPhone;
+              if (clientPhone && firebasePhone && clientPhone !== firebasePhone) {
+                return res.status(400).json({ message: "Phone number mismatch. Please retry login." });
+              }
+              restVerified = true;
+            }
+          } else {
+            const lookupError = await lookupRes.json().catch(() => null) as any;
+            restLookupMessage = lookupError?.error?.message || "Firebase REST lookup failed";
+          }
+        } catch (restErr: any) {
+          restLookupMessage = restErr?.message || "Firebase REST lookup failed";
+        }
+
+        // Final fallback: Firebase verified on-device — trust the phone number the app sent.
+        // We no longer require a server SMS or send-otp marker for Firebase-only auth.
+        if (!restVerified) {
+          const clientPhone = (phone?.toString() || "").replace(/\D/g, "").slice(-10);
+          if (!clientPhone || clientPhone.length < 10) {
+            return res.status(400).json({ message: "Phone number required for login. Please try again." });
+          }
+          if (!allowUnsafeFallback) {
+            return res.status(503).json({
+              message: webApiKey
+                ? `Firebase token verification failed. ${restLookupMessage || "Please check Firebase Phone Auth, API key restrictions, and SHA certificates."}`
+                : "Firebase server verification is not configured. Add FIREBASE_WEB_API_KEY or Firebase Admin credentials on the server.",
+              code: "FIREBASE_SERVER_CONFIG_MISSING",
+            });
+          }
+          phoneStr = clientPhone;
+          console.warn(`[AUTH] Unsafe Firebase phone fallback used for ${clientPhone.slice(-4).padStart(10, '*')}`);
+        }
+      }
+
+      if (!phoneStr || phoneStr.length < 10) {
+        return res.status(400).json({ message: "Could not determine phone number from token" });
+      }
+
+      // Find or create user
+      let userRes = await rawDb.execute(rawSql`SELECT * FROM users WHERE phone=${phoneStr} AND user_type=${userType} LIMIT 1`);
+      let user: any;
+      let isNew = false;
+      if (!userRes.rows.length) {
+        isNew = true;
+        const fullName = `User_${phoneStr.slice(-4)}`;
+        const newUser = await rawDb.execute(rawSql`
+          INSERT INTO users (full_name, phone, user_type, is_active, wallet_balance)
+          VALUES (${fullName}, ${phoneStr}, ${userType}, true, 0)
+          RETURNING *
+        `);
+        await rawDb.execute(rawSql`UPDATE users SET referral_code=${'JAGOPRO' + phoneStr.slice(-6)} WHERE phone=${phoneStr} AND user_type=${userType}`).catch(dbCatch("db"));
+        user = camelize(newUser.rows[0]);
+      } else {
+        user = camelize(userRes.rows[0]);
+        if (!user.isActive) return res.status(403).json({ message: "Account deactivated. Contact support." });
+      }
+
+      const token = `${user.id}:${crypto.randomBytes(32).toString("hex")}`;
+      const tokenExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+      await rawDb.execute(rawSql`UPDATE users SET auth_token=${token}, auth_token_expires_at=${tokenExpiry}, last_login_at=NOW() WHERE id=${user.id}::uuid`);
+
+      let walletBalance = 0;
+      let isLocked = false;
+      if (userType === "driver") {
+        const walletR = await rawDb.execute(rawSql`SELECT wallet_balance, is_locked FROM users WHERE id=${user.id}::uuid`);
+        if (walletR.rows.length) {
+          walletBalance = parseFloat((walletR.rows[0] as any).wallet_balance || 0);
+          isLocked = (walletR.rows[0] as any).is_locked || false;
+        }
+      }
+
+      res.json({
+        success: true, isNew, token,
+        user: {
+          id: user.id, fullName: user.fullName, phone: user.phone,
+          email: user.email || null, userType: user.userType,
+          profilePhoto: user.profilePhoto || null,
+          rating: parseFloat(user.rating || "5.0"),
+          isActive: user.isActive, walletBalance, isLocked,
+        }
+      });
+    } catch (e: any) {
+      if (e.code && String(e.code).startsWith("auth/")) {
+        return res.status(401).json({ message: "Invalid or expired Firebase token. Please retry." });
+      }
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
+  });
 
   // -- PASSWORD-BASED REGISTER -----------------------------------------------
   app.post("/api/app/register", loginLimiter, async (req, res) => {
@@ -8581,47 +8349,39 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const { phone, password, fullName, userType = "customer", email } = req.body;
       if (!phone || !password || !fullName) return res.status(400).json({ message: "Phone, password and name are required" });
       if (!['customer', 'driver'].includes(userType)) return res.status(400).json({ message: "Invalid user type" });
-      const phoneStr = normalizePhone(phone);
+      const phoneStr = String(phone).replace(/\D/g, "").slice(-10);
+      const nameStr = String(fullName).trim();
+      const emailStr = email ? String(email).trim().toLowerCase() : null;
+      const passwordStr = String(password);
       if (phoneStr.length !== 10) return res.status(400).json({ message: "Enter a valid 10-digit phone number" });
-      if (fullName.length > 100) return res.status(400).json({ message: "Name too long (max 100 chars)" });
-      if (email && email.length > 200) return res.status(400).json({ message: "Email too long" });
-      if (password.length < 8) return res.status(400).json({ message: "Password must be at least 8 characters" });
-      logRegistrationAudit("register.request", req.body, { phone: maskPhone(phoneStr) });
-      const passwordHash = await hashPassword(password);
-      const session = await rawDb.transaction(async (trx) =>
-        provisionAppUserSessionTx(trx, {
-          phone: phoneStr,
-          userType,
-          fullName,
-          email: email || null,
-          passwordHash,
-          referralCode: req.body?.referralCode || null,
-          vehicleType: userType === "driver" ? "bike" : null,
-        })
-      );
-      res.json({
-        success: true,
-        isNew: session.isNew,
-        token: session.token,
-        refreshToken: session.refreshToken,
-        user: {
-          id: session.user.id,
-          fullName: session.user.fullName || session.user.name,
-          phone: session.user.phone || session.user.mobile,
-          email: session.user.email || null,
-          userType: session.user.userType,
-          walletBalance: safeFloat(session.user.walletBalance, 0),
-        },
-      });
-    } catch (e: any) {
-      console.error("[register] /api/app/register failed", {
-        message: e?.message,
-        stack: e?.stack,
-        phone: req.body?.phone,
-        userType: req.body?.userType,
-      });
-      res.status(500).json({ message: safeErrMsg(e) });
-    }
+      if (nameStr.length < 2 || nameStr.length > 100) return res.status(400).json({ message: "Enter a valid full name" });
+      if (emailStr && (emailStr.length > 200 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailStr))) return res.status(400).json({ message: "Enter a valid email address" });
+      if (!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/.test(passwordStr)) {
+        return res.status(400).json({ message: "Password must be at least 8 characters and include upper, lower and number" });
+      }
+      const existing = await rawDb.execute(rawSql`SELECT id FROM users WHERE phone=${phoneStr} AND user_type=${userType} LIMIT 1`);
+      if (existing.rows.length) return res.status(409).json({ message: "Account already exists. Please login." });
+      const passwordHash = await hashPassword(passwordStr);
+      const initialVerificationStatus = userType === "driver" ? "pending" : "approved";
+      const insertRes = await rawDb.execute(rawSql`
+        INSERT INTO users (full_name, phone, email, user_type, is_active, wallet_balance, password_hash, verification_status)
+        VALUES (${nameStr}, ${phoneStr}, ${emailStr}, ${userType}, true, 0, ${passwordHash}, ${initialVerificationStatus})
+        RETURNING *
+      `);
+      // Set referral_code separately (handles DB where column may not exist yet)
+      const refCode = 'JAGOPRO' + phoneStr.slice(-6);
+      await rawDb.execute(rawSql`UPDATE users SET referral_code=${refCode} WHERE phone=${phoneStr} AND user_type=${userType}`).catch(dbCatch("db"));
+      const user = camelize(insertRes.rows[0]) as any;
+      const token = `${user.id}:${crypto.randomBytes(32).toString("hex")}`;
+      const tokenExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+      await rawDb.execute(rawSql`UPDATE users SET auth_token=${token}, auth_token_expires_at=${tokenExpiry} WHERE id=${user.id}::uuid`);
+      await createPendingReferral({
+        referralCode: req.body.referralCode,
+        referredUserId: user.id,
+        referralType: userType,
+      }).catch(dbCatch("db"));
+      res.json({ success: true, isNew: true, token, user: { id: user.id, fullName: user.fullName, phone: user.phone, email: user.email || null, userType: user.userType, verificationStatus: user.verificationStatus, walletBalance: 0 } });
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
   // -- PASSWORD-BASED LOGIN --------------------------------------------------
@@ -8630,149 +8390,108 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const { phone, password, userType = "customer" } = req.body;
       if (!phone || !password) return res.status(400).json({ message: "Phone and password are required" });
-      const phoneStr = normalizePhone(phone);
+      const phoneStr = String(phone).replace(/\D/g, "").slice(-10);
       if (phoneStr.length !== 10) return res.status(400).json({ message: "Enter a valid 10-digit phone number" });
-      const userRes = await rawDb.execute(rawSql`
-        SELECT * FROM users
-        WHERE (phone=${phoneStr} OR mobile=${phoneStr})
-          AND (
-            user_type=${userType}
-            OR (${userType}='customer' AND role IN ('user', 'customer'))
-            OR (${userType}='driver' AND role IN ('driver', 'pilot'))
-          )
-        LIMIT 1
-      `);
+      const userRes = await rawDb.execute(rawSql`SELECT * FROM users WHERE phone=${phoneStr} AND user_type=${userType} LIMIT 1`);
       if (!userRes.rows.length) return res.status(404).json({ message: "No account found. Please register first." });
       const user = camelize(userRes.rows[0]) as any;
-      const requestedUserType = String(userType).toLowerCase();
-      if (requestedUserType === "customer" && !canUseCustomerApp(user)) {
-        return res.status(403).json({ message: "Customer access required" });
-      }
-      if (requestedUserType === "driver" && !canUseDriverApp(user)) {
-        return res.status(403).json({ message: "Driver access required" });
-      }
       if (!user.isActive) return res.status(403).json({ message: "Account deactivated. Contact support." });
-      if (!user.passwordHash) return res.status(400).json({ message: "Password not set. Please use Forgot Password to set one." });
+      if (!user.passwordHash) return res.status(400).json({ message: "Password not set. Please request a password reset." });
       const match = await verifyPassword(password, user.passwordHash);
       if (!match) return res.status(401).json({ message: "Incorrect password. Please try again." });
       const token = `${user.id}:${crypto.randomBytes(32).toString("hex")}`;
       const tokenExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-      await rawDb.execute(rawSql`
-        UPDATE users
-        SET auth_token=${token},
-            auth_token_expires_at=${tokenExpiry},
-            last_login_at=NOW()
-        WHERE id=${user.id}::uuid
-      `);
-      const refreshToken = `${user.id}:refresh:${crypto.randomBytes(32).toString("hex")}`;
-      const refreshTokenExpiry = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
-      await rawDb.execute(rawSql`
-        UPDATE users
-        SET refresh_token=${refreshToken},
-            refresh_token_expires_at=${refreshTokenExpiry}
-        WHERE id=${user.id}::uuid
-      `);
+      await rawDb.execute(rawSql`UPDATE users SET auth_token=${token}, auth_token_expires_at=${tokenExpiry} WHERE id=${user.id}::uuid`);
       const walletBalance = safeFloat(user.walletBalance, 0);
-      const effectiveUserType = requestedUserType === "driver" ? "driver" : "customer";
-      res.json({ success: true, token, refreshToken, user: { id: user.id, fullName: user.fullName || user.name, phone: user.phone || user.mobile, email: user.email || null, userType: effectiveUserType, profilePhoto: user.profilePhoto || user.profileImage || null, rating: safeFloat(user.rating, 5.0), isActive: user.isActive, walletBalance, isLocked: user.isLocked || false } });
+      res.json({ success: true, token, user: { id: user.id, fullName: user.fullName, phone: user.phone, email: user.email || null, userType: user.userType, verificationStatus: user.verificationStatus, profilePhoto: user.profilePhoto || null, rating: safeFloat(user.rating, 5.0), isActive: user.isActive, walletBalance, isLocked: user.isLocked || false } });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  app.post("/api/app/auth/refresh", async (req, res) => {
-    try {
-      const refreshToken = req.headers.authorization?.replace("Bearer ", "")?.trim() || "";
-      if (!refreshToken) return res.status(401).json({ message: "No refresh token provided" });
-      const parts = refreshToken.split(":");
-      if (parts.length < 3 || parts[1] !== "refresh") {
-        return res.status(401).json({ message: "Invalid refresh token format" });
-      }
-
-      const userId = parts[0];
-      const userRes = await rawDb.execute(rawSql`
-        SELECT *
-        FROM users
-        WHERE id=${userId}::uuid
-          AND is_active=true
-          AND refresh_token=${refreshToken}
-          AND (refresh_token_expires_at IS NULL OR refresh_token_expires_at > NOW())
-        LIMIT 1
-      `);
-      if (!userRes.rows.length) {
-        return res.status(401).json({ message: "Refresh token expired. Please login again." });
-      }
-
-      const user = camelize(userRes.rows[0]) as any;
-      const nextAccessToken = `${user.id}:${crypto.randomBytes(32).toString("hex")}`;
-      const nextRefreshToken = `${user.id}:refresh:${crypto.randomBytes(32).toString("hex")}`;
-      const nextAccessExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-      const nextRefreshExpiry = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
-
-      await rawDb.execute(rawSql`
-        UPDATE users
-        SET auth_token=${nextAccessToken},
-            auth_token_expires_at=${nextAccessExpiry},
-            refresh_token=${nextRefreshToken},
-            refresh_token_expires_at=${nextRefreshExpiry},
-            last_login_at=NOW()
-        WHERE id=${user.id}::uuid
-      `);
-
-      const effectiveUserType = canUseDriverApp(user) ? "driver" : "customer";
-      res.json({
-        success: true,
-        accessToken: nextAccessToken,
-        refreshToken: nextRefreshToken,
-        user: {
-          id: user.id,
-          fullName: user.fullName || user.name,
-          phone: user.phone || user.mobile,
-          email: user.email || null,
-          userType: effectiveUserType,
-          profilePhoto: user.profilePhoto || user.profileImage || null,
-          rating: safeFloat(user.rating, 5.0),
-          isActive: user.isActive,
-          walletBalance: safeFloat(user.walletBalance, 0),
-          isLocked: user.isLocked || false,
-        },
-      });
-    } catch (e: any) {
-      res.status(500).json({ message: safeErrMsg(e) });
-    }
-  });
-
-  // -- FORGOT PASSWORD -------------------------------------------------------
-  // Password reset is intentionally support/admin mediated until a non-OTP
-  // recovery channel is configured.
+  // -- FORGOT PASSWORD (manual support reset, no OTP/Firebase) ---------------
   app.post("/api/app/forgot-password", otpLimiter, async (req, res) => {
     try {
       const { phone, userType = "customer" } = req.body;
       if (!phone) return res.status(400).json({ message: "Phone number is required" });
-      const phoneStr = normalizePhone(phone);
+      const phoneStr = phone.toString().replace(/\D/g, "");
       if (phoneStr.length < 10) return res.status(400).json({ message: "Invalid phone number" });
-      const userRes = await rawDb.execute(rawSql`
-        SELECT id FROM users
-        WHERE (phone=${phoneStr} OR mobile=${phoneStr}) AND user_type=${userType}
-        LIMIT 1
-      `);
+      const userRes = await rawDb.execute(rawSql`SELECT id FROM users WHERE phone=${phoneStr} AND user_type=${userType} LIMIT 1`);
       if (!userRes.rows.length) return res.status(404).json({ message: "No account found with this phone number." });
-      console.log(`[RESET] ${phoneStr.slice(-4).padStart(phoneStr.length, '*')} password reset support required`);
-      res.status(423).json({
-        success: false,
-        code: "PASSWORD_RESET_SUPPORT_REQUIRED",
-        message: "Password reset is handled by support/admin verification. Please contact support.",
+      console.log(`[RESET] ${phoneStr.slice(-4).padStart(phoneStr.length, '*')} -> support password reset`);
+      res.json({
+        success: true,
+        provider: 'support',
+        message: 'Password reset request received. Support will verify ownership before changing the password.',
       });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
   // -- RESET PASSWORD (verify OTP + set new password) ------------------------
-  app.post("/api/app/reset-password", async (_req, res) => {
+  app.post("/api/app/reset-password", async (req, res) => {
     return res.status(410).json({
       success: false,
-      code: "PASSWORD_RESET_SUPPORT_REQUIRED",
-      message: "Password reset via OTP is removed. Please contact support/admin verification.",
+      code: "AUTH_OTP_REMOVED",
+      message: "OTP password reset has been removed. Use support-assisted password reset.",
     });
+    try {
+      const { phone, otp, newPassword, userType = "customer" } = req.body;
+      if (!phone || !otp || !newPassword) return res.status(400).json({ message: "Phone, OTP and new password are required" });
+      const phoneStr = phone.toString().replace(/\D/g, "");
+      if (phoneStr.length < 10) return res.status(400).json({ message: "Invalid phone number" });
+      if (newPassword.length < 6) return res.status(400).json({ message: "Password must be at least 6 characters" });
+      const userRes = await rawDb.execute(rawSql`SELECT * FROM users WHERE phone=${phoneStr} AND user_type=${userType} AND reset_otp=${otp} AND reset_otp_expiry > NOW() LIMIT 1`);
+       if (!userRes.rows.length) return res.status(400).json({ message: "Invalid or expired OTP. Please try again." });
+      const passwordHash = await hashPassword(newPassword);
+      await rawDb.execute(rawSql`UPDATE users SET password_hash=${passwordHash}, reset_otp=NULL, reset_otp_expiry=NULL WHERE phone=${phoneStr} AND user_type=${userType}`);
+      res.json({ success: true, message: "Password reset successfully. Please login with your new password." });
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
+  // -- Reset password via Firebase token (SMS-free flow) --------------------
+  app.post("/api/app/reset-password-firebase", async (req, res) => {
+    return res.status(410).json({
+      success: false,
+      code: "FIREBASE_AUTH_REMOVED",
+      message: "Firebase password reset has been removed. Request a password reset through support.",
+    });
+    try {
+      const { firebaseIdToken, phone, newPassword, userType = "customer" } = req.body;
+      if (!firebaseIdToken || !phone || !newPassword) {
+        return res.status(400).json({ message: "Firebase token, phone and new password are required" });
+      }
+      if (newPassword.length < 6) return res.status(400).json({ message: "Password must be at least 6 characters" });
+      const phoneStr = phone.toString().replace(/\D/g, "").slice(-10);
+      if (phoneStr.length < 10) return res.status(400).json({ message: "Invalid phone number" });
+
+      // Verify Firebase token
+      let firebasePhone = "";
+      const { getFirebaseAdminAsync } = await import("./fcm.js");
+      const adminInst = await getFirebaseAdminAsync();
+      if (adminInst) {
+        const decoded = await adminInst.auth().verifyIdToken(firebaseIdToken);
+        firebasePhone = (decoded.phone_number || "").replace(/\D/g, "").slice(-10);
+      } else {
+        const webApiKey = process.env.FIREBASE_WEB_API_KEY;
+        if (!webApiKey) return res.status(503).json({ message: "Firebase not configured. Contact support." });
+        const lookupRes = await fetch(
+          `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${webApiKey}`,
+          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ idToken: firebaseIdToken }) }
+        );
+        if (!lookupRes.ok) return res.status(401).json({ message: "Invalid or expired Firebase token." });
+        const lookupData = (await lookupRes.json()) as any;
+        firebasePhone = (lookupData.users?.[0]?.phoneNumber || "").replace(/\D/g, "").slice(-10);
+      }
+      if (!firebasePhone) return res.status(401).json({ message: "Could not verify phone from Firebase token." });
+      if (firebasePhone !== phoneStr) return res.status(400).json({ message: "Phone number mismatch." });
+
+      // Check user exists
+      const userRes = await rawDb.execute(rawSql`SELECT id FROM users WHERE phone=${phoneStr} AND user_type=${userType} LIMIT 1`);
+      if (!userRes.rows.length) return res.status(404).json({ message: "User not found." });
+
+      const passwordHash = await hashPassword(newPassword);
+      await rawDb.execute(rawSql`UPDATE users SET password_hash=${passwordHash}, reset_otp=NULL, reset_otp_expiry=NULL WHERE phone=${phoneStr} AND user_type=${userType}`);
+      res.json({ success: true, message: "Password reset successfully. Please login with your new password." });
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
 
   // -- AUTH MIDDLEWARE (simple token check) ---------------------------------
   async function authApp(req: Request, res: Response, next: NextFunction) {
@@ -8793,22 +8512,45 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(401).json({ message: "Auth failed" }); }
   }
 
+  // Optional auth for public-but-better-with-session endpoints like mapping.
+  // If a token is present we attach currentUser, but we do not block the request.
+  async function optionalAuthApp(req: Request, _res: Response, next: NextFunction) {
+    try {
+      const token = req.headers.authorization?.replace("Bearer ", "");
+      if (!token) {
+        next();
+        return;
+      }
+      const parts = token.split(":");
+      if (parts.length < 2) {
+        next();
+        return;
+      }
+      const userId = parts[0];
+      const userR = await rawDb.execute(rawSql`
+        SELECT * FROM users WHERE id=${userId}::uuid AND is_active=true AND auth_token=${token}
+          AND (auth_token_expires_at IS NULL OR auth_token_expires_at > NOW()) LIMIT 1
+      `);
+      if (userR.rows.length) {
+        (req as any).currentUser = camelize(userR.rows[0]);
+      }
+    } catch (_) {
+      // Mapping and config flows should keep working even if auth is stale.
+    }
+    next();
+  }
+
   // Role-specific guards � always used after authApp
   function requireDriver(req: Request, res: Response, next: NextFunction) {
     const user = (req as any).currentUser;
-    if (!canUseDriverApp(user)) return res.status(403).json({ message: "Driver access required" });
-    (req as any).currentUser = { ...user, userType: "driver" };
+    if (user?.userType !== "driver") return res.status(403).json({ message: "Driver access required" });
     next();
   }
   function requireCustomer(req: Request, res: Response, next: NextFunction) {
     const user = (req as any).currentUser;
-    if (!canUseCustomerApp(user)) return res.status(403).json({ message: "Customer access required" });
-    (req as any).currentUser = { ...user, userType: "customer" };
+    if (user?.userType !== "customer") return res.status(403).json({ message: "Customer access required" });
     next();
   }
-
-  registerOutstationPoolV2Routes(app, authApp);
-  registerRollingPoolRoutes(app, authApp, requireAdminAuth);
 
   // -- DRIVER: Go Online / Offline + Location Update -------------------------
   app.post("/api/app/driver/location", authApp, requireDriver, async (req, res) => {
@@ -8927,36 +8669,50 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             message: lockMsg, isLocked: true, walletBalance: currentBalance
           });
         }
-        // Per-service subscription check: service_revenue_config is the source of truth.
+        // Per-service subscription check: use model based on driver's vehicle category type
+        const modelAllR = await rawDb.execute(rawSql`SELECT key_name, value FROM revenue_model_settings`);
+        const mS: any = {};
+        modelAllR.rows.forEach((row: any) => { mS[(row as any).key_name] = (row as any).value; });
+        // Get driver's vehicle category type
         const driverVehicleR = await rawDb.execute(rawSql`
-          SELECT vc.type, vc.service_type, vc.vehicle_type, vc.slug, vc.name, vc.is_carpool
-          FROM driver_details dd
+          SELECT vc.type as vehicle_type FROM driver_details dd
           JOIN vehicle_categories vc ON vc.id = dd.vehicle_category_id
           WHERE dd.user_id = ${driver.id}::uuid
         `);
-        const moduleName = revenueModuleFromVehicleCategory(driverVehicleR.rows[0] as any);
-        try {
-          await enforceDriverRevenuePolicy(driver.id, moduleName);
-        } catch (policyErr: any) {
-          return res.status(policyErr.statusCode || 403).json({
-            message: policyErr.message || "Subscription required for this service.",
-            code: policyErr.code || "SUBSCRIPTION_REQUIRED",
-            moduleName,
-            subscriptionExpired: policyErr.code === "SUBSCRIPTION_REQUIRED",
-            requiresSubscription: policyErr.code === "SUBSCRIPTION_REQUIRED",
-            isLocked: false
-          });
+        const vehicleType = (driverVehicleR.rows[0] as any)?.vehicle_type || 'ride';
+        let relevantModelKey = 'rides_model';
+        if (vehicleType === 'parcel') relevantModelKey = 'parcels_model';
+        else if (vehicleType === 'cargo') relevantModelKey = 'cargo_model';
+        const activeModel = mS[relevantModelKey] || mS['active_model'] || "commission";
+        if (activeModel === "subscription" || activeModel === "hybrid") {
+          // Re-check free period here so it bypasses the system-model subscription gate too
+          const fp2R = await rawDb.execute(rawSql`SELECT launch_free_active, free_period_end FROM users WHERE id=${driver.id}::uuid LIMIT 1`).catch(() => ({ rows: [] as any[] }));
+          const fp2 = fp2R.rows[0] as any;
+          const inFP2 = fp2?.launch_free_active === true && fp2?.free_period_end && new Date(fp2.free_period_end) >= new Date();
+          if (!inFP2) {
+            const subR = await rawDb.execute(rawSql`
+              SELECT id, end_date, is_active FROM driver_subscriptions
+              WHERE driver_id=${driver.id}::uuid AND is_active=true AND end_date >= CURRENT_DATE
+              ORDER BY end_date DESC LIMIT 1
+            `);
+            if (!subR.rows.length) {
+              return res.status(403).json({
+                message: "Subscription required. Please purchase or renew your subscription to go online.",
+                subscriptionExpired: true, requiresSubscription: true, isLocked: false
+              });
+            }
+            const sub = subR.rows[0] as any;
+            const daysLeft = Math.ceil((new Date(sub.end_date).getTime() - Date.now()) / 86400000);
+            if (daysLeft <= 2) {
+              res.setHeader("X-Subscription-Warning", `Subscription expires in ${daysLeft} day(s)`);
+            }
+          }
         }
       }
       const lat = req.body.lat;
       const lng = req.body.lng;
       const hasValidCoords = lat != null && lng != null && isFinite(Number(lat)) && isFinite(Number(lng)) && (Number(lat) !== 0 || Number(lng) !== 0);
       await rawDb.execute(rawSql`UPDATE users SET is_online=${isOnline} WHERE id=${driver.id}::uuid`);
-      await rawDb.execute(rawSql`
-        UPDATE driver_details
-        SET availability_status=${isOnline ? "online" : "offline"}
-        WHERE user_id=${driver.id}::uuid
-      `);
       // UPSERT driver_locations � only update lat/lng if we have a real GPS fix; never write 0,0
       if (hasValidCoords) {
         await rawDb.execute(rawSql`
@@ -9049,16 +8805,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const stage = (active.rows[0] as any).current_status;
         return res.json({ trip: camelize(active.rows[0]), stage });
       }
+      const activelyOffered = getCurrentOfferedTripForDriver(driver.id);
+      if (activelyOffered) {
+        return res.json({ trip: activelyOffered.trip, stage: "new_request" });
+      }
       // 2. Check driver location + vehicle category to find matching nearby trips
       const locR = await rawDb.execute(rawSql`
-        SELECT dl.lat, dl.lng, dd.vehicle_category_id
+        SELECT dl.lat, dl.lng, COALESCE(dd.vehicle_category_id, u.vehicle_category_id) as vehicle_category_id
         FROM driver_locations dl
+        JOIN users u ON u.id = dl.driver_id
         LEFT JOIN driver_details dd ON dd.user_id = dl.driver_id
         WHERE dl.driver_id=${driver.id}::uuid
       `);
       if (!locR.rows.length) return res.json({ trip: null });
       const { lat, lng, vehicle_category_id } = locR.rows[0] as any;
-      // Show matching searching trip within 15km radius
+      // Legacy fallback only: skip trips already managed by the dispatch engine.
       const searching = await rawDb.execute(rawSql`
         SELECT t.*, c.full_name as customer_name, c.phone as customer_phone,
           vc.name as vehicle_name, vc.icon as vehicle_icon,
@@ -9073,10 +8834,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           AND NOT (${driver.id}::uuid = ANY(COALESCE(t.rejected_driver_ids, '{}'::uuid[])))
           ${vehicle_category_id ? rawSql`AND t.vehicle_category_id = ${vehicle_category_id}::uuid` : rawSql``}
           AND (t.pickup_lat - ${Number(lat)})*(t.pickup_lat - ${Number(lat)}) + (t.pickup_lng - ${Number(lng)})*(t.pickup_lng - ${Number(lng)}) < 0.02
-        ORDER BY (t.pickup_lat - ${Number(lat)})*(t.pickup_lat - ${Number(lat)}) + (t.pickup_lng - ${Number(lng)})*(t.pickup_lng - ${Number(lng)}) ASC LIMIT 1
+        ORDER BY (t.pickup_lat - ${Number(lat)})*(t.pickup_lat - ${Number(lat)}) + (t.pickup_lng - ${Number(lng)})*(t.pickup_lng - ${Number(lng)}) ASC LIMIT 5
       `);
-      if (searching.rows.length) {
-        return res.json({ trip: camelize(searching.rows[0]), stage: "new_request" });
+      for (const row of searching.rows) {
+        const trip = camelize(row) as any;
+        if (hasActiveDispatch(trip.id)) continue;
+        const requirements = await resolveDispatchRequirementsFromTrip(trip.id);
+        if (!requirements) continue;
+        const eligibility = await isDriverEligibleForDispatch(driver.id, requirements);
+        if (!eligibility.eligible) continue;
+        return res.json({ trip, stage: "new_request" });
       }
       res.json({ trip: null });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
@@ -9096,9 +8863,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         LEFT JOIN vehicle_categories vc ON vc.id = t.vehicle_category_id
         WHERE t.driver_id = ${driver.id}::uuid
           AND t.current_status IN ('driver_assigned','accepted','arrived','on_the_way')
+          AND t.updated_at > NOW() - INTERVAL '12 hours'
         ORDER BY t.updated_at DESC LIMIT 1
       `);
-      res.json({ trip: r.rows.length ? camelize(r.rows[0]) : null });
+      const trip = r.rows.length ? camelize(r.rows[0]) : null;
+      if (!trip) {
+        await rawDb.execute(rawSql`UPDATE users SET current_trip_id=NULL WHERE id=${driver.id}::uuid`).catch(() => {});
+      }
+      if (trip?.id) {
+        await noteRecoveryAudit({
+          tripId: String(trip.id),
+          eventType: "driver_active_trip_restored",
+          actorId: driver.id,
+          actorType: "driver",
+          meta: { source: "driver_active_trip_endpoint", currentStatus: trip.currentStatus },
+          dedupeKey: `${trip.id}:${driver.id}:driver_active_trip_restored`,
+          dedupeWindowMs: 60_000,
+        }).catch(() => {});
+      }
+      res.json({ trip });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -9108,26 +8891,94 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const driver = (req as any).currentUser;
       const { tripId } = req.body;
       const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      if (!tripId || !uuidRe.test(tripId)) return res.status(400).json({ message: "Invalid trip ID" });
-
-      // Subscription/commission gate is module-based and controlled from Admin > Revenue Model.
-      const tripTypeR = await rawDb.execute(rawSql`
-        SELECT t.trip_type, t.vehicle_category_id,
-          vc.type as vc_type, vc.service_type, vc.vehicle_type, vc.slug, vc.name as vehicle_name, vc.is_carpool
-        FROM trip_requests t
-        LEFT JOIN vehicle_categories vc ON vc.id = t.vehicle_category_id
-        WHERE t.id=${tripId}::uuid
-        LIMIT 1
-      `).catch(() => ({ rows: [] as any[] }));
-      const revenueModule = revenueModuleFromTripRow(tripTypeR.rows[0] as any);
-      try {
-        await enforceDriverRevenuePolicy(driver.id, revenueModule);
-      } catch (policyErr: any) {
-        return res.status(policyErr.statusCode || 403).json({
-          message: policyErr.message || "Subscription required for this service.",
-          code: policyErr.code || "SUBSCRIPTION_REQUIRED",
-          moduleName: revenueModule,
+      if (!tripId || !uuidRe.test(tripId)) {
+        return res.status(400).json({ message: "Invalid trip ID", code: "INVALID_TRIP_ID" });
+      }
+      if (hasActiveDispatch(tripId) && !isDriverCurrentlyOfferedTrip(tripId, driver.id)) {
+        return res.status(409).json({
+          message: "This ride request is no longer assigned to you.",
+          code: "TRIP_NOT_ASSIGNED",
         });
+      }
+
+      const dispatchRequirements = await resolveDispatchRequirementsFromTrip(tripId);
+      if (!dispatchRequirements) {
+        return res.status(404).json({ message: "Trip not found", code: "TRIP_NOT_FOUND" });
+      }
+      const driverEligibility = await isDriverEligibleForDispatch(driver.id, dispatchRequirements);
+      if (!driverEligibility.eligible) {
+        const reason = String(driverEligibility.reason || "dispatch_mismatch");
+        const codeMap: Record<string, string> = {
+          service_disabled: "SERVICE_DISABLED",
+          driver_not_found: "DRIVER_NOT_FOUND",
+          driver_inactive: "DRIVER_INACTIVE",
+          driver_locked: "DRIVER_LOCKED",
+          driver_offline: "DRIVER_OFFLINE",
+          driver_busy: "DRIVER_BUSY",
+          driver_not_approved: "DRIVER_NOT_APPROVED",
+          vehicle_category_mismatch: "VEHICLE_MISMATCH",
+          service_not_enabled: "SERVICE_NOT_ENABLED",
+          parcel_not_enabled: "PARCEL_NOT_ENABLED",
+          pool_not_enabled: "POOL_NOT_ENABLED",
+          seat_capacity_low: "SEAT_CAPACITY_LOW",
+          outstation_not_enabled: "OUTSTATION_NOT_ENABLED",
+          intercity_not_enabled: "INTERCITY_NOT_ENABLED",
+          city_not_enabled: "CITY_NOT_ENABLED",
+          city_mismatch: "CITY_MISMATCH",
+        };
+        console.warn("[ACCEPT_TRIP] dispatch mismatch", {
+          tripId,
+          driverId: driver.id,
+          reason,
+          tripType: dispatchRequirements.tripType,
+          platformServiceKey: dispatchRequirements.platformServiceKey,
+          vehicleCategoryId: dispatchRequirements.vehicleCategoryId,
+        });
+        return res.status(409).json({
+          message: `Driver not eligible for this booking: ${reason}`,
+          code: codeMap[reason] || "DISPATCH_MISMATCH",
+          reason,
+        });
+      }
+
+      // -- Subscription gate: rides use subscription model; parcels use commission (no gate) --
+      const tripTypeR = await rawDb.execute(rawSql`
+        SELECT trip_type FROM trip_requests WHERE id=${tripId}::uuid LIMIT 1
+      `).catch(() => ({ rows: [] as any[] }));
+      const tripType = (tripTypeR.rows[0] as any)?.trip_type || 'normal';
+      const isParcelTrip = tripType === 'parcel' || tripType === 'delivery' || tripType === 'cargo';
+      if (!isParcelTrip) {
+        // Ride trip: check subscription model setting
+        const ridesModelR = await rawDb.execute(rawSql`
+          SELECT value FROM revenue_model_settings WHERE key_name='rides_model' LIMIT 1
+        `).catch(() => ({ rows: [] as any[] }));
+        const ridesModel = (ridesModelR.rows[0] as any)?.value || 'subscription';
+        // Both 'subscription' and 'hybrid' models require an active subscription or free period
+        if (['subscription', 'hybrid'].includes(ridesModel)) {
+          const freeR = await rawDb.execute(rawSql`
+            SELECT launch_free_active, free_period_end FROM users WHERE id=${driver.id}::uuid LIMIT 1
+          `).catch(() => ({ rows: [] as any[] }));
+          const freeRow = freeR.rows[0] as any;
+          const inFreePeriod = freeRow?.launch_free_active === true
+            && freeRow?.free_period_end
+            && new Date(freeRow.free_period_end) >= new Date();
+          if (!inFreePeriod) {
+            const subR = await rawDb.execute(rawSql`
+              SELECT id FROM driver_subscriptions
+              WHERE driver_id = ${driver.id}::uuid
+                AND is_active = true
+                AND end_date > NOW()
+              LIMIT 1
+            `);
+        if (!subR.rows.length) {
+              // return res.status(403).json({
+              //   message: "Active subscription required to accept rides. Please subscribe to continue.",
+              //   code: "SUBSCRIPTION_REQUIRED",
+              // });
+              console.log(`[DRIVER_ACCEPT] Driver ${driver.id} - Subscription missing, but ALLOWING for test`);
+            }
+          }
+        }
       }
 
       // -- Account lock check ------------------------------------------------
@@ -9146,15 +8997,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // if driver already has an active trip this UPDATE returns 0 rows.
       const r = await rawDb.execute(rawSql`
         UPDATE trip_requests
-        SET current_status='accepted',
-            status='ACCEPTED',
-            assigned_at=COALESCE(assigned_at, NOW()),
-            accepted_at=COALESCE(accepted_at, NOW()),
-            driver_assigned_at=COALESCE(driver_assigned_at, NOW()),
-            driver_accepted_at=NOW(),
-            driver_arriving_at=NOW(),
-            pickup_otp=${otp},
-            driver_id=${driver.id}::uuid
+        SET current_status='accepted', driver_accepted_at=NOW(), driver_arriving_at=NOW(), pickup_otp=${otp}, driver_id=${driver.id}::uuid
         WHERE id=${tripId}::uuid
           AND current_status IN ('searching','driver_assigned')
           AND (driver_id IS NULL OR driver_id=${driver.id}::uuid)
@@ -9165,7 +9008,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         // Fallback: Check what the real status is, in case it was hijacked or already completed
         const exists = await rawDb.execute(rawSql`SELECT * FROM trip_requests WHERE id=${tripId}::uuid`);
         if (!exists.rows.length) {
-          return res.status(400).json({ message: "Cannot accept trip: Not found" });
+          return res.status(404).json({ message: "Cannot accept trip: Not found", code: "TRIP_NOT_FOUND" });
         }
         const info = exists.rows[0] as any;
         if (info.current_status === 'accepted') {
@@ -9174,16 +9017,46 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             // Just populate r.rows and proceed.
             r.rows = [info];
           } else {
-            return res.status(409).json({ message: "Trip already accepted by another driver" });
+            return res.status(409).json({ message: "Trip already accepted by another driver", code: "TRIP_ALREADY_TAKEN" });
           }
         } else {
-          if (info.current_status === 'cancelled') return res.status(400).json({ message: "Trip was cancelled by customer" });
-          return res.status(400).json({ message: "Cannot accept trip in status: " + info.current_status });
+          if (info.current_status === 'cancelled') {
+            return res.status(409).json({ message: "Trip was cancelled by customer", code: "TRIP_CANCELLED" });
+          }
+          return res.status(409).json({
+            message: "Cannot accept trip in status: " + info.current_status,
+            code: "INVALID_TRIP_STATUS",
+          });
         }
       }
 
-      // Mark driver as on current trip
-      await rawDb.execute(rawSql`UPDATE users SET current_trip_id=${tripId}::uuid WHERE id=${driver.id}::uuid`);
+      // Reserve the driver atomically. If another accept already attached this driver to a different trip,
+      // release this claim immediately so one driver cannot own two trips at once.
+      const driverClaim = await rawDb.execute(rawSql`
+        UPDATE users
+        SET current_trip_id=${tripId}::uuid
+        WHERE id=${driver.id}::uuid
+          AND (current_trip_id IS NULL OR current_trip_id=${tripId}::uuid)
+        RETURNING current_trip_id
+      `);
+      if (!driverClaim.rows.length) {
+        await rawDb.execute(rawSql`
+          UPDATE trip_requests
+          SET current_status='searching',
+              driver_id=NULL,
+              pickup_otp=NULL,
+              driver_accepted_at=NULL,
+              driver_arriving_at=NULL,
+              rejected_driver_ids = array_append(COALESCE(rejected_driver_ids,'{}'), ${driver.id}::uuid)
+          WHERE id=${tripId}::uuid
+            AND driver_id=${driver.id}::uuid
+            AND current_status='accepted'
+        `).catch(dbCatch("db"));
+        onDriverRejected(tripId, driver.id).catch((err: any) => {
+          console.error('[DISPATCH] accept rollback onDriverRejected error:', err.message);
+        });
+        return res.status(409).json({ message: "Driver already has another active trip", code: "DRIVER_BUSY" });
+      }
 
       // Notify dispatch engine � clears timers and notifies other drivers
       // Notify dispatch engine – clears timers and notifies other drivers
@@ -9225,22 +9098,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       // ?? Socket: notify customer � driver accepted, show pilot details
       if (io) {
-        io.to(`user:${tripData.customerId}`).emit("trip:driver_assigned", {
-          tripId: tripData.id,
-          pickupOtp: otp,
-          status: 'accepted',
-          currentStatus: 'accepted',
-          driver: {
-            id: driver.id,
-            fullName: driver.fullName || "Pilot",
-            phone: driver.phone || "",
-            rating: driver.avgRating || driver.rating || 0,
-            photo: driver.profilePhoto || null,
-            vehicleNumber: driverVehicle.vehicle_number || '',
-            vehicleModel: driverVehicle.vehicle_model || '',
-            vehicleCategory: driverVehicle.vehicle_category || '',
-          },
-        });
         io.to(`user:${tripData.customerId}`).emit("trip:accepted", {
           tripId: tripData.id,
           driverName: driver.fullName || "Pilot",
@@ -9316,18 +9173,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
               io.to(`user:${trip.customerId}`).emit("trip:searching", { tripId, message: "Looking for another pilot..." });
             }
             const rejectExcludeList = (trip.rejectedDriverIds || []).filter(Boolean);
-            findBestDrivers(
-              Number(trip.pickupLat), Number(trip.pickupLng),
+            notifyNearbyDriversNewTrip(
+              tripId,
+              Number(trip.pickupLat),
+              Number(trip.pickupLng),
               trip.vehicleCategoryId || undefined,
-              rejectExcludeList, 3
-            ).then(nextBestDrivers => {
-              for (const nd of nextBestDrivers) {
-                io.to(`user:${nd.driverId}`).emit("trip:new_request", {
-                  tripId, pickupAddress: trip.pickupAddress || "Pickup",
-                  estimatedFare: Number(trip.estimatedFare) || 0,
-                });
-              }
-            }).catch(dbCatch("db"));
+              rejectExcludeList,
+            ).catch(dbCatch("db"));
           }
         });
       }
@@ -9439,19 +9291,84 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const driver = (req as any).currentUser;
       const { tripId } = req.body;
-      if (!tripId) return res.status(400).json({ message: "tripId required" });
+      console.log(`[API] /api/app/driver/arrived — driverId=${driver.id}, tripId=${tripId}, body=${JSON.stringify(req.body)}`);
+
+      if (!tripId) {
+        console.log(`[API] /api/app/driver/arrived — ERROR: tripId required`);
+        return res.status(400).json({ message: "tripId required" });
+      }
+
+      console.log(`[API] /api/app/driver/arrived — Checking trip status before update`);
+      const checkBefore = await rawDb.execute(rawSql`SELECT current_status, driver_id FROM trip_requests WHERE id=${tripId}::uuid`);
+      const beforeRow = checkBefore.rows[0] as any;
+      console.log(`[API] /api/app/driver/arrived — Current DB status: ${beforeRow?.current_status}, driver_id: ${beforeRow?.driver_id}`);
+
       const updR = await rawDb.execute(rawSql`
-        UPDATE trip_requests SET current_status='arrived', driver_arrived_at=NOW()
+        UPDATE trip_requests SET current_status='arrived'
         WHERE id=${tripId}::uuid AND driver_id=${driver.id}::uuid
           AND current_status IN ('accepted','driver_assigned')
         RETURNING id, pickup_otp, customer_id
       `);
+      console.log(`[API] /api/app/driver/arrived — Update result: ${updR.rows.length} rows affected`);
+
       if (!updR.rows.length) {
         const check = await rawDb.execute(rawSql`SELECT current_status FROM trip_requests WHERE id=${tripId}::uuid`);
         const st = (check.rows[0] as any)?.current_status;
-        if (!st) return res.status(404).json({ message: "Trip not found" });
-        return res.status(400).json({ message: `Cannot mark arrived in status: ${st}` });
+        console.log(`[API] /api/app/driver/arrived — ERROR: Cannot update status. Current status: ${st}, driver match: ${beforeRow?.driver_id === driver.id}`);
+        if (!st) {
+          console.log(`[API] /api/app/driver/arrived — Trip not found`);
+          return res.status(404).json({ message: "Trip not found", code: "TRIP_NOT_FOUND" });
+        }
+        console.log(`[API] /api/app/driver/arrived — Invalid status for arrived: ${st}`);
+        if (st === 'arrived' && beforeRow?.driver_id === driver.id) {
+          const fullTrip = await rawDb.execute(rawSql`
+            SELECT t.*, c.full_name as customer_name, c.phone as customer_phone
+            FROM trip_requests t
+            LEFT JOIN users c ON c.id = t.customer_id
+            WHERE t.id=${tripId}::uuid LIMIT 1
+          `);
+          const tripData = fullTrip.rows.length ? camelize(fullTrip.rows[0]) : null;
+          const existingOtp = (tripData as any)?.pickupOtp || (tripData as any)?.pickup_otp || "";
+          return res.json({ success: true, pickupOtp: existingOtp, trip: tripData, idempotent: true });
+        }
+        if ((st === 'accepted' || st === 'driver_assigned') && beforeRow?.driver_id !== driver.id) {
+          return res.status(409).json({
+            message: "This trip is already assigned to another driver",
+            code: "TRIP_OWNERSHIP_MISMATCH",
+            currentStatus: st,
+          });
+        }
+        if (st === 'on_the_way') {
+          return res.status(409).json({
+            message: "Ride already started. Refreshing latest trip state.",
+            code: "TRIP_ALREADY_STARTED",
+            currentStatus: st,
+          });
+        }
+        if (st === 'completed') {
+          return res.status(409).json({
+            message: "Trip already completed.",
+            code: "TRIP_ALREADY_COMPLETED",
+            currentStatus: st,
+          });
+        }
+        if (st === 'cancelled') {
+          return res.status(409).json({
+            message: "Trip was cancelled.",
+            code: "TRIP_CANCELLED",
+            currentStatus: st,
+          });
+        }
+        return res.status(409).json({
+          message: `Cannot mark arrived in status: ${st}`,
+          code: "INVALID_TRIP_STATUS",
+          currentStatus: st,
+        });
       }
+
+      const updatedRow = updR.rows[0] as any;
+      console.log(`[API] /api/app/driver/arrived — Successfully updated to arrived, pickup_otp: ${updatedRow.pickup_otp}`);
+
       // Get pickup OTP + passenger info + customer FCM token
       const r = await rawDb.execute(rawSql`
         SELECT t.pickup_otp, t.customer_id, t.passenger_phone, t.passenger_name,
@@ -9462,21 +9379,29 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       `);
       const tripRow = r.rows[0] as any;
       const otp = tripRow?.pickup_otp;
+      console.log(`[API] /api/app/driver/arrived — Retrieved trip details: otp=${otp}, customer_id=${tripRow?.customer_id}, is_for_someone_else=${tripRow?.is_for_someone_else}`);
+
+      try {
       await appendTripStatus(tripId, 'driver_arriving', 'driver', 'Driver reached pickup');
       await logRideLifecycleEvent(tripId, 'driver_arriving', driver.id, 'driver');
+      console.log(`[API] /api/app/driver/arrived — Logged trip status and lifecycle event`);
 
       // ?? Notify customer � driver arrived, show OTP
       const custDevRes = await rawDb.execute(rawSql`SELECT fcm_token FROM user_devices WHERE user_id=${tripRow.customer_id}::uuid`);
       const custFcmToken = (custDevRes.rows[0] as any)?.fcm_token || null;
+      console.log(`[API] /api/app/driver/arrived — Customer FCM token: ${custFcmToken ? 'found' : 'not found'}`);
+
       notifyCustomerDriverArrived({
         fcmToken: custFcmToken,
         driverName: driver.fullName || "Driver",
         otp: otp || "",
         tripId,
       }).catch(dbCatch("db"));
+      console.log(`[API] /api/app/driver/arrived — Sent FCM notification to customer`);
 
       // ?? If booked for someone else � send OTP as SMS to passenger phone
       if (tripRow?.is_for_someone_else && tripRow?.passenger_phone) {
+        console.log(`[API] /api/app/driver/arrived — Sending OTP SMS to passenger: ${tripRow.passenger_phone}`);
         sendCustomSms(tripRow.passenger_phone,
           `JAGO Pro: Your ride OTP is ${otp}. Share with driver ${driver.fullName || ''} to start. Ref: ${tripId.slice(-6).toUpperCase()}`
         ).catch(dbCatch("db"));
@@ -9484,18 +9409,38 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // ?? For parcel � remind sender with pickup OTP via SMS
       if (tripRow?.trip_type === 'parcel' || tripRow?.trip_type === 'delivery') {
         const senderPhone = tripRow.customer_phone;
-        if (senderPhone) sendCustomSms(senderPhone,
+        if (senderPhone) {
+          console.log(`[API] /api/app/driver/arrived — Sending OTP SMS to sender for parcel: ${senderPhone}`);
+          sendCustomSms(senderPhone,
           `JAGO Pro Parcel: Driver ${driver.fullName || ''} arrived. Pickup OTP: ${otp}. Share to hand over parcel.`
         ).catch(dbCatch("db"));
       }
-
-      if (io && tripRow?.customer_id) {
-        io.to(`user:${tripRow.customer_id}`).emit("trip:status_update", { tripId, status: "arrived", otp, uiState: 'driver_arriving' });
-        io.to(`trip:${tripId}`).emit("trip:status_update", { tripId, status: "arrived", otp, uiState: 'driver_arriving' });
       }
 
-      res.json({ success: true, pickupOtp: otp });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+      if (io && tripRow?.customer_id) {
+        console.log(`[API] /api/app/driver/arrived — Emitting socket events to customer and trip room`);
+        io.to(`user:${tripRow.customer_id}`).emit("trip:status_update", { tripId, status: "arrived", otp, uiState: 'driver_arriving', trip: camelize(tripRow) });
+        io.to(`trip:${tripId}`).emit("trip:status_update", { tripId, status: "arrived", otp, uiState: 'driver_arriving', trip: camelize(tripRow) });
+      }
+
+      console.log(`[API] /api/app/driver/arrived — SUCCESS: Responding with pickupOtp=${otp}`);
+      } catch (sideEffectErr: any) {
+        console.log(`[API] /api/app/driver/arrived â€” Non-blocking side effect error: ${safeErrMsg(sideEffectErr)}`);
+      }
+
+      // Return full trip data to ensure client has all coordinates
+      const fullTrip = await rawDb.execute(rawSql`
+        SELECT t.*, c.full_name as customer_name, c.phone as customer_phone
+        FROM trip_requests t
+        LEFT JOIN users c ON c.id = t.customer_id
+        WHERE t.id=${tripId}::uuid LIMIT 1
+      `);
+      const tripData = fullTrip.rows.length ? camelize(fullTrip.rows[0]) : null;
+      res.json({ success: true, pickupOtp: otp, trip: tripData });
+    } catch (e: any) {
+      console.log(`[API] /api/app/driver/arrived — ERROR: ${safeErrMsg(e)}`);
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
   });
 
   // -- DRIVER: Start trip (arrived ? on_the_way) ----------------------------
@@ -9553,7 +9498,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // Get trip details to use estimated_fare as fallback
       const tripInfo = await rawDb.execute(rawSql`
         SELECT tr.estimated_fare, tr.estimated_distance, tr.current_status, tr.payment_method,
-               tr.customer_id, tr.trip_type, tr.type, tr.delivery_otp, tr.seats_booked,
+               tr.customer_id, tr.trip_type, tr.type, tr.vehicle_category_id, tr.delivery_otp, tr.seats_booked,
+               tr.coupon_code, tr.discount_amount,
                vc.name as vehicle_name, vc.vehicle_type as vehicle_type_field,
                vc.is_carpool, vc.total_seats
         FROM trip_requests tr
@@ -9586,13 +9532,50 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // SECURITY: All money math in integer paise to avoid floating-point drift
       const farePaise = Math.round(fare * 100);
 
-      // -- Pricing: user discount (first 2 rides = 50% off) -----------------
-      const customerRow = tripRow.customer_id
-        ? (await rawDb.execute(rawSql`SELECT completed_rides_count FROM users WHERE id=${tripRow.customer_id}::uuid LIMIT 1`).catch(() => ({ rows: [] }))).rows[0] as any
-        : null;
-      const completedRidesCount = parseInt(customerRow?.completed_rides_count ?? '0') || 0;
       const rideFullFare = farePaise / 100;
-      const userDiscountPaise = completedRidesCount < 2 ? Math.round(farePaise * 0.50) : 0;
+      let appliedDiscountAmount = 0;
+      const storedCouponCode = String(tripRow.coupon_code || "").trim();
+      if (storedCouponCode) {
+        try {
+          const couponR = await rawDb.execute(rawSql`
+            SELECT discount_type, discount_amount, max_discount_amount
+            FROM coupon_setups
+            WHERE UPPER(code) = UPPER(${storedCouponCode})
+            LIMIT 1
+          `);
+          if (couponR.rows.length) {
+            const coupon = camelize(couponR.rows[0]) as any;
+            if (coupon.discountType === "percent" || coupon.discountType === "percentage") {
+              appliedDiscountAmount =
+                (rideFullFare * parseFloat(coupon.discountAmount || "0")) / 100;
+            } else {
+              appliedDiscountAmount = parseFloat(coupon.discountAmount || "0");
+            }
+            if (coupon.maxDiscountAmount) {
+              appliedDiscountAmount = Math.min(
+                appliedDiscountAmount,
+                parseFloat(coupon.maxDiscountAmount),
+              );
+            }
+          } else {
+            appliedDiscountAmount = parseFloat(tripRow.discount_amount || "0") || 0;
+          }
+        } catch (_) {
+          appliedDiscountAmount = parseFloat(tripRow.discount_amount || "0") || 0;
+        }
+      } else if (tripRow.customer_id) {
+        const automaticDiscount = await getBestAutomaticDiscount(
+          String(tripRow.customer_id),
+          rideFullFare,
+          {
+            serviceType: tripRow.trip_type || tripRow.type || null,
+            vehicleCategoryId: tripRow.vehicle_category_id || null,
+          },
+        ).catch(() => null);
+        appliedDiscountAmount = automaticDiscount?.amount || 0;
+      }
+      appliedDiscountAmount = normalizeMoney(Math.min(appliedDiscountAmount, rideFullFare));
+      const userDiscountPaise = Math.round(appliedDiscountAmount * 100);
       const userDiscount = userDiscountPaise / 100;
       const userPayable = (farePaise - userDiscountPaise) / 100;
 
@@ -9775,6 +9758,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // AI: Update driver performance stats + clear trip waypoints
       updateDriverStats(driver.id).catch(dbCatch("db"));
       clearTripWaypoints(tripId);
+      if (tripCustomerId) {
+        await processEligibleReferralRewards(String(tripCustomerId)).catch(
+          dbCatch("db"),
+        );
+      }
+      await processEligibleReferralRewards(String(driver.id)).catch(dbCatch("db"));
 
       const completedTrip = camelize(r.rows[0]) as any;
       await appendTripStatus(tripId, 'trip_completed', 'driver', 'Trip completed by driver');
@@ -9894,6 +9883,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           tripId, message: "Your previous pilot cancelled. Looking for a new one...",
         });
       }
+
+      await restartDispatchForTrip(tripId, [driver.id]);
+      return res.json({ success: true, reassigned: true });
 
       // AI-scored reassignment after driver cancellation
       const cancelNextBest = await findBestDrivers(
@@ -10213,6 +10205,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // Check no pending withdrawal exists
       const pending = await rawDb.execute(rawSql`SELECT COUNT(*) as cnt FROM withdraw_requests WHERE user_id=${driver.id}::uuid AND status='pending'`).catch(() => ({ rows: [{ cnt: 0 }] }));
       if (parseInt((pending.rows[0] as any)?.cnt || 0) > 0) return res.status(400).json({ message: "You already have a pending withdrawal request" });
+      const pendingUnified = await rawDb.execute(rawSql`
+        SELECT COUNT(*) as cnt
+        FROM driver_payments
+        WHERE driver_id=${driver.id}::uuid
+          AND payment_type='withdrawal_request'
+          AND status='pending'
+      `).catch(() => ({ rows: [{ cnt: 0 }] }));
+      if (parseInt((pendingUnified.rows[0] as any)?.cnt || 0) > 0) {
+        return res.status(400).json({ message: "You already have a pending withdrawal request" });
+      }
       // Validate bank/UPI details
       if (method === "bank") {
         const accClean = (accountNumber || "").replace(/\s/g, "");
@@ -10228,13 +10230,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         if (!upiId || !/^[\w.\-]{2,256}@[a-zA-Z]{2,64}$/.test(upiId.trim()))
           return res.status(400).json({ message: "Invalid UPI ID format (e.g. name@upi)" });
       }
-      // Insert withdraw request
+      // Create the canonical wallet-engine withdrawal first so balance is reserved immediately.
       const notes = method === "upi"
         ? `UPI: ${upiId || ''}`
         : `Bank: ${bankName || ''} | Acc: ${accountNumber || ''} | IFSC: ${ifscCode || ''} | Name: ${accountHolderName || ''}`;
+      const canonicalWithdrawal = await requestWithdrawal(driver.id, amt, method === "upi" ? "upi" : "bank_transfer");
       const wr = await rawDb.execute(rawSql`
-        INSERT INTO withdraw_requests (user_id, amount, note, status, created_at)
-        VALUES (${driver.id}::uuid, ${amt}, ${notes}, 'pending', now())
+        INSERT INTO withdraw_requests (user_id, driver_payment_id, amount, note, status, created_at)
+        VALUES (${driver.id}::uuid, ${canonicalWithdrawal.id}::uuid, ${amt}, ${notes}, 'pending', now())
         RETURNING *
       `);
       res.json({ success: true, message: `Withdrawal request of ?${amt} submitted. Will be processed in 2-3 business days.`, request: camelize(wr.rows[0]) });
@@ -10248,7 +10251,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const modelR = await rawDb.execute(rawSql`SELECT key_name, value FROM revenue_model_settings`);
       const s: any = {};
       modelR.rows.forEach((r: any) => { s[r.key_name] = r.value; });
-      const activeModel = s.active_model || "commission";
+      const vehicleTypeR = await rawDb.execute(rawSql`
+        SELECT vc.type as vehicle_type
+        FROM driver_details dd
+        JOIN vehicle_categories vc ON vc.id = dd.vehicle_category_id
+        WHERE dd.user_id = ${driver.id}::uuid
+        LIMIT 1
+      `).catch(() => ({ rows: [] as any[] }));
+      const vehicleType = (vehicleTypeR.rows[0] as any)?.vehicle_type || 'ride';
+      const modelKey = vehicleType === 'parcel'
+        ? 'parcels_model'
+        : vehicleType === 'cargo'
+          ? 'cargo_model'
+          : vehicleType === 'carpool'
+            ? 'city_pool_model'
+            : 'rides_model';
+      const activeModel = s[modelKey] || "free";
       let activeSub = null;
       let daysLeft = 0;
       if (activeModel === "subscription" || activeModel === "hybrid") {
@@ -10280,18 +10298,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         commissionRate: parseFloat(s.commission_pct || "15"),
       });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
-  });
-
-  app.get("/api/app/driver/insurance/plans", authApp, requireDriver, async (_req, res) => {
-    try {
-      const r = await rawDb.execute(rawSql`
-        SELECT *
-        FROM insurance_plans
-        WHERE is_active=true
-        ORDER BY premium_monthly ASC, premium_daily ASC
-      `);
-      res.json({ plans: r.rows.map(camelize) });
-    } catch (e: any) { res.status(e?.statusCode || 500).json({ message: safeErrMsg(e), code: e?.code, allowed: e?.allowed }); }
   });
 
   app.post("/api/app/driver/subscription/create-order", authApp, requireDriver, paymentOrderLimiter, async (req, res) => {
@@ -10560,10 +10566,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         pickupShortName,
         destinationAddress, destAddress, destinationLat, destLat, destinationLng, destLng,
         destinationShortName,
-        vehicleCategoryId, vehicle_category_id, vehicle_type_id, vehicleTypeId,
-        vehicleType, vehicle_type, vehicleSlug, vehicle_slug,
-        vehicleCategoryName, vehicleName,
-        estimatedFare, estimatedDistance, distanceKm,
+        vehicleCategoryId, estimatedFare, estimatedDistance, distanceKm,
         paymentMethod, paymentMode, tripType = "normal", isScheduled = false, scheduledAt,
         // Book for someone else
         isForSomeoneElse = false, passengerName, passengerPhone,
@@ -10588,75 +10591,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const finalDestLng = validDestCoords.lng;
       const finalPayment = paymentMethod || paymentMode || "cash";
       const finalDistance = estimatedDistance || distanceKm || 0;
-      const requestedVehicleName = vehicleCategoryName || vehicleName || null;
-      const requestedVehicleCategoryId =
-        vehicleCategoryId || vehicle_category_id || vehicle_type_id || vehicleTypeId || null;
-      const requestedVehicleType =
-        vehicleType || vehicle_type || vehicleSlug || vehicle_slug || null;
-      console.log("[BOOK_RIDE][incoming_vehicle]", JSON.stringify({
-        customerId: customer?.id || null,
-        vehicleCategoryId: requestedVehicleCategoryId,
-        vehicleType: requestedVehicleType,
-        vehicleName: requestedVehicleName,
-        rawKeys: Object.keys(req.body || {}).filter((key) => key.toLowerCase().includes("vehicle")),
-      }));
-      const resolvedVehicle = await resolveBookingVehicleSelection({
-        vehicleCategoryId: requestedVehicleCategoryId,
-        vehicleType: requestedVehicleType,
-        vehicleCategoryName: requestedVehicleName,
-      });
-      const bookingVehicleCategoryId = resolvedVehicle.vehicleCategoryId;
-      const bookingVehicleType = resolvedVehicle.vehicleType;
-      const bookingVehicleName = resolvedVehicle.vehicleCategoryName || requestedVehicleName || "";
-
-      if (!bookingVehicleCategoryId || !bookingVehicleType) {
-        console.warn("[BOOK_RIDE][vehicle_validation_failed]", JSON.stringify({
-          customerId: customer?.id || null,
-          requestedVehicleCategoryId,
-          requestedVehicleType,
-          requestedVehicleName,
-          resolvedVehicle,
-        }));
-        return res.status(400).json({
-          message: "Please select a valid vehicle type before booking.",
-          code: "VEHICLE_CATEGORY_REQUIRED",
-        });
-      }
-      if (resolvedVehicle.typeMismatch) {
-        console.warn("[BOOK_RIDE][vehicle_type_mismatch]", JSON.stringify({
-          customerId: customer?.id || null,
-          requestedVehicleCategoryId,
-          requestedVehicleType,
-          requestedVehicleName,
-          resolvedVehicle,
-        }));
-        return res.status(400).json({
-          message: "Selected vehicle does not match the requested booking type.",
-          code: "VEHICLE_TYPE_MISMATCH",
-        });
-      }
 
       // -- Service activation gate -------------------------------------------
-      const bookingVehicleMeta = await getVehicleCategoryMeta(bookingVehicleCategoryId);
-      const bookingServiceKey = getPlatformServiceKeyForCategory(bookingVehicleMeta) || "bike_ride";
       const rideGate = await rawDb.execute(rawSql`
-        SELECT service_status FROM platform_services WHERE service_key = ${bookingServiceKey} LIMIT 1
+        SELECT service_status FROM platform_services WHERE service_key = 'bike_ride' LIMIT 1
       `).catch(() => ({ rows: [] as any[] }));
       // Only block if the record explicitly says inactive (if table missing, allow through)
       if (rideGate.rows.length && (rideGate.rows[0] as any).service_status !== 'active') {
-        return res.status(503).json({ message: `${bookingVehicleName || "Selected ride"} service is currently unavailable. Please try again later.`, code: "SERVICE_INACTIVE", serviceKey: bookingServiceKey });
+        return res.status(503).json({ message: "Bike Ride service is currently unavailable. Please try again later.", code: "SERVICE_INACTIVE" });
       }
 
       // -- Server-side fare calculation (fallback when client sends 0 or missing) --
       let computedFare = Number(estimatedFare) || 0;
-      if ((computedFare === 0 || isNaN(computedFare)) && bookingVehicleCategoryId) {
+      if ((computedFare === 0 || isNaN(computedFare)) && vehicleCategoryId) {
         try {
           // Detect zone from pickup location for accurate zone-specific fares
           const detectedZoneId = await detectZoneId(validPickupCoords.lat, validPickupCoords.lng);
           const fareConfig = await rawDb.execute(rawSql`
             SELECT base_fare, fare_per_km, fare_per_min, minimum_fare, night_charge_multiplier
             FROM trip_fares
-            WHERE vehicle_category_id = ${bookingVehicleCategoryId}::uuid
+            WHERE vehicle_category_id = ${vehicleCategoryId}::uuid
               AND (
                 ${detectedZoneId ? rawSql`zone_id = ${detectedZoneId}::uuid` : rawSql`zone_id IS NULL`}
                 OR zone_id IS NULL
@@ -10771,6 +10725,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (discountAmount === 0 && promoDiscount && Number(promoDiscount) > 0) {
         discountAmount = Math.min(Number(promoDiscount), computedFare * 0.5); // cap at 50%
       }
+      if (discountAmount === 0 && !validatedCouponCode) {
+        const automaticDiscount = await getBestAutomaticDiscount(
+          customer.id,
+          computedFare,
+          {
+            serviceType: tripType,
+            vehicleCategoryId: vehicleCategoryId || null,
+          },
+        ).catch(() => null);
+        if (automaticDiscount && automaticDiscount.amount > 0) {
+          discountAmount = automaticDiscount.amount;
+        }
+      }
       const finalFareAfterDiscount = Math.max(0, computedFare - discountAmount);
 
       // Auto-cancel any previous 'searching' trips � user is explicitly requesting a new ride
@@ -10844,7 +10811,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ) VALUES (
           ${refId}, ${customer.id}::uuid,
           NULL,
-          ${bookingVehicleCategoryId ? rawSql`${bookingVehicleCategoryId}::uuid` : rawSql`NULL`},
+          ${vehicleCategoryId ? rawSql`${vehicleCategoryId}::uuid` : rawSql`NULL`},
           ${pickupAddress || ""}, ${validPickupCoords.lat}, ${validPickupCoords.lng},
           ${finalDestAddress}, ${finalDestLat}, ${finalDestLng},
           ${finalFareAfterDiscount}, ${Number(finalDistance) || 0}, ${finalPayment},
@@ -10908,9 +10875,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       // -- Smart Dispatch Engine ----------------------------------------------
       // Resolve vehicle category name for service type detection
-      let vcName = bookingVehicleName;
-      if (!vcName && bookingVehicleCategoryId) {
-        const vcR = await rawDb.execute(rawSql`SELECT name FROM vehicle_categories WHERE id=${bookingVehicleCategoryId}::uuid LIMIT 1`).catch(() => ({ rows: [] as any[] }));
+      let vcName = '';
+      if (vehicleCategoryId) {
+        const vcR = await rawDb.execute(rawSql`SELECT name FROM vehicle_categories WHERE id=${vehicleCategoryId}::uuid LIMIT 1`).catch(() => ({ rows: [] as any[] }));
         vcName = (vcR.rows[0] as any)?.name || '';
       }
       const serviceType = resolveServiceType(tripType, vcName);
@@ -10936,14 +10903,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         customer.id,
         Number(pickupLat),
         Number(pickupLng),
-        bookingVehicleCategoryId || undefined,
-        bookingVehicleType || vcName || undefined,
+        vehicleCategoryId || undefined,
         serviceType,
         dispatchMeta
       ).catch((err: any) => {
         console.error('[DISPATCH] startDispatch error:', err.message);
         // Fallback to legacy broadcast if dispatch engine fails
-        notifyNearbyDriversNewTrip(tripRow.id, Number(pickupLat), Number(pickupLng), bookingVehicleCategoryId || undefined).catch(dbCatch("db"));
+        notifyNearbyDriversNewTrip(tripRow.id, Number(pickupLat), Number(pickupLng), vehicleCategoryId).catch(dbCatch("db"));
       });
 
       res.json({
@@ -11031,11 +10997,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         LEFT JOIN driver_locations dl ON dl.driver_id = t.driver_id
         LEFT JOIN vehicle_categories vc ON vc.id = t.vehicle_category_id
         LEFT JOIN driver_details dd ON dd.user_id = t.driver_id
-        WHERE t.customer_id = ${customer.id}::uuid AND t.current_status NOT IN ('completed','cancelled')
+        WHERE t.customer_id = ${customer.id}::uuid
+          AND t.current_status IN ('searching','driver_assigned','accepted','arrived','on_the_way')
+          AND t.updated_at > NOW() - INTERVAL '12 hours'
         ORDER BY t.created_at DESC LIMIT 1
       `);
       if (!r.rows.length) return res.json({ trip: null });
       const trip = camelize(r.rows[0]) as any;
+      await noteRecoveryAudit({
+        tripId: String(trip.id),
+        eventType: "customer_active_trip_restored",
+        actorId: customer.id,
+        actorType: "customer",
+        meta: { source: "customer_active_trip_endpoint", currentStatus: trip.currentStatus },
+        dedupeKey: `${trip.id}:${customer.id}:customer_active_trip_restored`,
+        dedupeWindowMs: 60_000,
+      }).catch(() => {});
       trip.uiState = toUiTripState(trip);
       if (trip.rideStartedAt) {
         trip.rideTimerSeconds = Math.max(0, Math.floor((Date.now() - new Date(trip.rideStartedAt).getTime()) / 1000));
@@ -11505,6 +11482,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // -- CUSTOMER: Fare estimate ------------------------------------------------
   app.post("/api/app/customer/estimate-fare", authApp, async (req, res) => {
     try {
+      const customer = (req as any).currentUser;
       const {
         pickupLat, pickupLng,
         destLat: _destLat, destLng: _destLng,
@@ -11570,7 +11548,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ${category ? rawSql`AND vc.type = ${category}` : rawSql``}
         ORDER BY f.vehicle_category_id, vc.name
       `);
-      const fares = camelize(fareR.rows).map((f: any) => {
+      const fareRows = camelize(fareR.rows);
+      const fares = await Promise.all(fareRows.map(async (f: any) => {
         // Resolve vehicle name for smart defaults
         const vn = (f.vehicleName || '').toLowerCase();
         const isSuv = vn.includes('suv');
@@ -11619,6 +11598,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         // -- Car Pool: seat-based pricing ----------------------------------
         const seatPrice = isCarpool ? +(grandTotal / totalSeats).toFixed(2) : 0;
 
+        const autoDiscount = await getBestAutomaticDiscount(
+          customer?.id,
+          grandTotal,
+          {
+            serviceType: category,
+            vehicleCategoryId: f.vehicleCategoryId,
+          },
+        );
+        const autoDiscountAmount = normalizeMoney(autoDiscount?.amount || 0);
+        const discountedFare = normalizeMoney(grandTotal - autoDiscountAmount);
         return {
           vehicleCategoryId: f.vehicleCategoryId,
           vehicleName: f.vehicleName || "Ride",
@@ -11632,8 +11621,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           subtotal: +total.toFixed(2),
           gst,
           estimatedFare: grandTotal,
+          originalEstimatedFare: grandTotal,
+          discountedEstimatedFare: discountedFare,
           fareMin,
           fareMax,
+          discountedFareMin: Math.floor(discountedFare * 0.95),
+          discountedFareMax: Math.ceil(discountedFare * 1.05),
           isActive: f.isActive === true || f.isActive === 'true',
           minimumFare: +minFare.toFixed(2),
           cancellationFee: +cancelFee.toFixed(2),
@@ -11649,8 +11642,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           seatPriceDisplay: isCarpool ? `?${seatPrice}/seat` : undefined,
           zoneSurge: zoneSurge > 1 ? zoneSurge : undefined,
           zoneName: zoneSurge > 1 ? activeZoneName : undefined,
+          autoDiscountAmount,
+          autoDiscountName: autoDiscount?.name || null,
+          autoDiscountSource: autoDiscount?.source || null,
         };
-      });
+      }));
 
       // -- User launch offer: first 2 rides 50% discount ---------------------
       let launchOffer: any = null;
@@ -11676,24 +11672,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Falls back to straight-line Haversine estimate if Google API unavailable.
   app.get("/api/app/eta", authApp, async (req, res) => {
     try {
-      const {
-        originLat,
-        originLng,
-        driverLat,
-        driverLng,
-        destLat,
-        destLng,
-      } = req.query as Record<string, string>;
-      const sourceLat = originLat ?? driverLat;
-      const sourceLng = originLng ?? driverLng;
-      if (!sourceLat || !sourceLng || !destLat || !destLng) {
-        return res.status(400).json({ message: "originLat/originLng or driverLat/driverLng plus destLat/destLng required" });
+      const { originLat, originLng, destLat, destLng } = req.query as Record<string, string>;
+      if (!originLat || !originLng || !destLat || !destLng) {
+        return res.status(400).json({ message: "originLat, originLng, destLat, destLng required" });
       }
-      const oLat = parseFloat(sourceLat), oLng = parseFloat(sourceLng);
+      const oLat = parseFloat(originLat), oLng = parseFloat(originLng);
       const dLat = parseFloat(destLat), dLng = parseFloat(destLng);
 
       // Try Google Distance Matrix first
-      const gmapsKey = (await getConf("GOOGLE_MAPS_API_KEY", "google_maps_key"))?.trim() || '';
+      const gmapsKeyR = await rawDb.execute(rawSql`
+        SELECT value FROM business_settings WHERE key_name='google_maps_api_key' LIMIT 1
+      `).catch(() => ({ rows: [] as any[] }));
+      const gmapsKey = (gmapsKeyR.rows[0] as any)?.value || process.env.GOOGLE_MAPS_API_KEY || '';
 
       let etaMinutes: number;
       let distanceKm: number;
@@ -11977,7 +11967,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         LEFT JOIN vehicle_categories vc ON vc.id = dd.vehicle_category_id
         WHERE dl.is_online=true AND u.is_active=true AND u.is_locked=false
           AND u.current_trip_id IS NULL
-          AND u.verification_status IN ('approved', 'verified', 'pending')
+          AND u.verification_status IN ('approved', 'verified')
           ${vcFilter}
           AND (dl.lat - ${latNum})*(dl.lat - ${latNum}) + (dl.lng - ${lngNum})*(dl.lng - ${lngNum}) < ${Number(radius) * Number(radius) / 10000}
         LIMIT 20
@@ -12045,29 +12035,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         RETURNING id
       `);
       const alertId = (r.rows[0] as any)?.id || null;
-      let otherParticipantId: string | null = null;
-      if (tripId) {
-        const tripR = await rawDb.execute(rawSql`
-          SELECT customer_id, driver_id FROM trip_requests WHERE id=${tripId}::uuid LIMIT 1
-        `).catch(() => ({ rows: [] as any[] }));
-        const trip = (tripR.rows[0] as any) || null;
-        if (trip) {
-          otherParticipantId = String(trip.customer_id) === String(user.id) ? trip.driver_id : trip.customer_id;
-        }
-      }
-      const payload = {
-        alertId,
-        tripId: tripId || null,
-        userId: user.id,
-        triggeredBy: user.userType === 'driver' ? 'driver' : 'customer',
-        lat: lat ? Number(lat) : null,
-        lng: lng ? Number(lng) : null,
-        message: message || 'SOS triggered from app',
-        createdAt: new Date().toISOString(),
-      };
-      io?.to("admin:safety").emit("safety:sos", payload);
-      if (tripId) io?.to(`trip:${tripId}`).emit("safety:sos", payload);
-      if (otherParticipantId) io?.to(`user:${otherParticipantId}`).emit("safety:sos", payload);
       console.log(`[SOS] ? ${user.userType} ${user.fullName} (${user.phone}) at ${lat},${lng} alertId=${alertId}`);
       res.json({ success: true, alertId, message: "SOS alert sent. Help is on the way." });
     } catch (e: any) {
@@ -12207,24 +12174,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const customer = (req as any).currentUser;
       const { amount, tripId } = req.body;
-      if (!tripId) return res.status(400).json({ message: "tripId is required for ride payment" });
-      const tripFareR = await rawDb.execute(rawSql`
-        SELECT estimated_fare, actual_fare, payment_status, current_status
-        FROM trip_requests
-        WHERE id=${tripId}::uuid AND customer_id=${customer.id}::uuid
-        LIMIT 1
-      `);
-      if (!tripFareR.rows.length) return res.status(404).json({ message: "Trip not found for this customer" });
-      const tripFare = tripFareR.rows[0] as any;
-      if (["paid", "paid_online"].includes(String(tripFare.payment_status || "").toLowerCase())) {
-        return res.status(409).json({ message: "Trip payment already completed" });
-      }
-      if (String(tripFare.current_status || "").toLowerCase() === "cancelled") {
-        return res.status(400).json({ message: "Cannot pay for a cancelled trip" });
-      }
-      const requestedAmt = parseFloat(amount);
-      const serverAmt = parseFloat(tripFare.actual_fare || tripFare.estimated_fare || "0");
-      const amt = Number.isFinite(serverAmt) && serverAmt > 0 ? serverAmt : requestedAmt;
+      const amt = parseFloat(amount);
       if (!amt || amt <= 0 || amt > 50000) return res.status(400).json({ message: "Invalid fare amount" });
       const { keyId, keySecret } = await getRazorpayKeys();
       if (!keyId || !keySecret) return res.status(503).json({ message: "Payment gateway not configured" });
@@ -12264,19 +12214,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         crypto.timingSafeEqual(Buffer.from(expectedSig, "utf8"), Buffer.from(razorpaySignature, "utf8"));
       if (!sigValid) return res.status(400).json({ message: "Invalid payment signature" });
       // Amount + trip_id from DB � never trust client-sent amount
-      const atomicMark = await rawDb.execute(rawSql`
-        UPDATE customer_payments SET razorpay_payment_id=${razorpayPaymentId}, status='completed', verified_at=NOW()
-        WHERE razorpay_order_id=${razorpayOrderId}
-          AND customer_id=${customer.id}::uuid
-          AND payment_type='ride_payment'
-          AND status='pending'
-        RETURNING amount, trip_id
+      const pendingRec = await rawDb.execute(rawSql`
+        SELECT amount, trip_id FROM customer_payments WHERE razorpay_order_id=${razorpayOrderId} AND customer_id=${customer.id}::uuid AND status='pending' LIMIT 1
       `);
-      if (!atomicMark.rows.length) {
-        return res.status(409).json({ message: "Payment already processed or not pending", alreadyProcessed: true });
-      }
-      const verifiedAmt = parseFloat((atomicMark.rows[0] as any).amount);
-      const linkedTripId = (atomicMark.rows[0] as any).trip_id;
+      if (!pendingRec.rows.length) return res.status(400).json({ message: "No pending order found for this payment" });
+      const verifiedAmt = parseFloat((pendingRec.rows[0] as any).amount);
+      const linkedTripId = (pendingRec.rows[0] as any).trip_id;
+      // Mark as completed
+      await rawDb.execute(rawSql`
+        UPDATE customer_payments SET razorpay_payment_id=${razorpayPaymentId}, status='completed', verified_at=NOW()
+        WHERE razorpay_order_id=${razorpayOrderId} AND customer_id=${customer.id}::uuid
+      `).catch(dbCatch("db"));
       // Mark trip as paid_online so cancel-trip can auto-refund to wallet
       if (linkedTripId) {
         await rawDb.execute(rawSql`
@@ -12497,57 +12445,60 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
           // -- B) Customer wallet topup / ride payment -----------------------
           {
-            const cpUpdate = await rawDb.execute(rawSql`
-              UPDATE customer_payments
-              SET status = 'completed',
-                  razorpay_payment_id = ${paymentId},
-                  verified_at = NOW()
+            const cpRows = await rawDb.execute(rawSql`
+              SELECT * FROM customer_payments
               WHERE razorpay_order_id = ${orderId} AND status = 'pending'
-              RETURNING *
+              LIMIT 1
             `).catch(() => ({ rows: [] as any[] }));
-            if (cpUpdate.rows.length) {
-              const rec = camelize(cpUpdate.rows[0]) as any;
-              if (rec.paymentType === "wallet_topup") {
+            if (cpRows.rows.length) {
+              const rec = camelize(cpRows.rows[0]) as any;
+              const done = await rawDb.execute(rawSql`
+                SELECT id FROM customer_payments
+                WHERE razorpay_order_id = ${orderId} AND status = 'completed'
+                LIMIT 1
+              `).catch(() => ({ rows: [] as any[] }));
+              if (!done.rows.length) {
                 await rawDb.execute(rawSql`
-                  UPDATE users
-                  SET wallet_balance = wallet_balance + ${rec.amount}, updated_at = NOW()
-                  WHERE id = ${rec.customerId}::uuid
-                  RETURNING wallet_balance
+                  UPDATE customer_payments
+                  SET status = 'completed',
+                      razorpay_payment_id = ${paymentId},
+                      verified_at = NOW()
+                  WHERE razorpay_order_id = ${orderId} AND status = 'pending'
                 `);
-                await rawDb.execute(rawSql`
-                  INSERT INTO transactions (user_id, account, credit, debit, balance, transaction_type, ref_transaction_id)
-                  SELECT ${rec.customerId}::uuid, ${'Wallet recharge via Razorpay'}, ${rec.amount}, 0, wallet_balance, ${'wallet_recharge'}, ${paymentId}
-                  FROM users WHERE id=${rec.customerId}::uuid
-                  ON CONFLICT (ref_transaction_id, transaction_type) WHERE ref_transaction_id IS NOT NULL DO NOTHING
-                `).catch(dbCatch("db"));
-                if (io) io.to(`user:${rec.customerId}`).emit("wallet:recharged", { amount: rec.amount });
-                console.info(`${tag} customer wallet credited customer=${rec.customerId} ?${rec.amount}`);
-              } else if (rec.paymentType === "ride_payment") {
-                await rawDb.execute(rawSql`
-                  UPDATE trip_requests
-                  SET payment_status='paid_online',
-                      razorpay_payment_id=${paymentId},
-                      updated_at=NOW()
-                  WHERE id=${rec.tripId ?? null}::uuid
-                    AND customer_id=${rec.customerId}::uuid
-                `);
-                if (io) {
-                  io.to(`user:${rec.customerId}`).emit("payment:confirmed", {
-                    tripId: rec.tripId,
-                    paymentId,
-                    amount: rec.amount,
-                    status: "paid_online",
-                  });
-                  if (rec.tripId) io.to(`trip:${rec.tripId}`).emit("payment:confirmed", {
-                    tripId: rec.tripId,
-                    paymentId,
-                    amount: rec.amount,
-                    status: "paid_online",
-                  });
+                if (rec.paymentType === "wallet_topup") {
+                  await rawDb.execute(rawSql`
+                    UPDATE users
+                    SET wallet_balance = wallet_balance + ${rec.amount}, updated_at = NOW()
+                    WHERE id = ${rec.customerId}::uuid
+                  `);
+                  if (io) io.to(`user:${rec.customerId}`).emit("wallet:recharged", { amount: rec.amount });
+                  console.info(`${tag} customer wallet credited customer=${rec.customerId} ?${rec.amount}`);
+                } else if (rec.paymentType === "ride_payment" && rec.tripId) {
+                  await rawDb.execute(rawSql`
+                    UPDATE trip_requests
+                    SET payment_status = 'paid_online',
+                        razorpay_payment_id = ${paymentId},
+                        updated_at = NOW()
+                    WHERE id = ${rec.tripId}::uuid
+                      AND customer_id = ${rec.customerId}::uuid
+                      AND current_status NOT IN ('completed', 'cancelled')
+                  `).catch(dbCatch("db"));
+                  if (io) {
+                    io.to(`user:${rec.customerId}`).emit("trip:payment_confirmed", {
+                      tripId: rec.tripId,
+                      paymentId,
+                      status: "paid_online",
+                    });
+                    io.to(`trip:${rec.tripId}`).emit("trip:payment_confirmed", {
+                      tripId: rec.tripId,
+                      paymentId,
+                      status: "paid_online",
+                    });
+                  }
+                  console.info(`${tag} ride payment confirmed trip=${rec.tripId} customer=${rec.customerId}`);
+                } else {
+                  console.info(`${tag} customer payment completed type=${rec.paymentType} customer=${rec.customerId}`);
                 }
-                console.info(`${tag} ride payment confirmed customer=${rec.customerId} trip=${rec.tripId} ?${rec.amount}`);
-              } else {
-                console.info(`${tag} customer payment completed type=${rec.paymentType} orderId=${orderId}`);
               }
             }
           }
@@ -12714,20 +12665,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           console.info(`${tag} refundId=${refundId} paymentId=${paymentId} ?${refundAmt}`);
 
           if (eventType === "refund.processed") {
-            // Match by Razorpay payment id first. Amount-only matching can complete the wrong refund.
-            const cpMatch = await rawDb.execute(rawSql`
-              SELECT customer_id, trip_id FROM customer_payments
-              WHERE razorpay_payment_id = ${paymentId}
-              ORDER BY verified_at DESC NULLS LAST, created_at DESC
-              LIMIT 1
-            `).catch(() => ({ rows: [] as any[] }));
-            const cp = cpMatch.rows[0] as any | undefined;
+            // Match the exact refund request by gateway refund id whenever possible.
             const rrRows = await rawDb.execute(rawSql`
               SELECT * FROM refund_requests
               WHERE status = 'approved'
-                AND amount = ${refundAmt}
-                ${cp?.customer_id ? rawSql`AND customer_id=${cp.customer_id}::uuid` : rawSql``}
-                ${cp?.trip_id ? rawSql`AND trip_id=${cp.trip_id}::uuid` : rawSql``}
+                AND payment_method = 'razorpay'
+                AND (
+                  refund_reference_id = ${refundId}
+                  OR (
+                    refund_reference_id IS NULL
+                    AND razorpay_payment_id = ${paymentId}
+                    AND amount = ${refundAmt}
+                  )
+                )
               ORDER BY created_at DESC LIMIT 1
             `).catch(() => ({ rows: [] as any[] }));
             if (rrRows.rows.length) {
@@ -12739,14 +12689,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
                     approved_at = NOW()
                 WHERE id = ${rr.id}::uuid
               `);
-              if (rr.customerId && io) {
-                io.to(`user:${rr.customerId}`).emit("refund:processed", {
-                  amount: refundAmt,
-                  paymentId,
-                  refundId,
-                  method: "original_payment_method",
-                });
-              }
+              console.info(`${tag} refund request completed refund=${rr.id} payment=${paymentId}`);
             }
           }
           break;
@@ -12897,14 +12840,32 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (vehicleModel) await rawDb.execute(rawSql`UPDATE users SET vehicle_model=${vehicleModel}, updated_at=now() WHERE id=${driver.id}::uuid`);
       // Create or update driver_details with vehicle category
       if (vehicleCategoryId) {
-        const existing = await rawDb.execute(rawSql`SELECT id FROM driver_details WHERE user_id=${driver.id}::uuid`);
+        const existing = await rawDb.execute(rawSql`
+          SELECT id, vehicle_category_id, approval_state
+          FROM driver_details
+          WHERE user_id=${driver.id}::uuid
+        `);
         if (existing.rows.length === 0) {
           await rawDb.execute(rawSql`
-            INSERT INTO driver_details (user_id, vehicle_category_id, availability_status, is_online, total_trips, avg_rating)
-            VALUES (${driver.id}::uuid, ${vehicleCategoryId}::uuid, 'offline', false, 0, 5.0)
+            INSERT INTO driver_details (user_id, vehicle_category_id, availability_status, is_online, total_trips, avg_rating, approval_state)
+            VALUES (${driver.id}::uuid, ${vehicleCategoryId}::uuid, 'offline', false, 0, 5.0, 'pending')
           `);
         } else {
-          await rawDb.execute(rawSql`UPDATE driver_details SET vehicle_category_id=${vehicleCategoryId}::uuid WHERE user_id=${driver.id}::uuid`);
+          const currentCategoryId = String((existing.rows[0] as any).vehicle_category_id || "");
+          const categoryChanged = currentCategoryId && currentCategoryId !== vehicleCategoryId;
+          await rawDb.execute(rawSql`
+            UPDATE driver_details
+            SET vehicle_category_id=${vehicleCategoryId}::uuid,
+                approval_state=${categoryChanged ? 'under_review' : ((existing.rows[0] as any).approval_state || 'pending')}
+            WHERE user_id=${driver.id}::uuid
+          `);
+          if (categoryChanged) {
+            await rawDb.execute(rawSql`
+              UPDATE users
+              SET verification_status='under_review', is_active=false, updated_at=NOW()
+              WHERE id=${driver.id}::uuid
+            `).catch(dbCatch("db"));
+          }
         }
       }
       res.json({ success: true, message: "Profile updated" });
@@ -12959,6 +12920,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (allUploaded) {
         await rawDb.execute(rawSql`
           UPDATE users SET verification_status='under_review' WHERE id=${driver.id}::uuid
+        `).catch(dbCatch("db"));
+        await rawDb.execute(rawSql`
+          UPDATE driver_details
+          SET approval_state='under_review'
+          WHERE user_id=${driver.id}::uuid
         `).catch(dbCatch("db"));
       }
 
@@ -13054,12 +13020,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           await rawDb.execute(rawSql`
             UPDATE users SET verification_status='approved', is_active=true WHERE id=${driverId}::uuid
           `);
+          await rawDb.execute(rawSql`
+            UPDATE driver_details
+            SET approval_state='approved'
+            WHERE user_id=${driverId}::uuid
+          `).catch(dbCatch("db"));
         }
       } else {
         // Reject ? mark driver as rejected
         await rawDb.execute(rawSql`
-          UPDATE users SET verification_status='rejected' WHERE id=${driverId}::uuid
+          UPDATE users SET verification_status='rejected', is_active=false WHERE id=${driverId}::uuid
         `);
+        await rawDb.execute(rawSql`
+          UPDATE driver_details
+          SET approval_state='rejected'
+          WHERE user_id=${driverId}::uuid
+        `).catch(dbCatch("db"));
       }
 
       // Notify driver via FCM (best-effort)
@@ -13418,42 +13394,39 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // -- DRIVER: Upload documents (DL, RC, Aadhar) ----------------------------
-  app.post("/api/app/driver/upload-document", authApp, async (req, res) => {
+  app.post("/api/app/driver/upload-document", authApp, upload.single("document"), async (req, res) => {
     try {
-      await runUploadSingle(req, res, "document");
       const user = (req as any).currentUser;
-      const { docType, expiryDate } = req.body; // dl_front, dl_back, rc, aadhar_front, aadhar_back, insurance
+      const { docType } = req.body; // dl_front, dl_back, rc, aadhar_front, aadhar_back, insurance
       const fileUrl = req.file ? `/uploads/${req.file.filename}` : null;
       if (!fileUrl || !docType) return res.status(400).json({ message: "Document type and file required" });
-      logRegistrationAudit("driver.upload-document", { docType }, { userId: user.id });
-      await rawDb.transaction(async (trx) => {
-        await upsertDriverDocumentRow(trx, user.id, docType, fileUrl, expiryDate || null);
+      await rawDb.execute(rawSql`
+        INSERT INTO driver_documents (driver_id, doc_type, file_url, status, created_at, updated_at)
+        VALUES (${user.id}::uuid, ${docType}, ${fileUrl}, 'pending', now(), now())
+        ON CONFLICT (driver_id, doc_type) DO UPDATE SET file_url=${fileUrl}, status='pending', updated_at=now()
+      `).catch(async () => {
+        await rawDb.execute(rawSql`
+          CREATE TABLE IF NOT EXISTS driver_documents (
+            id SERIAL PRIMARY KEY,
+            driver_id UUID, doc_type VARCHAR(50), file_url TEXT,
+            status VARCHAR(20) DEFAULT 'pending', created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now(),
+            UNIQUE(driver_id, doc_type)
+          )
+        `);
+        await rawDb.execute(rawSql`
+          INSERT INTO driver_documents (driver_id, doc_type, file_url, status) VALUES (${user.id}::uuid, ${docType}, ${fileUrl}, 'pending')
+          ON CONFLICT (driver_id, doc_type) DO UPDATE SET file_url=${fileUrl}, status='pending', updated_at=now()
+        `);
       });
       res.json({ success: true, docType, fileUrl, status: 'pending', message: "Document uploaded. Under review." });
-    } catch (e: any) {
-      console.error("[driver-doc-upload] /api/app/driver/upload-document failed", {
-        message: e?.message,
-        stack: e?.stack,
-        userId: (req as any)?.currentUser?.id,
-        docType: req.body?.docType,
-      });
-      res.status(500).json({ message: safeErrMsg(e) });
-    }
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
   // -- DRIVER: Get documents status ------------------------------------------
   app.get("/api/app/driver/documents", authApp, async (req, res) => {
     try {
       const user = (req as any).currentUser;
-      const r = await rawDb.execute(rawSql`
-        SELECT driver_id, doc_type,
-               COALESCE(file_url, doc_url) AS file_url,
-               COALESCE(status, verification_status, 'pending') AS status,
-               expiry_date, admin_note, reviewed_at, created_at, updated_at
-        FROM driver_documents
-        WHERE driver_id=${user.id}::uuid
-        ORDER BY created_at
-      `).catch(() => ({ rows: [] }));
+      const r = await rawDb.execute(rawSql`SELECT * FROM driver_documents WHERE driver_id=${user.id}::uuid`).catch(() => ({ rows: [] }));
       res.json({ success: true, documents: r.rows.map(camelize) });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
@@ -13466,21 +13439,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!docType || !imageData) return res.status(400).json({ message: "docType and imageData required" });
       const validTypes = ['dl_front', 'dl_back', 'rc', 'aadhar_front', 'aadhar_back', 'insurance', 'selfie', 'vehicle_photo'];
       if (!validTypes.includes(docType)) return res.status(400).json({ message: "Invalid docType" });
-      const fileUrl = persistBase64Upload(imageData, docType);
-      logRegistrationAudit("driver.upload-document-base64", { docType }, { userId: user.id });
-      await rawDb.transaction(async (trx) => {
-        await upsertDriverDocumentRow(trx, user.id, docType, fileUrl, expiryDate || null);
-      });
-      res.json({ success: true, docType, fileUrl, status: 'pending', message: "Document uploaded. Under review." });
-    } catch (e: any) {
-      console.error("[driver-doc-upload] /api/app/driver/upload-document-base64 failed", {
-        message: e?.message,
-        stack: e?.stack,
-        userId: (req as any)?.currentUser?.id,
-        docType: req.body?.docType,
-      });
-      res.status(500).json({ message: safeErrMsg(e) });
-    }
+      await rawDb.execute(rawSql`
+        INSERT INTO driver_documents (driver_id, doc_type, file_url, status, expiry_date, created_at, updated_at)
+        VALUES (${user.id}::uuid, ${docType}, ${imageData}, 'pending', ${expiryDate || null}, now(), now())
+        ON CONFLICT (driver_id, doc_type) DO UPDATE SET file_url=${imageData}, status='pending', expiry_date=${expiryDate || null}, updated_at=now()
+      `);
+      res.json({ success: true, docType, status: 'pending', message: "Document uploaded. Under review." });
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
   // -- DRIVER: Update registration profile fields -----------------------------
@@ -13498,39 +13463,82 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (password && typeof password === 'string' && password.length >= 6) {
         passwordHash = await hashPassword(password);
       }
-      logRegistrationAudit("driver.update-registration", req.body, { userId: user.id });
-      await rawDb.transaction(async (trx) => {
-        await trx.execute(rawSql`
-          UPDATE users SET
-            name = COALESCE(${fullName || null}, name),
-            full_name = COALESCE(${fullName || null}, full_name),
-            date_of_birth = COALESCE(${dateOfBirth || null}, date_of_birth),
-            city = COALESCE(${city || null}, city),
-            vehicle_brand = COALESCE(${vehicleBrand || null}, vehicle_brand),
-            vehicle_color = COALESCE(${vehicleColor || null}, vehicle_color),
-            vehicle_year = COALESCE(${vehicleYear || null}, vehicle_year),
-            license_number = COALESCE(${licenseNumber || null}, license_number),
-            license_expiry = COALESCE(${licenseExpiry || null}, license_expiry),
-            vehicle_number = COALESCE(${vehicleNumber || null}, vehicle_number),
-            vehicle_model = COALESCE(${vehicleModel || null}, vehicle_model),
-            selfie_image = COALESCE(${selfieImage || null}, selfie_image),
-            password_hash = COALESCE(${passwordHash || null}, password_hash),
-            verification_status = COALESCE(verification_status, 'pending'),
-            updated_at = NOW()
-          WHERE id = ${user.id}::uuid
-        `);
-        const vehicleCategoryId = await resolveVehicleCategoryIdForType(vehicleType || null);
-        await upsertDriverDetailsRow(trx, user.id, vehicleType || null, vehicleCategoryId);
-        await upsertVehicleRow(trx, user.id, {
-          vehicleType: vehicleType || null,
-          vehicleBrand: vehicleBrand || null,
-          vehicleModel: vehicleModel || null,
-          vehicleColor: vehicleColor || null,
-          vehicleYear: vehicleYear || null,
-          vehicleNumber: vehicleNumber || null,
-          verificationStatus: "pending",
-        });
-      });
+      const requestedVehicle = String(vehicleType || '').trim().toLowerCase();
+      const canonicalVehicleType =
+        requestedVehicle === 'mini' || requestedVehicle === 'car' ? 'mini_car' :
+        requestedVehicle === 'xl' ? 'suv' :
+        requestedVehicle;
+      const rideServiceByVehicle: Record<string, string> = {
+        bike: 'bike_ride',
+        auto: 'auto_ride',
+        mini_car: 'mini_car',
+        sedan: 'sedan',
+        suv: 'suv',
+      };
+      const rideServiceKey = rideServiceByVehicle[canonicalVehicleType] || null;
+      const canCarryParcel = ['bike', 'auto'].includes(canonicalVehicleType);
+      const serviceEligibility = [
+        ...(rideServiceKey ? [rideServiceKey] : []),
+        ...(canCarryParcel ? ['parcel_delivery'] : []),
+      ];
+      const categoryR = canonicalVehicleType ? await rawDb.execute(rawSql`
+        SELECT id
+        FROM vehicle_categories
+        WHERE is_active = true
+          AND service_type = 'ride'
+          AND (
+            vehicle_type = ${canonicalVehicleType}
+            OR LOWER(name) = ${canonicalVehicleType.replace(/_/g, ' ')}
+          )
+        ORDER BY name
+        LIMIT 1
+      `).catch(() => ({ rows: [] as any[] })) : { rows: [] as any[] };
+      const vehicleCategoryId = categoryR.rows[0]?.id || null;
+      await rawDb.execute(rawSql`
+        UPDATE users SET
+          full_name = COALESCE(${fullName || null}, full_name),
+          date_of_birth = COALESCE(${dateOfBirth || null}, date_of_birth),
+          city = COALESCE(${city || null}, city),
+          vehicle_brand = COALESCE(${vehicleBrand || null}, vehicle_brand),
+          vehicle_color = COALESCE(${vehicleColor || null}, vehicle_color),
+          vehicle_year = COALESCE(${vehicleYear || null}, vehicle_year),
+          license_number = COALESCE(${licenseNumber || null}, license_number),
+          license_expiry = COALESCE(${licenseExpiry || null}, license_expiry),
+          vehicle_number = COALESCE(${vehicleNumber || null}, vehicle_number),
+          vehicle_model = COALESCE(${vehicleModel || null}, vehicle_model),
+          selfie_image = COALESCE(${selfieImage || null}, selfie_image),
+          password_hash = COALESCE(${passwordHash || null}, password_hash),
+          verification_status = CASE WHEN user_type='driver' AND verification_status NOT IN ('approved', 'rejected') THEN 'pending' ELSE verification_status END,
+          onboard_date = COALESCE(onboard_date, now()),
+          updated_at = now()
+        WHERE id = ${user.id}::uuid
+      `);
+      if (vehicleType) {
+        await rawDb.execute(rawSql`
+          INSERT INTO driver_details (
+            user_id, vehicle_category_id, availability_status, is_online, total_trips,
+            avg_rating, approval_state, service_eligibility, parcel_eligibility, updated_at
+          )
+          SELECT
+            ${user.id}::uuid, ${vehicleCategoryId}::uuid, 'offline', false, 0,
+            5.0, 'pending', ${serviceEligibility}::text[], ${canCarryParcel}, now()
+          WHERE NOT EXISTS (
+            SELECT 1 FROM driver_details WHERE user_id = ${user.id}::uuid
+          )
+        `).catch(dbCatch("db"));
+        await rawDb.execute(rawSql`
+          UPDATE driver_details SET
+            vehicle_category_id = COALESCE(${vehicleCategoryId}::uuid, driver_details.vehicle_category_id),
+            service_eligibility = CASE
+              WHEN array_length(${serviceEligibility}::text[], 1) IS NULL THEN driver_details.service_eligibility
+              ELSE ${serviceEligibility}::text[]
+            END,
+            parcel_eligibility = ${canCarryParcel},
+            approval_state = COALESCE(NULLIF(driver_details.approval_state, ''), 'pending'),
+            updated_at = now()
+          WHERE user_id = ${user.id}::uuid
+        `).catch(dbCatch("db"));
+      }
       res.json({ success: true, message: "Profile updated" });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
@@ -13552,10 +13560,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         WHERE u.id = ${user.id}::uuid
       `);
       const docsR = await rawDb.execute(rawSql`
-        SELECT doc_type,
-               COALESCE(file_url, doc_url) AS file_url,
-               COALESCE(status, verification_status, 'pending') AS status,
-               expiry_date, admin_note, reviewed_at
+        SELECT doc_type, status, expiry_date, admin_note, reviewed_at
         FROM driver_documents WHERE driver_id = ${user.id}::uuid ORDER BY created_at
       `).catch(() => ({ rows: [] }));
       const profile = camelize(profileR.rows[0] || {});
@@ -13723,6 +13728,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
                u.rejection_note, u.license_number, u.license_expiry, u.vehicle_number,
                u.vehicle_model, u.vehicle_brand, u.vehicle_color, u.vehicle_year,
                u.date_of_birth, u.city, u.selfie_image, u.profile_image, u.created_at,
+               u.onboard_date,
                vc.name as vehicle_category_name, vc.icon as vehicle_category_icon
         FROM users u
         LEFT JOIN driver_details dd ON dd.user_id = u.id
@@ -13733,10 +13739,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       `);
       const drivers = await Promise.all(r.rows.map(async (d: any) => {
         const docsR = await rawDb.execute(rawSql`
-          SELECT doc_type,
-                 COALESCE(file_url, doc_url) AS file_url,
-                 COALESCE(status, verification_status, 'pending') AS status,
-                 expiry_date, admin_note, reviewed_at
+          SELECT doc_type, file_url, status, expiry_date, admin_note, reviewed_at, created_at, updated_at
           FROM driver_documents WHERE driver_id = ${d.id}::uuid ORDER BY created_at
         `).catch(() => ({ rows: [] }));
         return { ...camelize(d), documents: docsR.rows.map(camelize) };
@@ -13753,12 +13756,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!docType || !status) return res.status(400).json({ message: "docType and status required" });
       if (!['approved', 'rejected', 'pending'].includes(status)) return res.status(400).json({ message: "Invalid status" });
       await rawDb.execute(rawSql`
-        UPDATE driver_documents SET
-          status=${status},
-          verification_status=${status},
-          admin_note=${adminNote || null},
-          reviewed_at=NOW(),
-          updated_at=NOW()
+        UPDATE driver_documents SET status=${status}, admin_note=${adminNote || null},
+          reviewed_at=NOW(), updated_at=NOW()
         WHERE driver_id=${id}::uuid AND doc_type=${docType}
       `);
       res.json({ success: true, docType, status });
@@ -14096,9 +14095,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const r = await rawDb.execute(rawSql`
         INSERT INTO support_messages (user_id, sender, message) VALUES (${user.id}::uuid, 'user', ${message}) RETURNING *
       `);
-      const data = camelize(r.rows[0]);
-      io?.to("admin:support").emit("support:new_message", data);
-      res.json({ success: true, data });
+      res.json({ success: true, data: camelize(r.rows[0]) });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -14122,9 +14119,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const r = await rawDb.execute(rawSql`
         INSERT INTO support_messages (user_id, sender, message) VALUES (${user.id}::uuid, 'user', ${message}) RETURNING *
       `);
-      const data = camelize(r.rows[0]);
-      io?.to("admin:support").emit("support:new_message", data);
-      res.json({ success: true, data });
+      res.json({ success: true, data: camelize(r.rows[0]) });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -14316,56 +14311,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ========== APK DOWNLOADS ==========
   const apkDir = path.join(process.cwd(), "public", "apks");
-  const apkAliasPrefixes: Record<string, string> = {
+  const apkLatestPrefixes: Record<string, string> = {
     "jago-customer-latest.apk": "jago-customer-v",
     "jago-driver-latest.apk": "jago-driver-v",
     "jago-pilot-latest.apk": "jago-pilot-v",
   };
 
-  const parseApkVersion = (fileName: string): [number, number, number] => {
-    const match = fileName.match(/v(\d+)\.(\d+)\.(\d+)/i);
-    if (!match) return [0, 0, 0];
-    return [Number(match[1]), Number(match[2]), Number(match[3])];
-  };
-
-  const compareApkVersions = (a: string, b: string): number => {
-    const av = parseApkVersion(a);
-    const bv = parseApkVersion(b);
-    for (let i = 0; i < 3; i++) {
-      if (av[i] !== bv[i]) return bv[i] - av[i];
-    }
-    return 0;
-  };
-
-  const findLatestApk = (prefix: string): string | null => {
-    if (!fs.existsSync(apkDir)) return null;
-    const files = fs.readdirSync(apkDir)
-      .filter((file) => file.startsWith(prefix) && file.endsWith(".apk"))
-      .sort(compareApkVersions);
-    return files[0] ?? null;
-  };
-
-  const formatApkVersion = (fileName: string | null, fallback: string): string => {
-    const match = fileName?.match(/v\d+\.\d+\.\d+/i);
-    return match?.[0] ?? fallback;
-  };
-
-  const formatApkSize = (fileName: string | null): string => {
-    if (!fileName) return "APK unavailable";
-    const filePath = path.join(apkDir, fileName);
-    if (!fs.existsSync(filePath)) return "APK unavailable";
-    const sizeMb = Math.round(fs.statSync(filePath).size / (1024 * 1024));
-    return `${sizeMb} MB`;
-  };
-
-  const resolveApkAlias = (fileName: string): string | null => {
-    const prefix = apkAliasPrefixes[fileName];
+  function resolveLatestApkFile(alias: string) {
+    const prefix = apkLatestPrefixes[alias];
     if (!prefix) return null;
-    return findLatestApk(prefix);
-  };
+    try {
+      const candidates = fs
+        .readdirSync(apkDir)
+        .filter((file) => file.startsWith(prefix) && file.endsWith(".apk"))
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+      return candidates.at(-1) ?? null;
+    } catch {
+      return null;
+    }
+  }
 
   app.get("/apks/:fileName", (req, res, next) => {
-    const target = resolveApkAlias(req.params.fileName);
+    const target = resolveLatestApkFile(req.params.fileName);
     if (!target) return next();
     return res.sendFile(path.join(apkDir, target));
   });
@@ -14378,8 +14345,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!base) {
       return res.status(503).send("APP_BASE_URL is not configured");
     }
-    const customerLatest = findLatestApk("jago-customer-v");
-    const driverLatest = findLatestApk("jago-driver-v") ?? findLatestApk("jago-pilot-v");
     res.send(`<!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Download JAGO Pro App</title>
@@ -14403,12 +14368,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   <a class="btn btn-blue" href="/apks/jago-customer-latest.apk" download>
     ?? Download Customer App
   </a>
-  <span class="badge">${formatApkVersion(customerLatest, "Latest")} | Universal APK | ${formatApkSize(customerLatest)}</span>
+  <span class="badge">Latest live customer APK | Universal APK</span>
   <br><br>
   <a class="btn btn-green" href="/apks/jago-driver-latest.apk" download>
     ?? Download Driver / Pilot App
   </a>
-  <span class="badge">${formatApkVersion(driverLatest, "Latest")} | Universal APK | ${formatApkSize(driverLatest)}</span>
+  <span class="badge">Latest live driver APK | Universal APK</span>
   <div class="version">Android 6.0+ required � Free Download</div>
 </div>
 </body></html>`);
@@ -14495,9 +14460,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           is_read BOOLEAN DEFAULT false,
           created_at TIMESTAMP DEFAULT NOW()
         );
-        ALTER TABLE support_messages ADD COLUMN IF NOT EXISTS sender VARCHAR(10);
-        ALTER TABLE support_messages ADD COLUMN IF NOT EXISTS is_read BOOLEAN DEFAULT false;
-        ALTER TABLE support_messages ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
       `);
       // Add break_until column to users if not exists
       await rawDb.execute(rawSql`
@@ -14788,8 +14750,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       const { rideId, seatsBooked = 1 } = req.body;
       if (!rideId) return res.status(400).json({ message: 'rideId required' });
       const seats = parseInt(seatsBooked, 10);
-      if (!Number.isFinite(seats) || seats < 1 || seats > 2) {
-        return res.status(400).json({ message: 'You can book only 1 or 2 seats per booking' });
+      if (!Number.isFinite(seats) || seats < 1 || seats > 6) {
+        return res.status(400).json({ message: 'seatsBooked must be between 1 and 6' });
       }
       const rideRes = await rawDb.execute(rawSql`
         SELECT cs.*, COALESCE((SELECT SUM(b.seats_booked) FROM car_sharing_bookings b WHERE b.ride_id = cs.id AND b.status != 'cancelled'),0) as booked_count
@@ -14974,28 +14936,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     try {
       const { id } = req.params;
       const { name, nativeName, flag, isActive, sortOrder } = req.body;
-      const normalizedName = typeof name === "string" ? name.trim() : null;
-      const normalizedNativeName = typeof nativeName === "string" ? nativeName.trim() : null;
-      const normalizedFlag = typeof flag === "string" ? flag.trim() : null;
-      const normalizedIsActive = typeof isActive === "boolean" ? isActive : null;
-      const normalizedSortOrder = sortOrder === undefined || sortOrder === null || sortOrder === "" ? null : Number(sortOrder);
-      if (normalizedSortOrder !== null && Number.isNaN(normalizedSortOrder)) {
-        return res.status(400).json({ message: "sortOrder must be a valid number" });
-      }
-      const result = await rawDb.execute(rawSql`
+      await rawDb.execute(rawSql`
         UPDATE app_languages SET
-          name = COALESCE(${normalizedName}, name),
-          native_name = COALESCE(${normalizedNativeName}, native_name),
-          flag = COALESCE(${normalizedFlag}, flag),
-          is_active = COALESCE(${normalizedIsActive}::boolean, is_active),
-          sort_order = COALESCE(${normalizedSortOrder}::int, sort_order)
+          name = COALESCE(${name}, name),
+          native_name = COALESCE(${nativeName}, native_name),
+          flag = COALESCE(${flag}, flag),
+          is_active = COALESCE(${isActive}, is_active),
+          sort_order = COALESCE(${sortOrder}, sort_order)
         WHERE id = ${id}::uuid
-        RETURNING *
       `);
-      if (!result.rows.length) {
-        return res.status(404).json({ message: "Language not found" });
-      }
-      res.json(camelize(result.rows)[0]);
+      res.json({ success: true });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -15017,6 +14967,81 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
+  const syncServiceActivationState = async (serviceKey: string, isActive: boolean) => {
+    const normalizedKey = String(serviceKey || "").toLowerCase();
+    const legacyKeyMap: Record<string, string> = {
+      bike_ride: "ride",
+      auto_ride: "ride",
+      mini_car: "ride",
+      sedan: "ride",
+      suv: "ride",
+      parcel_delivery: "parcel",
+      cargo_freight: "cargo",
+      intercity: "intercity",
+      intercity_pool: "intercity",
+      car_sharing: "carsharing",
+      city_pool: "carsharing",
+      outstation_pool: "outstation",
+    };
+
+    if (normalizedKey === "bike_ride") {
+      await rawDb.execute(rawSql`
+        UPDATE vehicle_categories
+        SET is_active = ${isActive}
+        WHERE vehicle_type = 'bike' OR LOWER(name) LIKE '%bike%'
+      `).catch(dbCatch("db"));
+    } else if (normalizedKey === "auto_ride") {
+      await rawDb.execute(rawSql`
+        UPDATE vehicle_categories
+        SET is_active = ${isActive}
+        WHERE vehicle_type = 'auto' OR LOWER(name) LIKE '%auto%'
+      `).catch(dbCatch("db"));
+    } else if (normalizedKey === "mini_car") {
+      await rawDb.execute(rawSql`
+        UPDATE vehicle_categories
+        SET is_active = ${isActive}
+        WHERE vehicle_type = 'mini_car' OR LOWER(name) LIKE '%mini%'
+      `).catch(dbCatch("db"));
+    } else if (normalizedKey === "sedan") {
+      await rawDb.execute(rawSql`
+        UPDATE vehicle_categories
+        SET is_active = ${isActive}
+        WHERE vehicle_type = 'sedan' OR LOWER(name) LIKE '%sedan%'
+      `).catch(dbCatch("db"));
+    } else if (normalizedKey === "suv") {
+      await rawDb.execute(rawSql`
+        UPDATE vehicle_categories
+        SET is_active = ${isActive}
+        WHERE vehicle_type = 'suv' OR LOWER(name) LIKE '%suv%'
+      `).catch(dbCatch("db"));
+    } else if (normalizedKey === "parcel_delivery") {
+      await rawDb.execute(rawSql`
+        UPDATE vehicle_categories
+        SET is_active = ${isActive}
+        WHERE type IN ('parcel', 'cargo')
+           OR vehicle_type IN ('bike_parcel', 'auto_parcel', 'tata_ace', 'pickup_truck', 'bolero_cargo', 'tempo_407')
+      `).catch(dbCatch("db"));
+    } else if (normalizedKey === "city_pool") {
+      await rawDb.execute(rawSql`
+        UPDATE vehicle_categories
+        SET is_active = ${isActive}
+        WHERE is_carpool = true
+           OR vehicle_type = 'carpool'
+           OR LOWER(name) LIKE '%pool%'
+           OR LOWER(name) LIKE '%share%'
+      `).catch(dbCatch("db"));
+    }
+
+    const legacyKey = legacyKeyMap[normalizedKey];
+    if (legacyKey) {
+      await rawDb.execute(rawSql`
+        INSERT INTO business_settings (key_name, value, settings_type)
+        VALUES (${'service_' + legacyKey + '_enabled'}, ${isActive ? '1' : '0'}, 'service_settings')
+        ON CONFLICT (key_name) DO UPDATE SET value=${isActive ? '1' : '0'}, updated_at=now()
+      `).catch(dbCatch("db"));
+    }
+  };
+
   // Admin: toggle status / update revenue model + commission rate
   app.patch("/api/platform-services/:key", requireAdminAuth, requireAdminRole(["admin", "superadmin"]), async (req, res) => {
     try {
@@ -15024,7 +15049,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       const { service_status, revenue_model, commission_rate } = req.body;
       const updates: string[] = ['updated_at=NOW()'];
       if (service_status !== undefined) updates.push(`service_status='${service_status === 'active' ? 'active' : 'inactive'}'`);
-      if (revenue_model !== undefined && ['subscription', 'commission', 'hybrid'].includes(revenue_model)) {
+      if (revenue_model !== undefined && ['free', 'subscription', 'commission', 'hybrid'].includes(revenue_model)) {
         updates.push(`revenue_model='${revenue_model}'`);
       }
       if (commission_rate !== undefined) updates.push(`commission_rate=${parseFloat(commission_rate)}`);
@@ -15039,44 +15064,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       `);
       if (!(r.rows as any[]).length) return res.status(404).json({ message: 'Service not found' });
 
-      // Auto-sync vehicle_categories is_active when service is toggled
       if (service_status !== undefined) {
-        const isActive = service_status === 'active';
-        // Map service_key ? specific vehicle_type for per-vehicle control
-        // Using vehicle_type (not type) so toggling one service doesn't affect others
-        const vehicleTypeMap: Record<string, string> = {
-          'bike_ride': 'bike',
-          'bike_taxi': 'bike',
-          'auto_ride': 'auto',
-          'mini_car': 'mini_car',
-          'sedan': 'sedan',
-          'suv': 'suv',
-          'city_pool': 'carpool',
-          'intercity_pool': 'carpool',
-          'outstation_pool': 'carpool',
-        };
-        const vcVehicleType = vehicleTypeMap[key];
-        if (vcVehicleType) {
-          await rawDb.execute(rawSql`UPDATE vehicle_categories SET is_active=${isActive} WHERE vehicle_type=${vcVehicleType}`).catch(dbCatch("db"));
-        }
+        await syncServiceActivationState(key, service_status === 'active');
         // Parcel � all parcel vehicles share one service toggle
-        if (key === 'parcel_delivery') {
-          await rawDb.execute(rawSql`UPDATE vehicle_categories SET is_active=${isActive} WHERE type='parcel'`).catch(dbCatch("db"));
-        }
         // Also sync business_settings legacy toggle
-        const legacyKeyMap: Record<string, string> = {
-          'bike_ride': 'ride', 'auto_ride': 'ride', 'mini_car': 'ride',
-          'parcel_delivery': 'parcel', 'cargo_freight': 'cargo',
-          'intercity': 'intercity', 'car_sharing': 'carsharing',
-        };
-        const legacyKey = legacyKeyMap[key];
-        if (legacyKey) {
-          await rawDb.execute(rawSql`
-            INSERT INTO business_settings (key_name, value, settings_type)
-            VALUES (${'service_' + legacyKey + '_enabled'}, ${isActive ? '1' : '0'}, 'service_settings')
-            ON CONFLICT (key_name) DO UPDATE SET value=${isActive ? '1' : '0'}, updated_at=now()
-          `).catch(dbCatch("db"));
-        }
       }
 
       res.json((r.rows as any[])[0]);
@@ -15108,128 +15099,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     pickup_truck: { baseFare: 200, perKm: 22, perKg: 1, name: 'Pickup Truck', maxWeightKg: 2000, loadCharge: 100 },
     auto_parcel: { baseFare: 50, perKm: 13, perKg: 7, name: 'Auto Parcel', maxWeightKg: 50, loadCharge: 0 },
     bolero_cargo: { baseFare: 200, perKm: 22, perKg: 3, name: 'Bolero Cargo', maxWeightKg: 1500, loadCharge: 80 },
-    tempo_407: { baseFare: 800, perKm: 28, perKg: 1, name: 'Tempo 407', maxWeightKg: 2500, loadCharge: 150 },
+    tempo_407: { baseFare: 800, perKm: 28, perKg: 1, name: 'Tata 407 / Tempo', maxWeightKg: 2500, loadCharge: 120 },
   };
 
   // 60s in-memory caches for parcel pricing lookups — avoids hammering DB
   // on every quote/booking (parcel_vehicle_types + parcel_fares + platform_services
   // + zones.surge_factor are otherwise 4 queries per call).
-  const ALLOWED_PARCEL_KEYS = new Set(Object.keys(PARCEL_VEHICLES));
-  const PARCEL_KEY_ALIASES: Record<string, string> = {
-    parcel_bike: "bike_parcel",
-    bike_delivery: "bike_parcel",
-    parcel_auto: "auto_parcel",
-    auto_delivery: "auto_parcel",
-    mini_truck: "tata_ace",
-    tata_ace: "tata_ace",
-    pickup_van: "pickup_truck",
-    pickup_truck: "pickup_truck",
-    bolero_pickup: "bolero_cargo",
-    bolero_cargo: "bolero_cargo",
-    tempo: "tempo_407",
-    tempo_407: "tempo_407",
-  };
-
-  function normalizeParcelVehicleKey(input: unknown): string {
-    const raw = String(input || "").trim().toLowerCase();
-    if (!raw) return "";
-    const direct = PARCEL_KEY_ALIASES[raw] || raw;
-    if (ALLOWED_PARCEL_KEYS.has(direct)) return direct;
-    if (raw.includes("bike") && raw.includes("parcel")) return "bike_parcel";
-    if (raw.includes("auto") && raw.includes("parcel")) return "auto_parcel";
-    if (raw.includes("tata") || raw.includes("ace") || raw.includes("mini truck")) return "tata_ace";
-    if (raw.includes("bolero")) return "bolero_cargo";
-    if (raw.includes("tempo") || raw.includes("407")) return "tempo_407";
-    if (raw.includes("pickup")) return "pickup_truck";
-    return direct;
-  }
-
-  function assertAllowedParcelVehicle(input: unknown): string {
-    const key = normalizeParcelVehicleKey(input);
-    if (!ALLOWED_PARCEL_KEYS.has(key)) {
-      const err: any = new Error("Unsupported parcel vehicle category");
-      err.statusCode = 400;
-      err.code = "INVALID_PARCEL_VEHICLE";
-      err.allowed = Array.from(ALLOWED_PARCEL_KEYS);
-      throw err;
-    }
-    return key;
-  }
-
-  function parcelDriverToken(value: unknown): string {
-    const v = String(value || "").trim().toLowerCase();
-    if (!v) return "";
-    if ((v.includes("bike") && (v.includes("parcel") || v.includes("delivery"))) || v === "bike_parcel") return "bike_parcel";
-    if ((v.includes("auto") && (v.includes("parcel") || v.includes("delivery") || v.includes("cargo"))) || v === "auto_parcel" || v === "mini_cargo_auto") return "auto_parcel";
-    if (v.includes("tata") || v.includes("ace") || v.includes("mini truck")) return "tata_ace";
-    if (v.includes("bolero")) return "bolero_cargo";
-    if (v.includes("tempo") || v.includes("407")) return "tempo_407";
-    if (v.includes("pickup")) return "pickup_truck";
-    return normalizeParcelVehicleKey(v);
-  }
-
-  async function resolveVehicleCategoryIdForType(vehicleType?: string | null): Promise<string | null> {
-    if (!vehicleType) return null;
-    const key = normalizeParcelVehicleKey(vehicleType);
-    const r = await rawDb.execute(rawSql`
-      SELECT id FROM vehicle_categories
-      WHERE LOWER(COALESCE(vehicle_type, '')) = LOWER(${key || vehicleType})
-         OR LOWER(COALESCE(slug, '')) = LOWER(${key || vehicleType})
-         OR LOWER(COALESCE(name, '')) = LOWER(${vehicleType})
-      ORDER BY CASE WHEN LOWER(COALESCE(vehicle_type, '')) = LOWER(${key || vehicleType}) THEN 0 ELSE 1 END
-      LIMIT 1
-    `).catch(() => ({ rows: [] as any[] }));
-    return (r.rows[0] as any)?.id ? String((r.rows[0] as any).id) : null;
-  }
-
-  async function isDriverEligibleForParcel(driverId: string, parcelVehicle: unknown): Promise<boolean> {
-    const parcelKey = assertAllowedParcelVehicle(parcelVehicle);
-    const r = await rawDb.execute(rawSql`
-      SELECT
-        u.id,
-        u.current_trip_id,
-        u.verification_status,
-        dd.vehicle_type AS driver_vehicle_type,
-        vc.vehicle_type AS category_vehicle_type,
-        vc.name AS category_name,
-        vc.slug AS category_slug,
-        vc.service_type AS category_service_type
-      FROM users u
-      JOIN driver_details dd ON dd.user_id = u.id
-      LEFT JOIN vehicle_categories vc ON vc.id = dd.vehicle_category_id
-      WHERE u.id = ${driverId}::uuid
-        AND u.user_type = 'driver'
-        AND ${activeDriverEligibilitySql("u")}
-      LIMIT 1
-    `).catch(() => ({ rows: [] as any[] }));
-    const row = (r.rows as any[])[0];
-    if (!row || row.current_trip_id) return false;
-    const serviceType = String(row.category_service_type || "").toLowerCase();
-    const categoryBlob = [
-      row.category_vehicle_type,
-      row.category_name,
-      row.category_slug,
-    ].map((v) => String(v || "").toLowerCase()).join(" ");
-    const explicitParcelCategory =
-      serviceType === "parcel" ||
-      categoryBlob.includes("parcel") ||
-      categoryBlob.includes("cargo") ||
-      categoryBlob.includes("truck") ||
-      categoryBlob.includes("pickup") ||
-      categoryBlob.includes("tempo") ||
-      categoryBlob.includes("tata") ||
-      categoryBlob.includes("bolero") ||
-      ["bike_parcel", "auto_parcel", "tata_ace", "pickup_truck", "bolero_cargo", "tempo_407", "mini_cargo_auto"].some((key) => categoryBlob.includes(key));
-    if (!explicitParcelCategory) return false;
-    const tokens = [
-      parcelDriverToken(row.driver_vehicle_type),
-      parcelDriverToken(row.category_vehicle_type),
-      parcelDriverToken(row.category_name),
-      parcelDriverToken(row.category_slug),
-    ].filter(Boolean);
-    return tokens.includes(parcelKey);
-  }
-
   const PARCEL_CACHE_TTL_MS = 60_000;
   type CacheEntry<T> = { value: T; expiresAt: number };
   const parcelVehicleCache = new Map<string, CacheEntry<any>>();
@@ -15256,24 +15131,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     pickupLat?: number | null,
     pickupLng?: number | null,
   ) {
-    vehicleCategory = assertAllowedParcelVehicle(vehicleCategory);
     // 1. Vehicle row from DB (cached)
     let pv = cacheGet<any>(parcelVehicleCache, vehicleCategory);
     if (pv === undefined) {
       const pvRes = await rawDb.execute(rawSql`
-        SELECT vehicle_key, name, max_weight_kg, base_fare, per_km, per_kg, load_charge, is_active
-        FROM parcel_vehicle_types WHERE vehicle_key = ${vehicleCategory} LIMIT 1
+        SELECT vehicle_key, name, max_weight_kg, base_fare, per_km, per_kg, load_charge
+        FROM parcel_vehicle_types WHERE vehicle_key = ${vehicleCategory} AND is_active = true LIMIT 1
       `).catch(() => ({ rows: [] as any[] }));
       pv = pvRes.rows[0] || null;
       cacheSet(parcelVehicleCache, vehicleCategory, pv);
     }
-    if (pv && pv.is_active === false) {
-      const err: any = new Error(`${pv.name || vehicleCategory} is currently unavailable.`);
-      err.statusCode = 503;
-      err.code = "PARCEL_VEHICLE_INACTIVE";
-      throw err;
-    }
-    const hc = PARCEL_VEHICLES[vehicleCategory];
+    const hc = PARCEL_VEHICLES[vehicleCategory] || PARCEL_VEHICLES.bike_parcel;
     const vehicleName = pv?.name || hc.name;
     const maxWeightKg = safeFloat(pv?.max_weight_kg ?? hc.maxWeightKg, 10);
     const vcBaseFare = safeFloat(pv?.base_fare ?? hc.baseFare, 30);
@@ -15318,17 +15186,29 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     const helperRate = safeFloat(pfRow.helper_charge_per_hour, 0);
     const maxHelpers = parseInt(pfRow.max_helpers || '0') || 0;
 
-    // 3. Configurable commission from platform_services (cached)
-    let commPctNum = cacheGet<number>(parcelCommissionCache, 'parcel_delivery');
+    // 3. Configurable commission + GST from admin settings/platform services (cached)
+    let commPctNum = cacheGet<number>(parcelCommissionCache, 'parcel_delivery_commission');
     if (commPctNum === undefined) {
-      const platRes = await rawDb.execute(rawSql`
-        SELECT commission_pct FROM platform_services WHERE service_key = 'parcel_delivery' LIMIT 1
-      `).catch(() => ({ rows: [] as any[] }));
-      commPctNum = safeFloat((platRes.rows[0] as any)?.commission_pct, 15);
-      cacheSet(parcelCommissionCache, 'parcel_delivery', commPctNum);
+      const [platRes, revenueSettings] = await Promise.all([
+        rawDb.execute(rawSql`
+          SELECT commission_rate FROM platform_services WHERE service_key = 'parcel_delivery' LIMIT 1
+        `).catch(() => ({ rows: [] as any[] })),
+        loadRevenueSettings().catch(() => ({} as Record<string, string>)),
+      ]);
+      commPctNum = safeFloat(
+        (platRes.rows[0] as any)?.commission_rate,
+        safeFloat(revenueSettings.parcels_commission_pct ?? revenueSettings.commission_pct, 15),
+      );
+      cacheSet(parcelCommissionCache, 'parcel_delivery_commission', commPctNum);
+    }
+    let gstPctNum = cacheGet<number>(parcelCommissionCache, 'parcel_delivery_gst');
+    if (gstPctNum === undefined) {
+      const revenueSettings = await loadRevenueSettings().catch(() => ({} as Record<string, string>));
+      gstPctNum = safeFloat(revenueSettings.parcel_gst_rate, 18);
+      cacheSet(parcelCommissionCache, 'parcel_delivery_gst', gstPctNum);
     }
     const commRate = commPctNum / 100;
-    const gstRate = 0.05;
+    const gstRate = gstPctNum / 100;
 
     // 4. Zone surge multiplier (cached, applies to base+distance+weight, not loadCharge/GST)
     let surgeMult = 1.0;
@@ -15379,12 +15259,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     try {
       const { vehicleCategory = 'bike_parcel', dropLocations = [], weightKg = 1,
         totalDistanceKm, pickupLat, pickupLng } = req.body;
-      const parcelVehicleCategory = assertAllowedParcelVehicle(vehicleCategory);
       const wt = Math.max(0.1, safeFloat(weightKg, 1));
       const dist = Math.max(0.5, safeFloat(totalDistanceKm, 5));
 
       const f = await resolveParcelFare(
-        parcelVehicleCategory, dist, wt,
+        vehicleCategory, dist, wt,
         pickupLat ? parseFloat(pickupLat) : null,
         pickupLng ? parseFloat(pickupLng) : null,
       );
@@ -15398,7 +15277,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       }
 
       res.json({
-        vehicleCategory: parcelVehicleCategory,
+        vehicleCategory,
         vehicleName: f.vehicleName,
         maxWeightKg: f.maxWeightKg,
         baseFare: f.baseFare,
@@ -15453,7 +15332,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         declaredValue = 0, isFragile = false, insuranceEnabled = false,
         parcelDescription = '',
       } = req.body;
-      const parcelVehicleCategory = assertAllowedParcelVehicle(vehicleCategory);
       if (!pickupAddress) return res.status(400).json({ message: 'pickupAddress required' });
       if (!(dropLocations as any[]).length) return res.status(400).json({ message: 'At least one drop location required' });
 
@@ -15478,7 +15356,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
       // Zone-aware fare resolution
       const f = await resolveParcelFare(
-        parcelVehicleCategory, dist, wt,
+        vehicleCategory, dist, wt,
         pickupLat ? parseFloat(pickupLat) : null,
         pickupLng ? parseFloat(pickupLng) : null,
       );
@@ -15504,13 +15382,26 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       const commPct = f.commPct;
       const commAmt = f.commAmt;
       const pickupOtp = Math.floor(100000 + Math.random() * 900000).toString();
-      const expectedMinutes = calculateExpectedDeliveryMinutes(parcelVehicleCategory, dist);
+      const expectedMinutes = calculateExpectedDeliveryMinutes(vehicleCategory, dist);
+
+      await rawDb.execute(rawSql`
+        UPDATE parcel_orders
+        SET current_status='cancelled',
+            cancelled_reason='Auto-cancelled: parcel request expired before driver progress',
+            updated_at=NOW()
+        WHERE customer_id=${customerId}::uuid
+          AND (
+            (current_status='searching' AND created_at < NOW() - INTERVAL '5 minutes')
+            OR (current_status='driver_assigned' AND updated_at < NOW() - INTERVAL '30 minutes')
+          )
+      `).catch(dbCatch("db"));
 
       // Check if customer already has an active/searching parcel order
       const activeParcel = await rawDb.execute(rawSql`
         SELECT id FROM parcel_orders
         WHERE customer_id=${customerId}::uuid
           AND current_status IN ('searching','driver_assigned','accepted','picked_up','in_transit')
+          AND updated_at > NOW() - INTERVAL '24 hours'
         LIMIT 1
       `);
       if (activeParcel.rows.length) {
@@ -15536,7 +15427,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
            declared_value, is_fragile, insurance_enabled, insurance_premium,
            parcel_description, expected_delivery_minutes, load_charge)
         VALUES
-          (${customerId}::uuid, ${parcelVehicleCategory}, ${pickupAddress},
+          (${customerId}::uuid, ${vehicleCategory}, ${pickupAddress},
            ${pickupLat ?? null}, ${pickupLng ?? null},
            ${pickupContactName ?? ''}, ${pickupContactPhone ?? ''},
            ${JSON.stringify(dropsWithOtp)},
@@ -15564,7 +15455,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
           for (const r of PARCEL_DISPATCH_RADII) {
             const match = await findParcelCapableDriversDetailed(
-              Number(pickupLat), Number(pickupLng), r, parcelVehicleCategory, [], 10
+              Number(pickupLat), Number(pickupLng), r, vehicleCategory, [], 10
             );
             finalRadiusUsed = r;
             lastExcludedSummary = match.excludedSummary;
@@ -15578,20 +15469,20 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
           if (!parcelDrivers.length) {
             console.warn(
-              `[PARCEL_DISPATCH_FAIL] orderId=${order.id} parcelKey=${parcelVehicleCategory} ` +
+              `[PARCEL_DISPATCH_FAIL] orderId=${order.id} parcelKey=${vehicleCategory} ` +
               `radiusTried=${finalRadiusUsed}km mappingRejected=${mappingRejected} ` +
               `excludedSummary=${JSON.stringify(lastExcludedSummary)}`
             );
           } else {
             console.log(
-              `[PARCEL_MATCH] orderId=${order.id} parcelKey=${parcelVehicleCategory} ` +
+              `[PARCEL_MATCH] orderId=${order.id} parcelKey=${vehicleCategory} ` +
               `found=${parcelDrivers.length} radius=${finalRadiusUsed}km`
             );
           }
 
           const payload = {
             orderId: order.id,
-            vehicleCategory: parcelVehicleCategory,
+            vehicleCategory,
             pickupAddress,
             pickupLat, pickupLng,
             totalFare,
@@ -15609,7 +15500,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
                 pickupAddress: String(pickupAddress || ''),
                 totalFare: Number(totalFare) || 0,
                 orderId: order.id,
-                vehicleCategory: parcelVehicleCategory,
+                vehicleCategory: vehicleCategory as string,
               }).catch(dbCatch("db"));
             }
           }
@@ -15625,13 +15516,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           orderId: order.id,
           companyId: b2bCompanyId,
           timestamp: new Date().toISOString(),
-          data: { vehicleCategory: parcelVehicleCategory, totalFare, drops: dropsWithOtp.length },
+          data: { vehicleCategory, totalFare, drops: dropsWithOtp.length },
         }).catch(dbCatch("db"));
       }
 
       // Emit parcel lifecycle event
       emitParcelLifecycle(order.id, customerId, null, "new_order", {
-        vehicleCategory: parcelVehicleCategory, totalFare, pickupAddress, drops: dropsWithOtp.length,
+        vehicleCategory, totalFare, pickupAddress, drops: dropsWithOtp.length,
       });
 
       res.json({
@@ -15648,7 +15539,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         insurancePremium: insurancePremium || 0,
         expectedDeliveryMinutes: expectedMinutes,
       });
-    } catch (e: any) { res.status(e?.statusCode || 500).json({ message: safeErrMsg(e), code: e?.code, allowed: e?.allowed }); }
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
   // Customer: get active/recent parcel orders
@@ -15704,76 +15595,53 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   });
 
   // Driver: get pending parcel requests nearby
-  app.get("/api/app/driver/parcel/pending", authApp, requireDriver, async (req, res) => {
+  app.get("/api/app/driver/parcel/pending", authApp, async (req, res) => {
     try {
-      const driverId = (req as any).currentUser?.id;
       const r = await rawDb.execute(rawSql`
         SELECT * FROM parcel_orders
         WHERE current_status = 'searching'
         ORDER BY created_at ASC
-        LIMIT 50
+        LIMIT 20
       `);
-      const eligibleOrders: any[] = [];
-      for (const order of r.rows as any[]) {
-        if (await isDriverEligibleForParcel(driverId, order.vehicle_category)) {
-          eligibleOrders.push(order);
-        }
-        if (eligibleOrders.length >= 20) break;
-      }
-      res.json({ orders: eligibleOrders });
+      res.json({ orders: r.rows });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
   // Driver: accept a parcel order
-  app.post("/api/app/driver/parcel/:id/accept", authApp, requireDriver, async (req, res) => {
+  app.post("/api/app/driver/parcel/:id/accept", authApp, async (req, res) => {
     try {
       const driverId = (req as any).currentUser?.id;
-      const existing = await rawDb.execute(rawSql`
-        SELECT id, vehicle_category, current_status, driver_id
-        FROM parcel_orders
-        WHERE id=${req.params.id}::uuid
+      const activeRide = await rawDb.execute(rawSql`
+        SELECT id
+        FROM trip_requests
+        WHERE driver_id=${driverId}::uuid
+          AND current_status IN ('driver_assigned','accepted','arrived','on_the_way')
+          AND updated_at > NOW() - INTERVAL '12 hours'
         LIMIT 1
       `);
-      const existingOrder = (existing.rows as any[])[0];
-      if (!existingOrder) return res.status(404).json({ message: 'Order not found' });
-      if (existingOrder.current_status !== 'searching' || existingOrder.driver_id) {
-        return res.status(409).json({ message: 'Already assigned' });
+      if ((activeRide.rows as any[]).length) {
+        return res.status(409).json({ message: 'Finish your current ride before accepting a parcel order.', code: 'DRIVER_BUSY_WITH_RIDE' });
       }
-      const eligible = await isDriverEligibleForParcel(driverId, existingOrder.vehicle_category);
-      if (!eligible) {
-        return res.status(403).json({ message: 'Driver is not eligible for this parcel vehicle category', code: 'PARCEL_DRIVER_NOT_ELIGIBLE' });
-      }
-      try {
-        await enforceDriverRevenuePolicy(driverId, 'parcel');
-      } catch (policyErr: any) {
-        return res.status(policyErr.statusCode || 403).json({
-          message: policyErr.message || 'Subscription required for parcel service',
-          code: policyErr.code || 'SUBSCRIPTION_REQUIRED',
-          moduleName: 'parcel',
-        });
+      const activeParcel = await rawDb.execute(rawSql`
+        SELECT id
+        FROM parcel_orders
+        WHERE driver_id=${driverId}::uuid
+          AND current_status IN ('driver_assigned','accepted','picked_up','in_transit')
+          AND updated_at > NOW() - INTERVAL '12 hours'
+        LIMIT 1
+      `);
+      if ((activeParcel.rows as any[]).length) {
+        return res.status(409).json({ message: 'Finish your current parcel order before accepting another one.', code: 'DRIVER_BUSY_WITH_PARCEL' });
       }
       const r = await rawDb.execute(rawSql`
         UPDATE parcel_orders
-        SET driver_id=${driverId}::uuid, current_status='driver_assigned', version=COALESCE(version, 0)+1, updated_at=NOW()
+        SET driver_id=${driverId}::uuid, current_status='driver_assigned', updated_at=NOW()
         WHERE id=${req.params.id}::uuid AND current_status='searching'
           AND driver_id IS NULL
         RETURNING *
       `);
       if (!(r.rows as any[]).length) return res.status(409).json({ message: 'Already assigned' });
       const order = (r.rows as any[])[0];
-      const lockDriver = await rawDb.execute(rawSql`
-        UPDATE users SET current_trip_id=${order.id}::uuid, updated_at=NOW()
-        WHERE id=${driverId}::uuid AND current_trip_id IS NULL
-        RETURNING id
-      `).catch(dbCatch("db"));
-      if (!(lockDriver as any)?.rows?.length) {
-        await rawDb.execute(rawSql`
-          UPDATE parcel_orders
-          SET driver_id=NULL, current_status='searching', updated_at=NOW()
-          WHERE id=${order.id}::uuid AND driver_id=${driverId}::uuid
-        `).catch(dbCatch("db"));
-        return res.status(409).json({ message: 'Driver already has an active trip' });
-      }
       if (io) io.to(`user:${order.customer_id}`).emit('parcel:driver_assigned', { orderId: order.id, driverId });
       // B2B webhook: driver_assigned
       if (order.is_b2b && order.b2b_company_id) {
@@ -15791,21 +15659,25 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   });
 
   // Driver: verify pickup OTP ? start delivery
-  app.post("/api/app/driver/parcel/:id/pickup-otp", authApp, requireDriver, async (req, res) => {
+  app.post("/api/app/driver/parcel/:id/pickup-otp", authApp, async (req, res) => {
     try {
       const driverId = (req as any).currentUser?.id;
       const { otp } = req.body;
       const r = await rawDb.execute(rawSql`
-        SELECT id, pickup_otp, current_status, customer_id, driver_id, drop_locations, is_b2b, b2b_company_id
+        SELECT id, driver_id, pickup_otp, current_status, customer_id, drop_locations, is_b2b, b2b_company_id
         FROM parcel_orders WHERE id=${req.params.id}::uuid
       `);
       const order = (r.rows as any[])[0];
       if (!order) return res.status(404).json({ message: 'Order not found' });
-      if (String(order.driver_id || '') !== String(driverId || '')) return res.status(403).json({ message: 'This parcel is assigned to another driver' });
+      if (String(order.driver_id || '') !== String(driverId || '')) {
+        return res.status(403).json({ message: 'This parcel is assigned to another driver.' });
+      }
       if (order.current_status !== 'driver_assigned') return res.status(400).json({ message: 'Invalid order state' });
       if (String(order.pickup_otp) !== String(otp)) return res.status(400).json({ message: 'Invalid OTP' });
       await rawDb.execute(rawSql`
-        UPDATE parcel_orders SET current_status='in_transit', version=COALESCE(version, 0)+1, updated_at=NOW() WHERE id=${req.params.id}::uuid
+        UPDATE parcel_orders
+        SET current_status='in_transit', updated_at=NOW()
+        WHERE id=${req.params.id}::uuid AND driver_id=${driverId}::uuid
       `);
 
       // Get driver name for notifications
@@ -15833,17 +15705,21 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   });
 
   // Driver: verify delivery OTP for a specific drop stop
-  app.post("/api/app/driver/parcel/:id/drop-otp", authApp, requireDriver, async (req, res) => {
+  app.post("/api/app/driver/parcel/:id/drop-otp", authApp, async (req, res) => {
     try {
       const driverId = (req as any).currentUser?.id;
       const { dropIndex, otp } = req.body;
       const r = await rawDb.execute(rawSql`
-        SELECT id, drop_locations, current_drop_index, current_status, customer_id, total_fare, driver_id, is_b2b, b2b_company_id
+        SELECT id, drop_locations, current_drop_index, current_status, customer_id,
+               total_fare, driver_id, is_b2b, b2b_company_id, created_at,
+               expected_delivery_minutes, payment_method
         FROM parcel_orders WHERE id=${req.params.id}::uuid
       `);
       const order = (r.rows as any[])[0];
       if (!order) return res.status(404).json({ message: 'Order not found' });
-      if (String(order.driver_id || '') !== String(driverId || '')) return res.status(403).json({ message: 'This parcel is assigned to another driver' });
+      if (String(order.driver_id || '') !== String(driverId || '')) {
+        return res.status(403).json({ message: 'This parcel is assigned to another driver.' });
+      }
       if (order.current_status !== 'in_transit') return res.status(400).json({ message: 'Order not in transit' });
       const drops: any[] = typeof order.drop_locations === 'string'
         ? JSON.parse(order.drop_locations) : order.drop_locations;
@@ -15867,7 +15743,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
             current_drop_index = ${nextIdx},
             current_status = ${allDelivered ? 'completed' : 'in_transit'},
             sla_breached = ${slaBreached},
-            version = COALESCE(version, 0)+1,
             updated_at = NOW()
         WHERE id = ${req.params.id}::uuid
       `);
@@ -15916,10 +15791,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           totalFare, breakdown: parcelBreakdown,
         });
         if (io) io.to(`user:${order.customer_id}`).emit('parcel:completed', { orderId: order.id });
-        await rawDb.execute(rawSql`
-          UPDATE users SET current_trip_id=NULL, updated_at=NOW()
-          WHERE id=${order.driver_id}::uuid AND current_trip_id=${order.id}::uuid
-        `).catch(dbCatch("db"));
 
         // B2B webhook
         if (order.is_b2b && order.b2b_company_id) {
@@ -16278,7 +16149,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       const companyId = req.params.companyId as string;
       const { customerId, vehicleCategory = 'bike_parcel', pickupAddress, pickupLat, pickupLng,
         pickupContactName, pickupContactPhone, deliveries = [], weightKg = 1, notes = '' } = req.body;
-      const parcelVehicleCategory = assertAllowedParcelVehicle(vehicleCategory);
       if (!pickupAddress) return res.status(400).json({ message: 'pickupAddress required' });
       if (!(deliveries as any[]).length) return res.status(400).json({ message: 'deliveries array required' });
 
@@ -16290,7 +16160,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       const company = compR.rows[0] as any;
       if (company.status === 'suspended') return res.status(403).json({ message: 'Company account is suspended' });
 
-      const vc = PARCEL_VEHICLES[parcelVehicleCategory];
+      const vc = PARCEL_VEHICLES[vehicleCategory] || PARCEL_VEHICLES.bike_parcel;
       const wt = safeFloat(weightKg, 1);
 
       // Pre-calculate total cost to validate wallet balance
@@ -16351,7 +16221,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
              total_fare, commission_amt, commission_pct, current_status,
              pickup_otp, payment_method, is_b2b, b2b_company_id, notes)
           VALUES
-            (${customerId ?? null}, ${parcelVehicleCategory}, ${pickupAddress},
+            (${customerId ?? null}, ${vehicleCategory}, ${pickupAddress},
              ${pickupLat ?? null}, ${pickupLng ?? null},
              ${pickupContactName ?? ''}, ${pickupContactPhone ?? ''},
              ${JSON.stringify(drops)},
@@ -16455,7 +16325,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   app.get("/api/app/services/active", async (_req, res) => {
     try {
       const r = await rawDb.execute(rawSql`
-        SELECT service_key as key, service_name as name, icon, color, description, sort_order
+        SELECT service_key as key, service_name as name, service_category as category, icon, color, description, sort_order
         FROM platform_services
         WHERE service_status = 'active'
         ORDER BY sort_order ASC
@@ -16463,6 +16333,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       const services = (r.rows as any[]).map(row => ({
         key: row.key,
         name: row.name,
+        category: row.category || 'rides',
         icon: row.icon || '??',
         color: row.color || '#2F80ED',
         description: row.description || '',
@@ -16542,6 +16413,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
         if (io) io.to(`user:${trip.driverId}`).emit("trip:timeout", { tripId: trip.id });
 
+        await restartDispatchForTrip(trip.id, [...(trip.rejectedDriverIds || []), trip.driverId].filter(Boolean));
+        continue;
+
         const excludeList = [...(trip.rejectedDriverIds || []), trip.driverId].filter(Boolean);
         const nextBest = await findBestDrivers(
           trip.pickupLat, trip.pickupLng,
@@ -16552,8 +16426,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         if (nextBest.length && io) {
           const nd = nextBest[0];
           io.to(`user:${nd.driverId}`).emit("trip:new_request", { tripId: trip.id, pickupAddress: trip.pickupAddress || "Pickup", estimatedFare: trip.estimatedFare || 0 });
-          if (nd.fcmToken) {
-            notifyDriverNewRide({ fcmToken: nd.fcmToken, driverName: nd.fullName, customerName: "", pickupAddress: trip.pickupAddress || "Pickup", estimatedFare: trip.estimatedFare || 0, tripId: trip.id }).catch(dbCatch("db"));
+          if (nd.fcmToken && trip.id) {
+            notifyDriverNewRide({ fcmToken: nd.fcmToken ?? null, driverName: nd.fullName, customerName: "", pickupAddress: trip.pickupAddress || "Pickup", estimatedFare: trip.estimatedFare || 0, tripId: String(trip.id) }).catch(dbCatch("db"));
           }
           console.log(`[TIMEOUT] Trip ${trip.id} safety-net reassigned to driver ${nd.driverId}`);
         } else if (io) {
@@ -16850,12 +16724,31 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           AND current_trip_id NOT IN (
             SELECT id FROM trip_requests WHERE current_status IN ('accepted','arrived','on_the_way')
           )
-          AND current_trip_id NOT IN (
-            SELECT id FROM parcel_orders WHERE current_status IN ('driver_assigned','in_transit')
-          )
       `);
       if ((freedDrivers as any).rowCount > 0) {
         console.log(`[CLEANUP] Freed ${(freedDrivers as any).rowCount} driver(s) from stale trip assignments`);
+      }
+      const staleParcels = await rawDb.execute(rawSql`
+        UPDATE parcel_orders
+        SET current_status='cancelled',
+            cancelled_reason='Auto-cancelled: parcel request expired without delivery progress',
+            updated_at=NOW()
+        WHERE
+          (current_status='searching' AND created_at < NOW() - INTERVAL '5 minutes')
+          OR (current_status='driver_assigned' AND updated_at < NOW() - INTERVAL '30 minutes')
+        RETURNING id, customer_id
+      `);
+      if (staleParcels.rows.length) {
+        console.log(`[CLEANUP] Auto-cancelled ${staleParcels.rows.length} stale parcel order(s)`);
+        for (const row of staleParcels.rows) {
+          const parcel = row as any;
+          if (io && parcel.customer_id) {
+            io.to(`user:${parcel.customer_id}`).emit("parcel:cancelled", {
+              orderId: parcel.id,
+              reason: "Parcel request expired without driver progress. Please book again.",
+            });
+          }
+        }
       }
     } catch (e: any) {
       console.error("[CLEANUP] Error:", e.message);
@@ -16867,28 +16760,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     { key: "auto", name: "Auto", active: true, icon: "auto" },
     { key: "cab", name: "Cab", active: false, icon: "car" },
     { key: "premium", name: "Premium", active: false, icon: "premium" },
-    { key: "bike_parcel", name: "Bike Parcel", active: true, icon: "bike" },
-    { key: "auto_parcel", name: "Auto Parcel", active: true, icon: "auto" },
-    { key: "tata_ace", name: "Tata Ace", active: true, icon: "truck" },
-    { key: "pickup_truck", name: "Pickup Truck", active: true, icon: "truck" },
-    { key: "bolero_cargo", name: "Bolero Cargo", active: true, icon: "truck" },
-    { key: "tempo_407", name: "Tempo 407", active: true, icon: "truck" },
-    { key: "local_pool", name: "Local Pool", active: true, icon: "pool" },
-    { key: "outstation_pool", name: "Outstation Pool", active: true, icon: "pool" },
   ];
 
   function normalizeVehicleKey(value: string | string[] | null | undefined) {
     const raw = Array.isArray(value) ? value[0] : value;
     const v = String(raw || "").trim().toLowerCase();
-    if (v.includes("bike") && v.includes("parcel")) return "bike_parcel";
-    if (v.includes("auto") && v.includes("parcel")) return "auto_parcel";
-    if (v.includes("mini") && v.includes("truck")) return "tata_ace";
-    if (v.includes("tata") && v.includes("ace")) return "tata_ace";
-    if (v.includes("bolero")) return "bolero_cargo";
-    if (v.includes("tempo") || v.includes("407")) return "tempo_407";
-    if (v.includes("pickup")) return "pickup_truck";
-    if (v.includes("outstation") && v.includes("pool")) return "outstation_pool";
-    if ((v.includes("local") || v.includes("city") || v.includes("carpool")) && v.includes("pool")) return "local_pool";
     if (v.includes("bike")) return "bike";
     if (v.includes("auto")) return "auto";
     if (v.includes("premium")) return "premium";
@@ -16921,75 +16797,87 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     return collection;
   }
 
-  async function ensureVehicleStatusTable() {
-    await rawDb.execute(rawSql`
-      CREATE TABLE IF NOT EXISTS app_vehicle_status (
-        key TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        active BOOLEAN NOT NULL DEFAULT true,
-        icon TEXT,
-        updated_at TIMESTAMPTZ DEFAULT NOW(),
-        updated_by TEXT
-      )
-    `);
-    await Promise.all(vehicleControlDefaults.map((vehicle) => rawDb.execute(rawSql`
-      INSERT INTO app_vehicle_status (key, name, active, icon, updated_at, updated_by)
-      VALUES (${vehicle.key}, ${vehicle.name}, ${vehicle.active}, ${vehicle.icon}, NOW(), 'system')
-      ON CONFLICT (key) DO NOTHING
-    `)));
-  }
-
-  async function readVehicleStatusesFromDb() {
-    await ensureVehicleStatusTable();
-    const result = await rawDb.execute(rawSql`
-      SELECT key, name, active, icon, updated_at, updated_by
-      FROM app_vehicle_status
-      ORDER BY key ASC
-    `);
-    const rows = new Map((result.rows || []).map((row: any) => [String(row.key), row]));
+  async function readVehicleStatuses() {
+    const collection = await ensureVehicleStatusDocs();
+    if (!collection) throw new Error("Firebase Admin is not configured. Set FIREBASE_SERVICE_ACCOUNT_KEY or firebase_service_account.");
+    const snap = await collection.get();
+    const docs = new Map(snap.docs.map((doc: any) => [doc.id, doc.data() || {}]));
     return vehicleControlDefaults.map((vehicle) => {
-      const row: any = rows.get(vehicle.key) || {};
-      const updatedAt = row.updated_at || null;
+      const data: any = docs.get(vehicle.key) || {};
+      const updatedAt = data.updatedAt?.toDate?.() || data.updated_at?.toDate?.() || data.updatedAt || data.updated_at || null;
       return {
         key: vehicle.key,
-        name: String(row.name || vehicle.name),
-        active: typeof row.active === "boolean" ? row.active : vehicle.active,
-        icon: String(row.icon || vehicle.icon),
+        name: String(data.name || vehicle.name),
+        active: typeof data.active === "boolean" ? data.active : vehicle.active,
+        icon: String(data.icon || vehicle.icon),
         updatedAt: updatedAt ? new Date(updatedAt).toISOString() : null,
-        updatedBy: row.updated_by || null,
+        updatedBy: data.updatedBy || data.updated_by || null,
       };
     });
   }
 
-  async function readVehicleStatuses() {
-    try {
-      const collection = await ensureVehicleStatusDocs();
-      if (!collection) return readVehicleStatusesFromDb();
-      const snap = await collection.get();
-      const docs = new Map(snap.docs.map((doc: any) => [doc.id, doc.data() || {}]));
-      return vehicleControlDefaults.map((vehicle) => {
-        const data: any = docs.get(vehicle.key) || {};
-        const updatedAt = data.updatedAt?.toDate?.() || data.updated_at?.toDate?.() || data.updatedAt || data.updated_at || null;
-        return {
-          key: vehicle.key,
-          name: String(data.name || vehicle.name),
-          active: typeof data.active === "boolean" ? data.active : vehicle.active,
-          icon: String(data.icon || vehicle.icon),
-          updatedAt: updatedAt ? new Date(updatedAt).toISOString() : null,
-          updatedBy: data.updatedBy || data.updated_by || null,
-        };
-      });
-    } catch (e: any) {
-      console.warn("[VEHICLE_STATUS][firebase_fallback]", safeErrMsg(e));
-      return readVehicleStatusesFromDb();
+  const platformServiceDefaults = [
+    { service_key: "bike_ride", service_name: "Bike Ride", service_status: "active", revenue_model: "subscription", commission_rate: 0, sort_order: 1, service_category: "rides" },
+    { service_key: "auto_ride", service_name: "Auto Ride", service_status: "inactive", revenue_model: "subscription", commission_rate: 0, sort_order: 2, service_category: "rides" },
+    { service_key: "mini_car", service_name: "Mini Car", service_status: "inactive", revenue_model: "subscription", commission_rate: 0, sort_order: 3, service_category: "rides" },
+    { service_key: "sedan", service_name: "Sedan", service_status: "inactive", revenue_model: "subscription", commission_rate: 0, sort_order: 4, service_category: "rides" },
+    { service_key: "suv", service_name: "SUV", service_status: "inactive", revenue_model: "subscription", commission_rate: 0, sort_order: 5, service_category: "rides" },
+    { service_key: "city_pool", service_name: "City Car Pool", service_status: "inactive", revenue_model: "commission", commission_rate: 10, sort_order: 6, service_category: "carpool" },
+    { service_key: "intercity_pool", service_name: "Intercity Car Pool", service_status: "inactive", revenue_model: "commission", commission_rate: 12, sort_order: 7, service_category: "carpool" },
+    { service_key: "outstation_pool", service_name: "Outstation Pool", service_status: "inactive", revenue_model: "commission", commission_rate: 15, sort_order: 8, service_category: "carpool" },
+    { service_key: "parcel_delivery", service_name: "Parcel Delivery", service_status: "active", revenue_model: "commission", commission_rate: 15, sort_order: 9, service_category: "parcel" },
+  ] as const;
+
+  async function ensurePlatformServiceSeedRows() {
+    await rawDb.execute(rawSql`
+      INSERT INTO platform_services
+        (service_key, service_name, service_category, service_status, revenue_model, commission_rate, sort_order)
+      VALUES
+        ('bike_ride', 'Bike Ride', 'rides', 'active', 'subscription', 0, 1),
+        ('auto_ride', 'Auto Ride', 'rides', 'inactive', 'subscription', 0, 2),
+        ('mini_car', 'Mini Car', 'rides', 'inactive', 'subscription', 0, 3),
+        ('sedan', 'Sedan', 'rides', 'inactive', 'subscription', 0, 4),
+        ('suv', 'SUV', 'rides', 'inactive', 'subscription', 0, 5),
+        ('city_pool', 'City Car Pool', 'carpool', 'inactive', 'commission', 10, 6),
+        ('intercity_pool', 'Intercity Car Pool', 'carpool', 'inactive', 'commission', 12, 7),
+        ('outstation_pool', 'Outstation Pool', 'carpool', 'inactive', 'commission', 15, 8),
+        ('parcel_delivery', 'Parcel Delivery', 'parcel', 'active', 'commission', 15, 9)
+      ON CONFLICT (service_key) DO NOTHING
+    `).catch(dbCatch("db"));
+  }
+
+  async function readAdminPlatformServices() {
+    await ensurePlatformServiceSeedRows();
+    const result = await rawDb.execute(rawSql`
+      SELECT service_key, service_name, service_status, revenue_model, commission_rate
+      FROM platform_services
+      ORDER BY sort_order ASC, service_name ASC
+    `).catch(() => ({ rows: [] as any[] }));
+
+    if (Array.isArray(result.rows) && result.rows.length > 0) {
+      return result.rows as Array<{
+        service_key: string;
+        service_name: string;
+        service_status: string;
+        revenue_model: string;
+        commission_rate: number;
+      }>;
     }
+
+    return platformServiceDefaults.map(({ service_key, service_name, service_status, revenue_model, commission_rate }) => ({
+      service_key,
+      service_name,
+      service_status,
+      revenue_model,
+      commission_rate,
+    }));
   }
 
   app.get("/api/admin/vehicle-status", requireAdminAuth, async (_req, res) => {
     try {
       res.json({ vehicles: await readVehicleStatuses() });
     } catch (e: any) {
-      res.status(500).json({ message: safeErrMsg(e) });
+      res.status(503).json({ message: safeErrMsg(e) });
     }
   });
 
@@ -17012,51 +16900,32 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
   app.patch("/api/admin/vehicle-status/:vehicleKey", requireAdminAuth, requireAdminRole(["admin", "superadmin"]), async (req, res) => {
     try {
-      const vehicleKey = normalizeVehicleKey(
-        Array.isArray(req.params.vehicleKey)
-          ? req.params.vehicleKey[0] ?? ""
-          : req.params.vehicleKey ?? "",
-      );
+      const vehicleKey = normalizeVehicleKey(req.params.vehicleKey);
       const allowed = vehicleControlDefaults.find((v) => v.key === vehicleKey);
       if (!allowed) return res.status(400).json({ message: "Invalid vehicle type" });
       if (typeof req.body?.active !== "boolean") return res.status(400).json({ message: "active must be boolean" });
 
+      const collection = await ensureVehicleStatusDocs();
+      if (!collection) return res.status(503).json({ message: "Firebase Admin is not configured" });
+
       const active = Boolean(req.body.active);
       const adminUser = (req as any).adminUser;
-      const updatedBy = adminUser?.email || adminUser?.name || "admin";
-      try {
-        const collection = await ensureVehicleStatusDocs();
-        if (!collection) throw new Error("Firebase Admin is not configured");
-        await collection.doc(vehicleKey).set({
-          active,
-          name: allowed.name,
-          icon: allowed.icon,
-          updatedAt: new Date(),
-          updatedBy,
-        }, { merge: true });
-        await collection.doc(vehicleKey).collection("activity_logs").add({
-          message: `Admin changed ${allowed.name} to ${active ? "Active" : "Inactive"}`,
-          active,
-          vehicleKey,
-          vehicleName: allowed.name,
-          adminId: adminUser?.id || null,
-          adminEmail: adminUser?.email || null,
-          createdAt: new Date(),
-        });
-      } catch (e: any) {
-        console.warn("[VEHICLE_STATUS][patch_db_fallback]", safeErrMsg(e));
-        await ensureVehicleStatusTable();
-        await rawDb.execute(rawSql`
-          INSERT INTO app_vehicle_status (key, name, active, icon, updated_at, updated_by)
-          VALUES (${vehicleKey}, ${allowed.name}, ${active}, ${allowed.icon}, NOW(), ${updatedBy})
-          ON CONFLICT (key) DO UPDATE SET
-            name = EXCLUDED.name,
-            active = EXCLUDED.active,
-            icon = EXCLUDED.icon,
-            updated_at = NOW(),
-            updated_by = EXCLUDED.updated_by
-        `);
-      }
+      await collection.doc(vehicleKey).set({
+        active,
+        name: allowed.name,
+        icon: allowed.icon,
+        updatedAt: new Date(),
+        updatedBy: adminUser?.email || adminUser?.name || "admin",
+      }, { merge: true });
+      await collection.doc(vehicleKey).collection("activity_logs").add({
+        message: `Admin changed ${allowed.name} to ${active ? "Active" : "Inactive"}`,
+        active,
+        vehicleKey,
+        vehicleName: allowed.name,
+        adminId: adminUser?.id || null,
+        adminEmail: adminUser?.email || null,
+        createdAt: new Date(),
+      });
       await logAdminAction("vehicle_status_change", "vehicle_status", vehicleKey, {
         message: `Admin changed ${allowed.name} to ${active ? "Active" : "Inactive"}`,
         active,
@@ -17072,8 +16941,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   app.get("/api/admin/system-health", requireAdminAuth, async (_req, res) => {
     try {
       const [services, tripStats, parcelStats, driverStats, gstWallet] = await Promise.all([
-        rawDb.execute(rawSql`SELECT service_key, service_name, service_status, revenue_model, commission_rate FROM platform_services ORDER BY sort_order ASC`)
-          .catch(() => ({ rows: [] })),
+        readAdminPlatformServices().then((rows) => ({ rows })).catch(() => ({ rows: [] as any[] })),
         rawDb.execute(rawSql`
           SELECT
             COUNT(*) FILTER (WHERE current_status IN ('searching','accepted','arrived','on_the_way'))::int AS active,
@@ -17153,33 +17021,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         return res.status(400).json({ message: "Invalid service key or status" });
       }
 
+      await ensurePlatformServiceSeedRows();
+
       await rawDb.execute(rawSql`
         UPDATE platform_services 
         SET service_status = ${status} 
         WHERE LOWER(service_key) = LOWER(${serviceKey})
       `);
 
-      // Sync with vehicle categories to reflect in customer app
-      const isActive = status === "active";
-      if (serviceKey === 'bike_ride') {
-        await rawDb.execute(rawSql`UPDATE vehicle_categories SET is_active = ${isActive} WHERE vehicle_type = 'bike' OR name ILIKE '%bike%'`);
-      } else if (serviceKey === 'parcel_delivery') {
-        await rawDb.execute(rawSql`UPDATE vehicle_categories SET is_active = ${isActive} WHERE type = 'parcel' OR type = 'cargo'`);
-      } else if (serviceKey === 'auto_ride') {
-        await rawDb.execute(rawSql`UPDATE vehicle_categories SET is_active = ${isActive} WHERE vehicle_type = 'auto' OR name ILIKE '%auto%'`);
-      } else if (serviceKey === 'mini_car') {
-         await rawDb.execute(rawSql`UPDATE vehicle_categories SET is_active = ${isActive} WHERE vehicle_type = 'mini_car' OR name ILIKE '%mini%'`);
-      } else if (serviceKey === 'sedan') {
-         await rawDb.execute(rawSql`UPDATE vehicle_categories SET is_active = ${isActive} WHERE vehicle_type = 'sedan' OR name ILIKE '%sedan%'`);
-      } else if (serviceKey === 'suv') {
-         await rawDb.execute(rawSql`UPDATE vehicle_categories SET is_active = ${isActive} WHERE vehicle_type = 'suv' OR name ILIKE '%suv%'`);
-      } else if (serviceKey === 'city_pool') {
-        await rawDb.execute(rawSql`UPDATE vehicle_categories SET is_active = ${isActive} WHERE name ILIKE '%city%pool%' OR name ILIKE '%car%pool%'`);
-      } else if (serviceKey === 'intercity_pool') {
-        await rawDb.execute(rawSql`UPDATE vehicle_categories SET is_active = ${isActive} WHERE name ILIKE '%intercity%'`);
-      } else if (serviceKey === 'outstation_pool') {
-        await rawDb.execute(rawSql`UPDATE vehicle_categories SET is_active = ${isActive} WHERE name ILIKE '%outstation%'`);
-      }
+      await syncServiceActivationState(serviceKey, status === "active");
 
       await logAdminAction("toggle_service", "platform_services", undefined, { serviceKey, status }, (req as any).adminUser?.email);
 
@@ -17598,124 +17448,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // -- ADMIN: Alert engine ---------------------------------------------------
-  app.get("/api/admin/alert-engine/status", requireAdminAuth, async (_req, res) => {
-    try {
-      res.json(getAlertEngineStatus());
-    } catch (e: any) {
-      res.status(500).json({ message: safeErrMsg(e) });
-    }
-  });
-
-  app.get("/api/admin/alert-engine/config", requireAdminAuth, async (_req, res) => {
-    try {
-      res.json(getEngineConfig());
-    } catch (e: any) {
-      res.status(500).json({ message: safeErrMsg(e) });
-    }
-  });
-
-  app.get("/api/admin/alert-engine/metrics-history", requireAdminAuth, async (_req, res) => {
-    try {
-      res.json(getMetricHistory());
-    } catch (e: any) {
-      res.status(500).json({ message: safeErrMsg(e) });
-    }
-  });
-
-  app.get("/api/admin/alert-engine/recent-actions", requireAdminAuth, async (_req, res) => {
-    try {
-      const r = await rawDb.execute(rawSql`
-        SELECT tag, message, COALESCE(details, data, '{}'::jsonb) AS details, created_at
-        FROM system_logs
-        WHERE tag IN (
-          'AUTO_ACTION',
-          'MANUAL_ACTION',
-          'CONFIG_RELOAD',
-          'CONFIG_ROLLBACK',
-          'ALERT_RESOLVED',
-          'ACTION_SUPPRESSED_REDIS_DOWN',
-          'ALERT_CRITICAL',
-          'ALERT_WARNING'
-        )
-        ORDER BY created_at DESC
-        LIMIT 50
-      `);
-      res.json(r.rows.map(camelize));
-    } catch (e: any) {
-      res.status(500).json({ message: safeErrMsg(e) });
-    }
-  });
-
-  app.get("/api/admin/alert-engine/rule-history/:ruleId", requireAdminAuth, async (req, res) => {
-    try {
-      const { ruleId } = req.params;
-      const r = await rawDb.execute(rawSql`
-        SELECT tag, message, COALESCE(details, data, '{}'::jsonb) AS details, created_at
-        FROM system_logs
-        WHERE (
-          COALESCE(details, data, '{}'::jsonb)->>'rule' = ${ruleId}
-          OR COALESCE(details, data, '{}'::jsonb)->>'ruleId' = ${ruleId}
-        )
-        OR message ILIKE ${`%${ruleId}%`}
-        ORDER BY created_at DESC
-        LIMIT 100
-      `);
-      res.json(r.rows.map(camelize));
-    } catch (e: any) {
-      res.status(500).json({ message: safeErrMsg(e) });
-    }
-  });
-
-  app.post("/api/admin/alert-engine/config/reload", requireAdminAuth, requireAdminRole(["admin", "superadmin"]), async (req, res) => {
-    try {
-      const adminUser = (req as any).adminUser;
-      const result = reloadEngineConfig({
-        reason: typeof req.body?.reason === "string" ? req.body.reason : undefined,
-        force: !!req.body?.force,
-        requestedBy: adminUser?.email || adminUser?.name || "admin",
-      });
-      res.status(result.ok ? 200 : 400).json(result);
-    } catch (e: any) {
-      res.status(500).json({ message: safeErrMsg(e) });
-    }
-  });
-
-  app.post("/api/admin/alert-engine/test", requireAdminAuth, async (_req, res) => {
-    try {
-      const status = getAlertEngineStatus();
-      const metrics = getMetricHistory();
-      res.json({
-        ok: true,
-        message: "Alert engine check completed",
-        checkedAt: new Date().toISOString(),
-        running: status.running,
-        activeAlerts: Array.isArray(status.activeAlerts) ? status.activeAlerts.length : 0,
-        metricsSnapshots: Array.isArray(metrics) ? metrics.length : 0,
-      });
-    } catch (e: any) {
-      res.status(500).json({ ok: false, message: safeErrMsg(e) });
-    }
-  });
-
-  app.post("/api/admin/alert-engine/manual-action", requireAdminAuth, requireAdminRole(["admin", "superadmin"]), async (req, res) => {
-    try {
-      const adminUser = (req as any).adminUser;
-      const action = String(req.body?.action || "").trim();
-      if (!["booking_pause", "booking_restore", "surge_restore"].includes(action)) {
-        return res.status(400).json({ ok: false, message: "Invalid manual action" });
-      }
-      const result = await executeManualAction(
-        action as "booking_pause" | "booking_restore" | "surge_restore",
-        adminUser?.email || adminUser?.name || "admin",
-        typeof req.body?.reason === "string" ? req.body.reason : undefined,
-      );
-      res.status(result.ok ? 200 : 400).json(result);
-    } catch (e: any) {
-      res.status(500).json({ ok: false, message: safeErrMsg(e) });
-    }
-  });
-
   // -- HOOK: Log booking events automatically --------------------------------
   // Intercept book-ride responses to log pickup location
   const _origBookRide = app._router?.stack?.find?.((l: any) => l?.route?.path === '/api/app/customer/book-ride');
@@ -17730,6 +17462,23 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     try {
       const zones = await computeDemandHeatmap();
       res.json({ zones, generatedAt: new Date().toISOString() });
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  app.get("/api/app/driver/heatmap", authApp, async (req, res) => {
+    try {
+      const zones = await computeDemandHeatmap();
+      // Filter to relevant info for driver app overlay
+      const driverZones = zones.map(z => ({
+        zoneName: z.zoneName,
+        lat: z.centerLat,
+        lng: z.centerLng,
+        intensity: z.demandIntensity,
+        color: z.color,
+        demandRatio: z.demandRatio,
+        surgeMultiplier: z.surgeMultiplier,
+      }));
+      res.json({ zones: driverZones });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -18104,7 +17853,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       const customerId = (req as any).currentUser?.id;
       const { vehicleCategory = 'bike_parcel', pickupAddress, pickupLat, pickupLng,
         pickupContactName, pickupContactPhone } = req.body;
-      const parcelVehicleCategory = assertAllowedParcelVehicle(vehicleCategory);
 
       if (!req.file) return res.status(400).json({ message: "CSV file required" });
       if (!pickupAddress) return res.status(400).json({ message: "pickupAddress required" });
@@ -18116,7 +17864,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         return res.status(400).json({ message: "CSV parsing failed", errors: parseErrors });
       }
 
-      const vc = PARCEL_VEHICLES[parcelVehicleCategory];
+      const vc = PARCEL_VEHICLES[vehicleCategory] || PARCEL_VEHICLES.bike_parcel;
       const results: any[] = [];
       const errors: string[] = [...parseErrors];
 
@@ -18158,7 +17906,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
                pickup_otp, is_b2b, b2b_company_id, parcel_description,
                declared_value, insurance_premium, load_charge)
             VALUES
-              (${customerId}::uuid, ${parcelVehicleCategory}, ${pickupAddress},
+              (${customerId}::uuid, ${vehicleCategory}, ${pickupAddress},
                ${pickupLat ?? null}, ${pickupLng ?? null},
                ${pickupContactName ?? ''}, ${pickupContactPhone ?? ''},
                ${JSON.stringify(drops)}, ${dist}, ${wt}, ${baseFare}, ${distF}, ${wtF},
@@ -18313,7 +18061,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   // --------------------------------------------------------------------------
 
   // -- Places Autocomplete -------------------------------------------------
-  app.get("/api/app/places/autocomplete", authApp, async (req, res) => {
+  app.get("/api/app/places/autocomplete", optionalAuthApp, async (req, res) => {
     try {
       const query = String(req.query.query || req.query.input || "");
       const sessionToken = String(req.query.sessionToken || "");
@@ -18321,12 +18069,25 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       const lng = req.query.lng ? Number(req.query.lng) : undefined;
       if (!query) return res.status(400).json({ message: "query required" });
       const predictions = await searchPlaces(query, sessionToken, lat, lng);
-      res.json({ predictions });
+      const serviceablePredictions = predictions.filter((p: any) => p?.serviceable);
+      const serviceableZoneNames = Array.from(new Set(
+        serviceablePredictions
+          .map((p: any) => p?.zoneName)
+          .filter((name: any) => typeof name === "string" && name.trim().length > 0)
+      ));
+      res.json({
+        predictions: serviceablePredictions,
+        hasServiceableResults: serviceablePredictions.length > 0,
+        serviceableZoneNames,
+        message: serviceablePredictions.length > 0
+          ? null
+          : "We are not serving this area yet. Please choose a location inside an active service zone.",
+      });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
   // -- Place Details (get lat/lng from place_id) ---------------------------
-  app.get("/api/app/places/details", authApp, async (req, res) => {
+  app.get("/api/app/places/details", optionalAuthApp, async (req, res) => {
     try {
       const placeId = String(req.query.placeId || "");
       const sessionToken = String(req.query.sessionToken || "");
@@ -18337,38 +18098,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  app.post("/api/app/places/select", authApp, async (req, res) => {
-    try {
-      const user = (req as any).currentUser;
-      const { placeId, queryText, placeLabel, placeAddress, lat, lng } = req.body || {};
-      if (!placeId && !placeAddress) return res.status(400).json({ message: "placeId or placeAddress required" });
-      await rawDb.execute(rawSql`
-        CREATE TABLE IF NOT EXISTS app_place_selections (
-          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-          user_id UUID NOT NULL,
-          place_id TEXT,
-          query_text TEXT,
-          place_label TEXT,
-          place_address TEXT,
-          lat NUMERIC(10,7),
-          lng NUMERIC(10,7),
-          created_at TIMESTAMP DEFAULT NOW()
-        )
-      `).catch(dbCatch("db"));
-      const r = await rawDb.execute(rawSql`
-        INSERT INTO app_place_selections
-          (user_id, place_id, query_text, place_label, place_address, lat, lng)
-        VALUES
-          (${user.id}::uuid, ${placeId || null}, ${queryText || null}, ${placeLabel || null},
-           ${placeAddress || null}, ${lat != null ? Number(lat) : null}, ${lng != null ? Number(lng) : null})
-        RETURNING id, created_at
-      `);
-      res.json({ success: true, selection: camelize(r.rows[0]) });
-    } catch (e: any) { res.status(e?.statusCode || 500).json({ message: safeErrMsg(e), code: e?.code, allowed: e?.allowed }); }
-  });
-
   // -- Reverse Geocode -----------------------------------------------------
-  app.get("/api/app/reverse-geocode", authApp, async (req, res) => {
+  app.get("/api/app/reverse-geocode", optionalAuthApp, async (req, res) => {
     try {
       const lat = Number(req.query.lat);
       const lng = Number(req.query.lng);
@@ -18380,7 +18111,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   });
 
   // -- Multi-waypoint Route ------------------------------------------------
-  app.post("/api/app/route/multi-waypoint", authApp, async (req, res) => {
+  app.post("/api/app/route/multi-waypoint", optionalAuthApp, async (req, res) => {
     try {
       const { origin, destination, waypoints = [], optimize = true } = req.body;
       if (!origin?.lat || !origin?.lng || !destination?.lat || !destination?.lng) {
@@ -18392,8 +18123,21 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
+  // -- Real-time ETA -------------------------------------------------------
+  app.get("/api/app/eta", optionalAuthApp, async (req, res) => {
+    try {
+      const dLat = Number(req.query.driverLat);
+      const dLng = Number(req.query.driverLng);
+      const destLat = Number(req.query.destLat);
+      const destLng = Number(req.query.destLng);
+      if (!dLat || !dLng || !destLat || !destLng) return res.status(400).json({ message: "Driver and destination coordinates required" });
+      const eta = await getRealTimeETA(dLat, dLng, destLat, destLng);
+      res.json(eta);
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
   // -- Short location name -------------------------------------------------
-  app.get("/api/app/short-name", authApp, async (req, res) => {
+  app.get("/api/app/short-name", optionalAuthApp, async (req, res) => {
     try {
       const address = String(req.query.address || "");
       if (!address) return res.status(400).json({ message: "address required" });
@@ -18402,7 +18146,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   });
 
   // -- Nearby Places -------------------------------------------------------
-  app.get("/api/app/places/nearby", authApp, async (req, res) => {
+  app.get("/api/app/places/nearby", optionalAuthApp, async (req, res) => {
     try {
       const lat = Number(req.query.lat);
       const lng = Number(req.query.lng);
@@ -18435,12 +18179,18 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   // -- Payment Methods: list supported -------------------------------------
   app.get("/api/app/payment-methods", authApp, async (_req, res) => {
     try {
+      const { keyId, keySecret } = await getRazorpayKeys();
+      const gatewayConfigured = !!(keyId && keySecret);
       res.json({
         methods: [
-          { id: "cash", name: "Cash", icon: "??", isActive: true },
-          { id: "upi", name: "UPI", icon: "??", isActive: true, providers: SUPPORTED_UPI_PROVIDERS.filter(p => p.isActive) },
-          { id: "wallet", name: "Wallet", icon: "??", isActive: true },
+          { id: "cash", name: "Cash", icon: "cash", isActive: true, channel: "offline" },
+          { id: "wallet", name: "Wallet", icon: "wallet", isActive: true, channel: "balance" },
+          { id: "upi", name: "UPI", icon: "upi", isActive: gatewayConfigured, channel: "gateway", providers: SUPPORTED_UPI_PROVIDERS.filter(p => p.isActive) },
+          { id: "cards", name: "Cards", icon: "card", isActive: gatewayConfigured, channel: "gateway" },
+          { id: "net_banking", name: "Net Banking", icon: "bank", isActive: gatewayConfigured, channel: "gateway" },
+          { id: "wallets", name: "Wallet Apps", icon: "apps", isActive: gatewayConfigured, channel: "gateway" },
         ],
+        gatewayConfigured,
       });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
@@ -18477,6 +18227,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       const { amount, method = "bank_transfer" } = req.body;
       if (!amount || amount <= 0) return res.status(400).json({ message: "amount must be > 0" });
       const result = await requestWithdrawal(driverId, parseFloat(amount), method);
+      await rawDb.execute(rawSql`
+        INSERT INTO withdraw_requests (user_id, driver_payment_id, amount, note, status, created_at)
+        VALUES (
+          ${driverId}::uuid,
+          ${result.id}::uuid,
+          ${parseFloat(amount)},
+          ${method === "upi" ? "UPI withdrawal via wallet engine" : "Bank withdrawal via wallet engine"},
+          'pending',
+          now()
+        )
+      `).catch(dbCatch("db"));
       res.json({ success: true, withdrawal: result });
     } catch (e: any) { res.status(400).json({ message: safeErrMsg(e) }); }
   });
@@ -18556,13 +18317,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     try {
       const settings = await loadRevenueSettings();
       const services = [
-        { service: "rides", modelKey: "rides_model", model: settings.rides_model || "subscription" },
-        { service: "parcel", modelKey: "parcels_model", model: settings.parcels_model || "commission" },
-        { service: "b2b_parcel", modelKey: "parcels_model", model: settings.parcels_model || "commission" },
-        { service: "cargo", modelKey: "cargo_model", model: settings.cargo_model || "commission" },
-        { service: "intercity", modelKey: "intercity_model", model: settings.intercity_model || "commission" },
-        { service: "city_pool", modelKey: "city_pool_model", model: settings.city_pool_model || "commission" },
-        { service: "outstation_pool", modelKey: "outstation_pool_model", model: settings.outstation_pool_model || "commission" },
+        { service: "rides", modelKey: "rides_model", model: settings.rides_model || "free" },
+        { service: "parcel", modelKey: "parcels_model", model: settings.parcels_model || "free" },
+        { service: "b2b_parcel", modelKey: "parcels_model", model: settings.parcels_model || "free" },
+        { service: "cargo", modelKey: "cargo_model", model: settings.cargo_model || "free" },
+        { service: "intercity", modelKey: "intercity_model", model: settings.intercity_model || "free" },
+        { service: "city_pool", modelKey: "city_pool_model", model: settings.city_pool_model || "free" },
+        { service: "outstation_pool", modelKey: "outstation_pool_model", model: settings.outstation_pool_model || "free" },
       ];
       res.json({
         services,
@@ -18583,8 +18344,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     try {
       const { service } = req.params;
       const { revenueModel } = req.body;
-      if (!["commission", "subscription", "hybrid"].includes(revenueModel)) {
-        return res.status(400).json({ message: "revenueModel must be commission, subscription, or hybrid" });
+      if (!["free", "commission", "subscription", "hybrid"].includes(revenueModel)) {
+        return res.status(400).json({ message: "revenueModel must be free, commission, subscription, or hybrid" });
       }
       const keyMap: Record<string, string> = {
         rides: "rides_model", parcel: "parcels_model", b2b_parcel: "parcels_model",
@@ -18774,53 +18535,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   app.get("/api/admin/ai-brain/dashboard", requireAdminAuth, async (_req, res) => {
     try {
       if (!AI_MOBILITY_BRAIN_ENABLED) {
-        return res.json({
-          metrics: {
-            rideRequestsLast5Min: 0,
-            parcelRequestsLast5Min: 0,
-            driversOnline: 0,
-            driversBusy: 0,
-            driversIdle: 0,
-            averageWaitTimeSec: 0,
-            cancellationRate: 0,
-            activeTrips: 0,
-            activeParcels: 0,
-            zoneDemand: [],
-            surgeZones: [],
-            driverDistribution: [],
-            predictedDemand: [],
-            timestamp: new Date().toISOString(),
-          },
-          brainStatus: { ...getBrainStatus(), running: false, degraded: true, message: "AI mobility brain is disabled in production." },
-        });
+        return res.status(503).json({ message: "AI mobility brain is disabled in production." });
       }
-      const data = await Promise.race([
-        getAIDashboardData(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("AI dashboard timeout")), 2500)),
-      ]);
+      const data = await getAIDashboardData();
       res.json(data);
-    } catch (e: any) {
-      console.warn("[AI_BRAIN] dashboard degraded:", e?.message || e);
-      res.json({
-        metrics: {
-          rideRequestsLast5Min: 0,
-          parcelRequestsLast5Min: 0,
-          driversOnline: 0,
-          driversBusy: 0,
-          driversIdle: 0,
-          averageWaitTimeSec: 0,
-          cancellationRate: 0,
-          activeTrips: 0,
-          activeParcels: 0,
-          zoneDemand: [],
-          surgeZones: [],
-          driverDistribution: [],
-          predictedDemand: [],
-          timestamp: new Date().toISOString(),
-        },
-        brainStatus: { ...getBrainStatus(), degraded: true, message: safeErrMsg(e) },
-      });
-    }
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
   app.get("/api/admin/ai-brain/status", requireAdminAuth, async (_req, res) => {

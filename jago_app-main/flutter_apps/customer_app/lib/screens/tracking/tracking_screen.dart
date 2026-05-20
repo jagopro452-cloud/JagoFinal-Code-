@@ -19,6 +19,7 @@ import '../call/call_screen.dart';
 import '../chat/trip_chat_sheet.dart';
 
 import '../main_screen.dart';
+import '../booking/booking_screen.dart';
 import 'trip_completion_screen.dart';
 
 class TrackingScreen extends StatefulWidget {
@@ -30,17 +31,6 @@ class TrackingScreen extends StatefulWidget {
 
 class _TrackingScreenState extends State<TrackingScreen>
     with TickerProviderStateMixin, WidgetsBindingObserver {
-  static const Color _ridePrimary = Color(0xFF6366F1);
-  static const Color _ridePrimaryDark = Color(0xFF4F4ACF);
-  static const Color _rideSecondary = Color(0xFF8B5CF6);
-  static const Color _rideBg = Color(0xFFF5F3FF);
-  static const Color _rideSurfaceAlt = Color(0xFFF8F7FF);
-  static const LinearGradient _rideGradient = LinearGradient(
-    colors: [Color(0xFF4F4ACF), Color(0xFF6366F1)],
-    begin: Alignment.topLeft,
-    end: Alignment.bottomRight,
-  );
-
   final SocketService _socket = SocketService();
   GoogleMapController? _mapController;
   LatLng _center = const LatLng(17.3850, 78.4867);
@@ -61,64 +51,21 @@ class _TrackingScreenState extends State<TrackingScreen>
   Timer? _searchTimeoutTimer;
   bool _boostLoading = false;
   Timer? _nearbyDriversTimer;
+  Timer? _driverAnimationTimer;
   final Map<String, BitmapDescriptor> _markerIconCache = {};
   List<Map<String, dynamic>> _nearbyDrivers = [];
+  double _driverHeading = 0;
 
+  bool _isConnected = true;
+  StreamSubscription? _connSub;
   Timer? _pollTimer;
 
   bool _isArriving = false; // "Pilot is about to arrive" flag
-  int? _lastLiveEtaMinutes;
-  int? _lastRemainingDistanceMeters;
-  DateTime? _routeRefreshUntil;
-  DateTime? _lastRouteRefreshBannerAt;
-  DateTime? _lastDriverRouteRefreshAt;
-  DateTime? _lastCameraFollowAt;
 
   // Custom Top Banner state
   String? _bannerMessage;
   Color _bannerColor = JT.primary;
   Timer? _bannerTimer;
-
-  static const Map<String, int> _tripStatusRank = {
-    'searching': 0,
-    'driver_assigned': 1,
-    'accepted': 2,
-    'arrived': 3,
-    'in_progress': 4,
-    'on_the_way': 4,
-    'payment_pending': 5,
-    'completed': 6,
-    'cancelled': 6,
-  };
-
-  String _normalizeTripStatus(dynamic value) {
-    final status = value?.toString().trim();
-    if (status == null || status.isEmpty) return _status;
-    if (status == 'payment_pending') return 'completed';
-    return status;
-  }
-
-  int _rankOf(String status) => _tripStatusRank[status] ?? 0;
-
-  bool _isSameTripEvent(Map<String, dynamic> data) {
-    final id = data['tripId'] ?? data['trip_id'] ?? data['id'];
-    return id == null || id.toString().isEmpty || id.toString() == widget.tripId;
-  }
-
-  bool _canApplyStatus(String incoming) {
-    final currentRank = _rankOf(_status);
-    final incomingRank = _rankOf(incoming);
-    if (incoming == 'cancelled' || incoming == 'completed') return true;
-    return incomingRank >= currentRank;
-  }
-
-  void _stopSearchingUi() {
-    _searchTimeoutTimer?.cancel();
-    _nearbyDriversTimer?.cancel();
-    if (_nearbyDrivers.isNotEmpty && mounted) {
-      setState(() => _nearbyDrivers = []);
-    }
-  }
 
   @override
   void initState() {
@@ -128,8 +75,9 @@ class _TrackingScreenState extends State<TrackingScreen>
     _pulseCtrl =
         AnimationController(vsync: this, duration: const Duration(seconds: 2))
           ..repeat(reverse: true);
-    _subs.add(_socket.onConnectionChanged.listen((connected) {
+    _connSub = _socket.onConnectionChanged.listen((connected) {
       if (mounted) {
+        setState(() => _isConnected = connected);
         if (!connected) {
           _showStatusBanner('Waiting for connection...', Colors.orange);
         } else {
@@ -142,7 +90,7 @@ class _TrackingScreenState extends State<TrackingScreen>
           Future.delayed(const Duration(milliseconds: 2500), _pollStatus);
         }
       }
-    }));
+    });
     _connectSocket();
     _pollStatus();
     _loadCancelReasons();
@@ -163,50 +111,41 @@ class _TrackingScreenState extends State<TrackingScreen>
 
     _subs.add(_socket.onDriverLocation.listen((data) {
       if (!mounted) return;
-      if (!_isSameTripEvent(data)) return;
       final lat = double.tryParse(data['lat']?.toString() ?? '');
       final lng = double.tryParse(data['lng']?.toString() ?? '');
+      final heading =
+          double.tryParse(data['heading']?.toString() ?? '') ?? _driverHeading;
       if (lat != null && lng != null) {
         _checkArrivingStatus(lat, lng);
-        final etaSeconds = int.tryParse(data['etaSeconds']?.toString() ?? '');
-        final remainingDistanceMeters =
-            int.tryParse(data['remainingDistanceMeters']?.toString() ?? '');
-        _updateRouteRefreshState(
-          etaSeconds: etaSeconds,
-          remainingDistanceMeters: remainingDistanceMeters,
+        _setDriverLocation(
+          LatLng(lat, lng),
+          heading: heading,
+          animate: true,
         );
-        setState(() {
-          _driverLatLng = LatLng(lat, lng);
-          final updates = <String, dynamic>{
-            'driverLat': lat,
-            'driverLng': lng,
-          };
-          if (etaSeconds != null) {
-            updates['etaSeconds'] = etaSeconds;
-            updates['etaMinutes'] = (etaSeconds / 60).ceil();
-          }
-          if (remainingDistanceMeters != null) {
-            updates['remainingDistanceMeters'] = remainingDistanceMeters;
-          }
-          _trip = _trip != null ? {..._trip!, ...updates} : updates;
-          _updateMapMarkers();
-        });
-        final now = DateTime.now();
-        if (_lastDriverRouteRefreshAt == null ||
-            now.difference(_lastDriverRouteRefreshAt!) >
-                const Duration(seconds: 12)) {
-          _lastDriverRouteRefreshAt = now;
-          _fetchRouteForStatus();
-        }
       }
     }));
 
     _subs.add(_socket.onTripStatus.listen((data) {
+      if (data == null) return;
       try {
-        if (!_isSameTripEvent(data)) return;
-        final newStatus = _normalizeTripStatus(data['status']);
+        final newStatus = data['status']?.toString();
+        if (newStatus == null) return;
 
-        if (!_canApplyStatus(newStatus)) {
+        // Status rank guard: ensure we only move forward in the lifecycle
+        const statusRank = {
+          'searching': 0,
+          'driver_assigned': 1,
+          'accepted': 2,
+          'arrived': 3,
+          'in_progress': 4,
+          'on_the_way': 4,
+          'completed': 5,
+          'cancelled': 5
+        };
+        final incomingRank = statusRank[newStatus] ?? 0;
+        final currentRank = statusRank[_status] ?? 0;
+
+        if (incomingRank < currentRank) {
           debugPrint(
               '[SOCKET] Ignoring stale status update: $newStatus (current: $_status)');
           return;
@@ -214,8 +153,8 @@ class _TrackingScreenState extends State<TrackingScreen>
 
         if (newStatus != _status) {
           debugPrint('[SOCKET] Trip status transition: $_status -> $newStatus');
-          setState(() {
-            _status = newStatus;
+        setState(() {
+          _status = newStatus;
 
             final Map<String, dynamic> update = {};
 
@@ -267,10 +206,12 @@ class _TrackingScreenState extends State<TrackingScreen>
             }
 
             _trip = (_trip != null) ? {..._trip!, ...update} : update;
-          });
-          if (_rankOf(newStatus) >= _rankOf('accepted')) {
-            _stopSearchingUi();
-          }
+        });
+
+        if (!_isRideSafetyCallActive(newStatus) &&
+            CallService().activeCallTripId == widget.tripId) {
+          CallService().hangUp();
+        }
 
           // UI transitions & feedback
           _handleStatusTransition(newStatus);
@@ -293,15 +234,7 @@ class _TrackingScreenState extends State<TrackingScreen>
     // Detailed driver assignment info
     _subs.add(_socket.onDriverAssigned.listen((data) {
       if (!mounted) return;
-      if (!_isSameTripEvent(data)) return;
-      final nextStatus =
-          _normalizeTripStatus(data['status'] ?? data['currentStatus'] ?? 'accepted');
-      if (!_canApplyStatus(nextStatus)) {
-        debugPrint(
-            '[SOCKET] Ignoring stale driver assignment status: $nextStatus (current: $_status)');
-        return;
-      }
-      _stopSearchingUi();
+      _searchTimeoutTimer?.cancel();
       final driverData = data['driver'];
       final driverId = data['driverId']?.toString();
       final driverMap =
@@ -310,7 +243,7 @@ class _TrackingScreenState extends State<TrackingScreen>
           data['pickupOtp']?.toString() ?? data['otp']?.toString();
 
       setState(() {
-        _status = nextStatus;
+        _status = data['status'] ?? data['currentStatus'] ?? 'accepted';
         final Map<String, dynamic> update = {};
         if (pickupOtp != null && pickupOtp.isNotEmpty)
           update['pickupOtp'] = pickupOtp;
@@ -341,6 +274,8 @@ class _TrackingScreenState extends State<TrackingScreen>
               'Pilot';
           update['driverLat'] = driverMap['lat'];
           update['driverLng'] = driverMap['lng'];
+          update['driverHeading'] =
+              driverMap['heading'] ?? driverMap['driverHeading'];
         } else {
           update['driverName'] =
               data['driverName'] ?? data['driver_name'] ?? 'Jago Pilot';
@@ -365,11 +300,16 @@ class _TrackingScreenState extends State<TrackingScreen>
       final dLat = double.tryParse(_trip?['driverLat']?.toString() ?? '');
       final dLng = double.tryParse(_trip?['driverLng']?.toString() ?? '');
       if (dLat != null && dLng != null && dLat != 0) {
-        _driverLatLng = LatLng(dLat, dLng);
-        _updateMapMarkers();
+        _setDriverLocation(
+          LatLng(dLat, dLng),
+          heading:
+              double.tryParse(_trip?['driverHeading']?.toString() ?? '') ??
+                  _driverHeading,
+          animate: false,
+        );
       }
 
-      _showStatusBanner('Your pilot is on the way', JT.primary);
+      _showStatusBanner('Pilot accepted your ride', JT.primary);
       AlarmService().playChime();
       HapticFeedback.heavyImpact();
       _announceStatus('accepted');
@@ -379,9 +319,8 @@ class _TrackingScreenState extends State<TrackingScreen>
       if (_driverLatLng != null) _fetchRouteForStatus();
     }));
 
-    _subs.add(_socket.onTripCancelled.listen((data) {
+    _subs.add(_socket.onTripCancelled.listen((_) {
       if (!mounted) return;
-      if (!_isSameTripEvent(data)) return;
       setState(() => _status = 'cancelled');
       _pollTimer?.cancel();
       _showStatusBanner('Trip was cancelled', Colors.red);
@@ -397,12 +336,6 @@ class _TrackingScreenState extends State<TrackingScreen>
     // Re-searching for driver (after rejection)
     _subs.add(_socket.onTripSearching.listen((data) {
       if (!mounted) return;
-      if (!_isSameTripEvent(data)) return;
-      if (_rankOf(_status) > _rankOf('searching')) {
-        debugPrint(
-            '[SOCKET] Ignoring stale trip:searching for active trip ${widget.tripId}');
-        return;
-      }
       setState(() => _status = 'searching');
       // Restart the 90s timeout warning since we're back to searching
       _startSearchTimeoutTimer();
@@ -411,12 +344,6 @@ class _TrackingScreenState extends State<TrackingScreen>
     // No drivers available — trip auto-cancelled
     _subs.add(_socket.onNoDrivers.listen((data) {
       if (!mounted) return;
-      if (!_isSameTripEvent(data)) return;
-      if (_rankOf(_status) > _rankOf('searching')) {
-        debugPrint(
-            '[SOCKET] Ignoring stale no-drivers event for active trip ${widget.tripId}');
-        return;
-      }
       setState(() => _status = 'cancelled');
       _pollTimer?.cancel();
       _showNoDriversDialog();
@@ -431,6 +358,41 @@ class _TrackingScreenState extends State<TrackingScreen>
   }
 
   // Retry booking using the same trip's original params
+  void _retryBooking() {
+    final t = _trip;
+    if (t == null) {
+      Navigator.pushAndRemoveUntil(context,
+          MaterialPageRoute(builder: (_) => const MainScreen()), (_) => false);
+      return;
+    }
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(
+        builder: (_) => BookingScreen(
+          pickup: t['pickupAddress']?.toString() ??
+              t['pickup_address']?.toString() ??
+              'Pickup',
+          destination: t['destinationAddress']?.toString() ??
+              t['destination_address']?.toString() ??
+              'Destination',
+          pickupLat: double.tryParse(t['pickupLat']?.toString() ?? '') ?? 0.0,
+          pickupLng: double.tryParse(t['pickupLng']?.toString() ?? '') ?? 0.0,
+          destLat:
+              double.tryParse(t['destinationLat']?.toString() ?? '') ?? 0.0,
+          destLng:
+              double.tryParse(t['destinationLng']?.toString() ?? '') ?? 0.0,
+          vehicleCategoryId: t['vehicleCategoryId']?.toString(),
+          vehicleCategoryName: t['vehicleName']?.toString(),
+          category: (t['tripType']?.toString() == 'parcel' ||
+                  t['trip_type']?.toString() == 'parcel')
+              ? 'parcel'
+              : 'ride',
+        ),
+      ),
+      (_) => false,
+    );
+  }
+
   Future<void> _startNearbyDriversPolling() async {
     _nearbyDriversTimer?.cancel();
     if (!mounted || _status != 'searching') return;
@@ -450,13 +412,20 @@ class _TrackingScreenState extends State<TrackingScreen>
       final pLat = double.tryParse(_trip?['pickupLat']?.toString() ?? '');
       final pLng = double.tryParse(_trip?['pickupLng']?.toString() ?? '');
       if (pLat == null || pLng == null) return;
+      final vehicleCategoryId = _trip?['vehicleCategoryId']?.toString() ??
+          _trip?['vehicle_category_id']?.toString();
 
       final headers = await AuthService.getHeaders();
-      final uri = Uri.parse(ApiConfig.nearbyDrivers).replace(queryParameters: {
+      final queryParameters = <String, String>{
         'lat': pLat.toString(),
         'lng': pLng.toString(),
         'radius': '3',
-      });
+      };
+      if (vehicleCategoryId != null && vehicleCategoryId.isNotEmpty) {
+        queryParameters['vehicleCategoryId'] = vehicleCategoryId;
+      }
+      final uri = Uri.parse(ApiConfig.nearbyDrivers)
+          .replace(queryParameters: queryParameters);
       final r = await http
           .get(uri, headers: headers)
           .timeout(const Duration(seconds: 5));
@@ -493,7 +462,7 @@ class _TrackingScreenState extends State<TrackingScreen>
         const Offset(size / 2, size / 2 + 3), size / 2 - 10, shadowPaint);
 
     final bgPaint = Paint()
-      ..color = isSearching ? _ridePrimary : _ridePrimaryDark;
+      ..color = isSearching ? const Color(0xFF2F7BFF) : const Color(0xFF1E40AF);
     canvas.drawCircle(const Offset(size / 2, size / 2), size / 2 - 12, bgPaint);
 
     final borderPaint = Paint()
@@ -503,8 +472,13 @@ class _TrackingScreenState extends State<TrackingScreen>
     canvas.drawCircle(
         const Offset(size / 2, size / 2), size / 2 - 12, borderPaint);
 
-    final emoji =
-        (type.contains('auto')) ? '🛺' : (type.contains('bike') ? '🏍️' : '🚗');
+    final t = type.toLowerCase();
+    final emoji = t.contains('auto') ? '🛺'
+        : t.contains('bike') || t.contains('moto') || t.contains('scooter') ? '🏍️'
+        : t.contains('parcel') ? '📦'
+        : t.contains('cargo') || t.contains('truck') || t.contains('tempo') ? '🚚'
+        : t.contains('intercity') || t.contains('outstation') ? '🚘'
+        : '🚗';
     final tp = TextPainter(
         text: TextSpan(text: emoji, style: const TextStyle(fontSize: 48)),
         textDirection: TextDirection.ltr)
@@ -521,7 +495,7 @@ class _TrackingScreenState extends State<TrackingScreen>
     const double size = 100.0;
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder, const Rect.fromLTWH(0, 0, size, size));
-    final paint = Paint()..color = _ridePrimary;
+    final paint = Paint()..color = const Color(0xFF2F7BFF);
     canvas.drawCircle(const Offset(size / 2, size / 2), size / 2 - 10,
         paint..style = PaintingStyle.fill);
     canvas.drawCircle(
@@ -544,7 +518,7 @@ class _TrackingScreenState extends State<TrackingScreen>
 
   void _handleStatusTransition(String newStatus) {
     if (newStatus == 'accepted' || newStatus == 'driver_assigned') {
-      _showStatusBanner('Your pilot is on the way', JT.primary);
+      _showStatusBanner('Pilot accepted your ride', JT.primary);
       _announceStatus('accepted');
       _updateMapMarkers();
     } else if (newStatus == 'arrived') {
@@ -553,11 +527,11 @@ class _TrackingScreenState extends State<TrackingScreen>
       _updateMapMarkers();
     } else if (newStatus == 'in_progress' || newStatus == 'on_the_way') {
       _animateToDestination();
-      _showStatusBanner('Ride in progress • Have a safe journey!', JT.primary);
+      _showStatusBanner('Ride started • Have a safe journey!', JT.primary);
       _fetchRouteForStatus();
       _updateMapMarkers();
     } else if (newStatus == 'completed') {
-      _showStatusBanner('Trip complete • Thank you!', const Color(0xFF10B981));
+      _showStatusBanner('Trip Completed • Thank you!', const Color(0xFF10B981));
       setState(() => _polylines.clear());
       _updateMapMarkers();
       
@@ -714,7 +688,93 @@ class _TrackingScreenState extends State<TrackingScreen>
     _mapController?.animateCamera(CameraUpdate.newLatLngBounds(bounds, 120));
   }
 
-  void _updateMapMarkers({bool followDriver = true}) async {
+  void _setDriverLocation(
+    LatLng target, {
+    double? heading,
+    bool animate = true,
+  }) {
+    final nextHeading = _normalizeHeading(heading ?? _driverHeading);
+    final current = _driverLatLng;
+    if (!animate || current == null) {
+      _driverAnimationTimer?.cancel();
+      if (!mounted) return;
+      setState(() {
+        _driverLatLng = target;
+        _driverHeading = nextHeading;
+      });
+      _updateMapMarkers();
+      _fetchRouteForStatus();
+      return;
+    }
+
+    final distanceMeters = _distanceMeters(current, target);
+    if (distanceMeters < 2) {
+      if (!mounted) return;
+      setState(() {
+        _driverLatLng = target;
+        _driverHeading = nextHeading;
+      });
+      _updateMapMarkers();
+      _fetchRouteForStatus();
+      return;
+    }
+
+    _driverAnimationTimer?.cancel();
+    const totalSteps = 12;
+    const frameGap = Duration(milliseconds: 75);
+    var step = 0;
+    final start = current;
+    final startHeading = _driverHeading;
+
+    _driverAnimationTimer = Timer.periodic(frameGap, (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      step++;
+      final t = step / totalSteps;
+      final eased = Curves.easeOutCubic.transform(t.clamp(0.0, 1.0));
+      final lat =
+          start.latitude + ((target.latitude - start.latitude) * eased);
+      final lng =
+          start.longitude + ((target.longitude - start.longitude) * eased);
+
+      setState(() {
+        _driverLatLng = LatLng(lat, lng);
+        _driverHeading = _interpolateHeading(startHeading, nextHeading, eased);
+      });
+      _updateMapMarkers();
+
+      if (step >= totalSteps) {
+        timer.cancel();
+        _fetchRouteForStatus();
+      }
+    });
+  }
+
+  double _normalizeHeading(double heading) {
+    final normalized = heading % 360;
+    return normalized < 0 ? normalized + 360 : normalized;
+  }
+
+  double _interpolateHeading(double start, double end, double t) {
+    final normalizedStart = _normalizeHeading(start);
+    final normalizedEnd = _normalizeHeading(end);
+    final delta = ((normalizedEnd - normalizedStart + 540) % 360) - 180;
+    return _normalizeHeading(normalizedStart + (delta * t));
+  }
+
+  double _distanceMeters(LatLng from, LatLng to) {
+    return _calculateDistance(
+          from.latitude,
+          from.longitude,
+          to.latitude,
+          to.longitude,
+        ) *
+        1000;
+  }
+
+  void _updateMapMarkers() async {
     final Set<Marker> newMarkers = {};
 
     // 1. Pickup Location Marker (Search center)
@@ -741,16 +801,11 @@ class _TrackingScreenState extends State<TrackingScreen>
         markerId: const MarkerId('driver'),
         position: _driverLatLng!,
         icon: await _getMarkerIcon(vName),
+        rotation: _driverHeading,
         anchor: const Offset(0.5, 0.5),
+        flat: true,
       ));
-      final now = DateTime.now();
-      final shouldFollow = followDriver &&
-          _status != 'completed' &&
-          (_lastCameraFollowAt == null ||
-              now.difference(_lastCameraFollowAt!) >
-                  const Duration(seconds: 5));
-      if (shouldFollow) {
-        _lastCameraFollowAt = now;
+      if (_status != 'completed') {
         _mapController
             ?.animateCamera(CameraUpdate.newLatLngZoom(_driverLatLng!, 16));
       }
@@ -775,15 +830,7 @@ class _TrackingScreenState extends State<TrackingScreen>
         icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
       ));
 
-      final now = DateTime.now();
-      final shouldFit = followDriver &&
-          _driverLatLng != null &&
-          _mapController != null &&
-          (_lastCameraFollowAt == null ||
-              now.difference(_lastCameraFollowAt!) >
-                  const Duration(seconds: 8));
-      if (shouldFit) {
-        _lastCameraFollowAt = now;
+      if (_driverLatLng != null && _mapController != null) {
         final bounds = LatLngBounds(
           southwest: LatLng(
             _driverLatLng!.latitude < dLat ? _driverLatLng!.latitude : dLat,
@@ -808,11 +855,14 @@ class _TrackingScreenState extends State<TrackingScreen>
         final id = d['id']?.toString() ?? '';
         final vName =
             (d['vehicleCategoryName'] ?? d['vehicleName'] ?? 'bike').toString();
+        final heading = double.tryParse(d['heading']?.toString() ?? '0') ?? 0;
         newMarkers.add(Marker(
           markerId: MarkerId('nearby_$id'),
           position: LatLng(dLat, dLng),
           icon: await _getMarkerIcon(vName, isSearching: true),
+          rotation: heading,
           anchor: const Offset(0.5, 0.5),
+          flat: true,
         ));
       }
     }
@@ -866,6 +916,8 @@ class _TrackingScreenState extends State<TrackingScreen>
     _incomingCallSub?.cancel();
     _pollTimer?.cancel();
     _searchTimeoutTimer?.cancel();
+    _nearbyDriversTimer?.cancel();
+    _driverAnimationTimer?.cancel();
     _pulseCtrl.dispose();
     _tts.stop();
     // Don't disconnect socket — it's a shared singleton
@@ -900,6 +952,14 @@ class _TrackingScreenState extends State<TrackingScreen>
       ));
     });
   }
+
+  bool _isRideSafetyCallActive(String status) => const {
+        'driver_assigned',
+        'accepted',
+        'arrived',
+        'in_progress',
+        'on_the_way',
+      }.contains(status);
 
   Future<void> _initTts() async {
     try {
@@ -1012,7 +1072,7 @@ class _TrackingScreenState extends State<TrackingScreen>
                 style: GoogleFonts.poppins(
                     fontWeight: FontWeight.w500, fontSize: 13)),
             style: ElevatedButton.styleFrom(
-              backgroundColor: _ridePrimary,
+              backgroundColor: const Color(0xFF2F7BFF),
               foregroundColor: Colors.white,
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12)),
@@ -1048,7 +1108,7 @@ class _TrackingScreenState extends State<TrackingScreen>
                     fontWeight: FontWeight.w400,
                     fontSize: 13)),
           ]),
-          backgroundColor: _ridePrimary,
+          backgroundColor: const Color(0xFF2F7BFF),
           behavior: SnackBarBehavior.floating,
           margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
           shape:
@@ -1115,11 +1175,11 @@ class _TrackingScreenState extends State<TrackingScreen>
               width: 48,
               height: 48,
               decoration: BoxDecoration(
-                color: _ridePrimary.withValues(alpha: 0.1),
+                color: const Color(0xFF2F7BFF).withValues(alpha: 0.1),
                 shape: BoxShape.circle,
               ),
               child: const Icon(Icons.bolt_rounded,
-                  color: _ridePrimary, size: 24),
+                  color: Color(0xFF2F7BFF), size: 24),
             ),
             const SizedBox(width: 14),
             Expanded(
@@ -1166,11 +1226,15 @@ class _TrackingScreenState extends State<TrackingScreen>
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 18),
           decoration: BoxDecoration(
-            gradient: _rideGradient,
+            gradient: LinearGradient(
+              colors: [const Color(0xFF2F7BFF), const Color(0xFF1A5FCC)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
             borderRadius: BorderRadius.circular(16),
             boxShadow: [
               BoxShadow(
-                  color: _ridePrimaryDark.withValues(alpha: 0.3),
+                  color: const Color(0xFF2F7BFF).withValues(alpha: 0.3),
                   blurRadius: 12,
                   offset: const Offset(0, 4))
             ],
@@ -1225,10 +1289,23 @@ class _TrackingScreenState extends State<TrackingScreen>
         final data = jsonDecode(res.body);
         final trip = data['trip'];
         if (trip != null) {
-          final resolvedStatus = _normalizeTripStatus(trip['currentStatus']);
-          final currentRank = _rankOf(_status);
-          final incomingRank = _rankOf(resolvedStatus);
-          var statusChanged = false;
+          final rawStatus = trip['currentStatus']?.toString() ?? _status;
+          final resolvedStatus =
+              rawStatus == 'payment_pending' ? 'completed' : rawStatus;
+
+          const statusRank = {
+            'searching': 0,
+            'driver_assigned': 1,
+            'accepted': 2,
+            'arrived': 3,
+            'in_progress': 4,
+            'on_the_way': 4,
+            'completed': 5,
+            'cancelled': 5,
+          };
+
+          final currentRank = statusRank[_status] ?? 0;
+          final incomingRank = statusRank[resolvedStatus] ?? 0;
 
           if (incomingRank >= currentRank) {
             setState(() {
@@ -1264,7 +1341,7 @@ class _TrackingScreenState extends State<TrackingScreen>
                 }
               }
 
-              statusChanged = _status != resolvedStatus;
+              final bool statusChanged = _status != resolvedStatus;
               _trip = trip;
               _status = resolvedStatus;
 
@@ -1277,23 +1354,23 @@ class _TrackingScreenState extends State<TrackingScreen>
                     _walletPendingAmount;
               }
 
+              if (statusChanged) {
+                _handleStatusTransition(resolvedStatus);
+              }
             });
-            if (_rankOf(resolvedStatus) >= _rankOf('accepted')) {
-              _stopSearchingUi();
-            }
-            if (statusChanged) {
-              _handleStatusTransition(resolvedStatus);
-            }
-          } else {
-            debugPrint(
-                '[POLL] Ignoring stale server state: $resolvedStatus (current: $_status)');
           }
 
           final dLat = double.tryParse(trip['driverLat']?.toString() ?? '');
           final dLng = double.tryParse(trip['driverLng']?.toString() ?? '');
+          final heading =
+              double.tryParse(trip['driverHeading']?.toString() ?? '') ??
+                  _driverHeading;
           if (dLat != null && dLng != null && dLat != 0) {
-            _driverLatLng = LatLng(dLat, dLng);
-            _updateMapMarkers();
+            _setDriverLocation(
+              LatLng(dLat, dLng),
+              heading: heading,
+              animate: true,
+            );
           }
 
           if (_status == 'completed' || _status == 'cancelled') {
@@ -1432,7 +1509,7 @@ class _TrackingScreenState extends State<TrackingScreen>
         }
       },
       child: Scaffold(
-        backgroundColor: _rideBg,
+        backgroundColor: const Color(0xFFF5F3FF),
         body: Column(
           children: [
             // Global Header
@@ -1473,150 +1550,182 @@ class _TrackingScreenState extends State<TrackingScreen>
                 ),
                 child: ClipRRect(
                   borderRadius: const BorderRadius.vertical(top: Radius.circular(32)),
-                  child: Stack(children: [
-                    GoogleMap(
-                      initialCameraPosition: CameraPosition(target: _center, zoom: 15),
-                      onMapCreated: (c) {
-                        _mapController = c;
-                        if (_driverLatLng != null) {
-                          _updateMapMarkers();
-                          _fetchRouteForStatus();
-                        }
-                      },
-                      markers: _markers,
-                      polylines: _polylines,
-                      circles: {
-                        if (_status == 'searching' && _trip != null)
-                          Circle(
-                            circleId: const CircleId('search_radius'),
-                            center: LatLng(
-                                double.tryParse(_trip?['pickupLat']?.toString() ?? '0') ??
-                                    0,
-                                double.tryParse(_trip?['pickupLng']?.toString() ?? '0') ??
-                                    0),
-                            radius: 400,
-                            fillColor: _ridePrimary.withValues(alpha: 0.05),
-                            strokeColor: _ridePrimary.withValues(alpha: 0.3),
-                            strokeWidth: 2,
-                          ),
-                      },
-                      myLocationEnabled: true,
-                      zoomControlsEnabled: false,
-                      mapToolbarEnabled: false,
-                    ),
-                    Positioned(
-                      bottom: 0,
-                      left: 0,
-                      right: 0,
-                      child: Container(
-                        constraints: BoxConstraints(
-                            maxHeight: MediaQuery.of(context).size.height * 0.62),
-                        decoration: BoxDecoration(
-                          color: panelBg,
-                          borderRadius:
-                              const BorderRadius.vertical(top: Radius.circular(28)),
-                          boxShadow: const [
-                            BoxShadow(color: Color(0x22000000), blurRadius: 24)
-                          ],
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final panelMaxHeight =
+                          math.min(constraints.maxHeight * 0.56, 420.0);
+                      final mapBottomPadding =
+                          math.min(panelMaxHeight * 0.72, 260.0);
+                      return Stack(children: [
+                        GoogleMap(
+                          initialCameraPosition:
+                              CameraPosition(target: _center, zoom: 15),
+                          onMapCreated: (c) {
+                            _mapController = c;
+                            if (_driverLatLng != null) {
+                              _updateMapMarkers();
+                              _fetchRouteForStatus();
+                            }
+                          },
+                          markers: _markers,
+                          polylines: _polylines,
+                          circles: {
+                            if (_status == 'searching' && _trip != null)
+                              Circle(
+                                circleId: const CircleId('search_radius'),
+                                center: LatLng(
+                                    double.tryParse(
+                                            _trip?['pickupLat']?.toString() ??
+                                                '0') ??
+                                        0,
+                                    double.tryParse(
+                                            _trip?['pickupLng']?.toString() ??
+                                                '0') ??
+                                        0),
+                                radius: 400,
+                                fillColor: const Color(0xFF2F7BFF)
+                                    .withValues(alpha: 0.05),
+                                strokeColor: const Color(0xFF2F7BFF)
+                                    .withValues(alpha: 0.3),
+                                strokeWidth: 2,
+                              ),
+                          },
+                          myLocationEnabled: true,
+                          zoomControlsEnabled: false,
+                          mapToolbarEnabled: false,
+                          padding: EdgeInsets.only(bottom: mapBottomPadding),
                         ),
-                        child: Column(mainAxisSize: MainAxisSize.min, children: [
-                          Container(
-                              width: 40,
-                              height: 4,
-                              margin: const EdgeInsets.only(top: 10, bottom: 4),
-                              decoration: BoxDecoration(
-                                  color: JT.border,
-                                  borderRadius: BorderRadius.circular(2))),
-                          Flexible(
-                              child: SingleChildScrollView(
-                            physics: const ClampingScrollPhysics(),
-                            child: Padding(
-                              padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
-                              child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    _buildPremiumHeader(statusInfo, otp),
-                                    const SizedBox(height: 14),
-                                    if (_status != 'searching') ...[
-                                      if (driverName != null)
-                                        _buildPremiumDriverCard(
-                                          name: driverName,
-                                          rating: driverRating,
-                                          photo: driverPhoto,
-                                          vehicleNum: trip?['driverVehicleNumber'] ?? '',
-                                          vehicleModel: trip?['driverVehicleModel'] ?? '',
-                                          phone: driverPhone,
-                                        )
-                                      else
-                                        const Center(
-                                            child: Padding(
-                                          padding: EdgeInsets.symmetric(vertical: 20),
-                                          child:
-                                              CircularProgressIndicator(strokeWidth: 2),
-                                        )),
-                                      const SizedBox(height: 16),
-                                      if (driverName != null) ...[
-                                        _buildCommunicationRow(driverName),
-                                        const SizedBox(height: 16),
-                                      ],
-                                    ] else if (_status == 'searching') ...[
-                                      _buildSearchingIndicator(
-                                          statusInfo['color'] as Color),
-                                      const SizedBox(height: 16),
-                                    ],
-                                    if (trip != null) ...[
-                                      if (_status == 'in_progress' ||
-                                          _status == 'on_the_way')
-                                        _buildInProgressPanel(trip)
-                                      else ...[
-                                        _buildFareRow(trip, actualFare, estimatedFare),
-                                      ],
-                                    ],
-                                    if (_status == 'completed') ...[
-                                      const SizedBox(height: 20),
-                                      _buildCompletedSummaryCard(
-                                        trip!,
-                                        actualFare,
-                                        estimatedFare,
-                                      ),
-                                    ] else if (_status == 'cancelled') ...[
-                                      const SizedBox(height: 16),
-                                      _buildCancelledCard(),
-                                    ] else if (_status != 'arrived' && 
-                                               _status != 'in_progress' && 
-                                               _status != 'on_the_way') ...[
-                                      const SizedBox(height: 20),
-                                      Center(
-                                        child: TextButton.icon(
-                                          onPressed: _showCancelDialog,
-                                          icon: const Icon(Icons.close_rounded,
-                                              size: 16, color: Color(0xFF64748B)),
-                                          label: const Text('Cancel Ride',
-                                              style: TextStyle(
-                                                  color: Color(0xFF64748B),
-                                                  fontSize: 13,
-                                                  fontWeight: FontWeight.w500)),
-                                        ),
-                                      ),
-                                    ],
-                                  ]),
+                        Positioned(
+                          bottom: 0,
+                          left: 0,
+                          right: 0,
+                          child: Container(
+                            constraints:
+                                BoxConstraints(maxHeight: panelMaxHeight),
+                            decoration: BoxDecoration(
+                              color: panelBg,
+                              borderRadius: const BorderRadius.vertical(
+                                  top: Radius.circular(28)),
+                              boxShadow: const [
+                                BoxShadow(
+                                    color: Color(0x22000000), blurRadius: 24)
+                              ],
                             ),
-                          )),
-                        ]),
-                      ),
-                    ),
-
-                    // --- Premium Top Status Banner ---
-                    if (_bannerMessage != null)
-                      AnimatedPositioned(
-                        duration: const Duration(milliseconds: 400),
-                        curve: Curves.easeOutBack,
-                        top: 12,
-                        left: 20,
-                        right: 20,
-                        child: _buildTopBannerWidget(),
-                      ),
-                  ]),
+                            child:
+                                Column(mainAxisSize: MainAxisSize.min, children: [
+                              Container(
+                                  width: 40,
+                                  height: 4,
+                                  margin:
+                                      const EdgeInsets.only(top: 10, bottom: 4),
+                                  decoration: BoxDecoration(
+                                      color: JT.border,
+                                      borderRadius: BorderRadius.circular(2))),
+                              Flexible(
+                                  child: SingleChildScrollView(
+                                physics: const ClampingScrollPhysics(),
+                                child: Padding(
+                                  padding:
+                                      const EdgeInsets.fromLTRB(20, 12, 20, 28),
+                                  child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        _buildPremiumHeader(statusInfo, otp),
+                                        const SizedBox(height: 14),
+                                        if (_status != 'searching') ...[
+                                          if (driverName != null)
+                                            _buildPremiumDriverCard(
+                                              name: driverName,
+                                              rating: driverRating,
+                                              photo: driverPhoto,
+                                              vehicleNum:
+                                                  trip?['driverVehicleNumber'] ??
+                                                      '',
+                                              vehicleModel:
+                                                  trip?['driverVehicleModel'] ??
+                                                      '',
+                                              phone: driverPhone,
+                                            )
+                                          else
+                                            const Center(
+                                                child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: 20),
+                                              child: CircularProgressIndicator(
+                                                  strokeWidth: 2),
+                                            )),
+                                          const SizedBox(height: 16),
+                                          if (driverName != null) ...[
+                                            _buildCommunicationRow(driverName),
+                                            const SizedBox(height: 16),
+                                          ],
+                                        ] else if (_status == 'searching') ...[
+                                          _buildSearchingIndicator(
+                                              statusInfo['color'] as Color),
+                                          const SizedBox(height: 16),
+                                        ],
+                                        if (trip != null) ...[
+                                          if (_status == 'in_progress' ||
+                                              _status == 'on_the_way')
+                                            _buildInProgressPanel(trip)
+                                          else ...[
+                                            _buildFareRow(
+                                                trip, actualFare, estimatedFare),
+                                          ],
+                                        ],
+                                        if (_status == 'completed') ...[
+                                          const SizedBox(height: 40),
+                                          const Center(
+                                              child: CircularProgressIndicator(
+                                                  strokeWidth: 2)),
+                                          const SizedBox(height: 20),
+                                          Center(
+                                              child: Text('Ending your trip...',
+                                                  style: GoogleFonts.poppins(
+                                                      color:
+                                                          JT.textSecondary))),
+                                        ] else if (_status == 'cancelled') ...[
+                                          const SizedBox(height: 16),
+                                          _buildCancelledCard(),
+                                        ] else if (_status != 'arrived' &&
+                                            _status != 'in_progress' &&
+                                            _status != 'on_the_way') ...[
+                                          const SizedBox(height: 20),
+                                          Center(
+                                            child: TextButton.icon(
+                                              onPressed: _showCancelDialog,
+                                              icon: const Icon(
+                                                  Icons.close_rounded,
+                                                  size: 16,
+                                                  color: Color(0xFF64748B)),
+                                              label: const Text('Cancel Ride',
+                                                  style: TextStyle(
+                                                      color: Color(0xFF64748B),
+                                                      fontSize: 13,
+                                                      fontWeight:
+                                                          FontWeight.w500)),
+                                            ),
+                                          ),
+                                        ],
+                                      ]),
+                                ),
+                              )),
+                            ]),
+                          ),
+                        ),
+                        if (_bannerMessage != null)
+                          AnimatedPositioned(
+                            duration: const Duration(milliseconds: 400),
+                            curve: Curves.easeOutBack,
+                            top: 12,
+                            left: 20,
+                            right: 20,
+                            child: _buildTopBannerWidget(),
+                          ),
+                      ]);
+                    },
+                  ),
                 ),
               ),
             ),
@@ -1628,6 +1737,10 @@ class _TrackingScreenState extends State<TrackingScreen>
   }
 
   void _startInAppCall(String driverName) {
+    if (!_isRideSafetyCallActive(_status)) {
+      _showStatusBanner('Calling is available only during an active ride.', const Color(0xFFDC2626));
+      return;
+    }
     final driverId =
         _trip?['driverId']?.toString() ?? _trip?['driver_id']?.toString();
     if (driverId != null && driverId.isNotEmpty) {
@@ -1638,9 +1751,8 @@ class _TrackingScreenState extends State<TrackingScreen>
           targetUserId: driverId,
         ),
       ));
-    } else if ((_trip?['driverPhone'] ?? _trip?['driver_phone']) != null) {
-      launchUrl(
-          Uri.parse('tel:${_trip!['driverPhone'] ?? _trip!['driver_phone']}'));
+    } else {
+      _showStatusBanner('Driver calling is not available right now.', const Color(0xFFDC2626));
     }
   }
 
@@ -1656,126 +1768,18 @@ class _TrackingScreenState extends State<TrackingScreen>
     );
   }
 
-  // ── Premium UI Components ──────────────────────────────────────────────────
-
-  int _trackingEtaMinutes() {
-    final etaSeconds = int.tryParse(_trip?['etaSeconds']?.toString() ?? '');
-    if (etaSeconds != null && etaSeconds > 0) return (etaSeconds / 60).ceil();
-    final etaMinutes = int.tryParse(_trip?['etaMinutes']?.toString() ?? '');
-    if (etaMinutes != null && etaMinutes > 0) return etaMinutes;
-    return 5;
-  }
-
-  void _updateRouteRefreshState({
-    int? etaSeconds,
-    int? remainingDistanceMeters,
-  }) {
-    final etaMinutes = etaSeconds != null && etaSeconds > 0
-        ? (etaSeconds / 60).ceil()
-        : null;
-    final isTrackingActive = _status == 'driver_assigned' ||
-        _status == 'accepted' ||
-        _status == 'arrived' ||
-        _status == 'in_progress' ||
-        _status == 'on_the_way';
-
-    if (isTrackingActive && !_isArriving) {
-      final etaJump = etaMinutes != null &&
-          _lastLiveEtaMinutes != null &&
-          etaMinutes - _lastLiveEtaMinutes! >= 3;
-      final distanceJump = remainingDistanceMeters != null &&
-          _lastRemainingDistanceMeters != null &&
-          remainingDistanceMeters - _lastRemainingDistanceMeters! >= 400;
-
-      if (etaJump || distanceJump) {
-        final now = DateTime.now();
-        _routeRefreshUntil = now.add(const Duration(seconds: 45));
-        if (_lastRouteRefreshBannerAt == null ||
-            now.difference(_lastRouteRefreshBannerAt!) >
-                const Duration(seconds: 45)) {
-          _lastRouteRefreshBannerAt = now;
-          _showStatusBanner(
-            'Driver is taking a new route',
-            const Color(0xFFF59E0B),
-          );
-        }
+  Future<String> _getSupportPhone() async {
+    try {
+      final r = await http.get(Uri.parse(ApiConfig.configs));
+      if (r.statusCode == 200) {
+        final data = jsonDecode(r.body);
+        return data['configs']?['support_phone'] ?? '+916303000000';
       }
-    }
-
-    if (etaMinutes != null && etaMinutes > 0) {
-      _lastLiveEtaMinutes = etaMinutes;
-    }
-    if (remainingDistanceMeters != null && remainingDistanceMeters > 0) {
-      _lastRemainingDistanceMeters = remainingDistanceMeters;
-    }
+    } catch (_) {}
+    return '+916303000000';
   }
 
-  String _trackingDistanceLabel() {
-    final remainingDistanceMeters =
-        int.tryParse(_trip?['remainingDistanceMeters']?.toString() ?? '');
-    if (remainingDistanceMeters == null || remainingDistanceMeters <= 0) {
-      return 'Live route';
-    }
-    if (remainingDistanceMeters < 1000) {
-      return '$remainingDistanceMeters m away';
-    }
-    return '${(remainingDistanceMeters / 1000).toStringAsFixed(1)} km away';
-  }
-
-  Widget _trackingMetricCard({
-    required IconData icon,
-    required Color accent,
-    required String label,
-    required String value,
-  }) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: [
-              Colors.white,
-              accent.withValues(alpha: 0.06),
-            ],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: accent.withValues(alpha: 0.14)),
-        ),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: accent.withValues(alpha: 0.10),
-                shape: BoxShape.circle,
-              ),
-              child: Icon(icon, color: accent, size: 18),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(label,
-                      style: GoogleFonts.poppins(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: const Color(0xFF94A3B8))),
-                  Text(value,
-                      style: GoogleFonts.poppins(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w800,
-                          color: const Color(0xFF0F172A))),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+  // ── Premium UI Components ──────────────────────────────────────────────────
 
   Widget _buildPremiumHeader(Map<String, dynamic> statusInfo, String? otp) {
     final color = statusInfo['color'] as Color;
@@ -1784,26 +1788,7 @@ class _TrackingScreenState extends State<TrackingScreen>
         (_status == 'driver_assigned' ||
             _status == 'accepted' ||
             _status == 'arrived');
-    final eta = _trackingEtaMinutes().toString();
-    final distanceLabel = _trackingDistanceLabel();
-    final showTrackingMetrics = _status != 'searching' &&
-        _status != 'completed' &&
-        _status != 'cancelled';
-    final isRideLive = _status == 'in_progress' || _status == 'on_the_way';
-    final routeRefreshActive = _routeRefreshUntil != null &&
-        DateTime.now().isBefore(_routeRefreshUntil!);
-    final liveAccent =
-        routeRefreshActive ? const Color(0xFFF59E0B) : color;
-    final liveTitle = routeRefreshActive
-        ? 'Driver is taking a new route'
-        : isRideLive
-            ? 'You are on the way'
-            : 'Driver arriving live';
-    final liveSubtitle = routeRefreshActive
-        ? 'Live ETA has been refreshed and we are tracking the updated path.'
-        : _isArriving
-            ? 'Your pilot is almost there. Stay ready.'
-            : 'ETA updates are streaming from the live route.';
+    final eta = _trip?['etaMinutes']?.toString() ?? '5';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1823,7 +1808,9 @@ class _TrackingScreenState extends State<TrackingScreen>
                       color: const Color(0xFF0F172A),
                     ),
                   ),
-                  if (showTrackingMetrics)
+                  if (_status != 'completed' &&
+                      _status != 'cancelled' &&
+                      _status != 'searching')
                     Text(
                       'Live tracking active • SECURE PIN',
                       style: GoogleFonts.poppins(
@@ -1835,7 +1822,9 @@ class _TrackingScreenState extends State<TrackingScreen>
                 ],
               ),
             ),
-            if (showTrackingMetrics)
+            if (_status != 'searching' &&
+                _status != 'completed' &&
+                _status != 'cancelled')
               IconButton(
                 onPressed: _shareRide,
                 icon: Container(
@@ -1850,131 +1839,6 @@ class _TrackingScreenState extends State<TrackingScreen>
               ),
           ],
         ),
-        if (showTrackingMetrics) ...[
-          const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [
-                  liveAccent.withValues(alpha: 0.10),
-                  Colors.white,
-                ],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.circular(22),
-              border: Border.all(color: liveAccent.withValues(alpha: 0.14)),
-              boxShadow: [
-                BoxShadow(
-                  color: liveAccent.withValues(alpha: 0.08),
-                  blurRadius: 24,
-                  offset: const Offset(0, 12),
-                ),
-              ],
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: liveAccent.withValues(alpha: 0.12),
-                        shape: BoxShape.circle,
-                      ),
-                      child: Icon(
-                        routeRefreshActive
-                            ? Icons.route_rounded
-                            : isRideLive
-                                ? Icons.alt_route_rounded
-                                : Icons.my_location_rounded,
-                        color: liveAccent,
-                        size: 18,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            liveTitle,
-                            style: GoogleFonts.poppins(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w700,
-                              color: const Color(0xFF0F172A),
-                            ),
-                          ),
-                          Text(
-                            liveSubtitle,
-                            style: GoogleFonts.poppins(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w500,
-                              color: const Color(0xFF64748B),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-                if (_isArriving && !routeRefreshActive) ...[
-                  const SizedBox(height: 12),
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF10B981).withValues(alpha: 0.10),
-                      borderRadius: BorderRadius.circular(999),
-                      border: Border.all(
-                        color: const Color(0xFF10B981).withValues(alpha: 0.18),
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(
-                          Icons.bolt_rounded,
-                          size: 16,
-                          color: Color(0xFF10B981),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          'Almost there',
-                          style: GoogleFonts.poppins(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                            color: const Color(0xFF047857),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-                const SizedBox(height: 14),
-                Row(
-                  children: [
-                    _trackingMetricCard(
-                      icon: Icons.timer_rounded,
-                      accent: const Color(0xFF10B981),
-                      label: 'ARRIVAL',
-                      value: '$eta MIN',
-                    ),
-                    const SizedBox(width: 12),
-                    _trackingMetricCard(
-                      icon: Icons.near_me_rounded,
-                      accent: liveAccent,
-                      label: 'DISTANCE',
-                      value: distanceLabel,
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ],
         if (showOtp) ...[
           const SizedBox(height: 16),
           Row(
@@ -1994,11 +1858,11 @@ class _TrackingScreenState extends State<TrackingScreen>
                       Container(
                         padding: const EdgeInsets.all(8),
                         decoration: BoxDecoration(
-                          color: _rideSecondary.withValues(alpha: 0.1),
+                          color: const Color(0xFF6366F1).withValues(alpha: 0.1),
                           shape: BoxShape.circle,
                         ),
                         child: const Icon(Icons.stars_rounded,
-                            color: _rideSecondary, size: 18),
+                            color: Color(0xFF6366F1), size: 18),
                       ),
                       const SizedBox(width: 12),
                       Column(
@@ -2022,7 +1886,7 @@ class _TrackingScreenState extends State<TrackingScreen>
                 ),
               ),
               const SizedBox(width: 12),
-              // Live ETA Card
+              // Wait Time Card
               Expanded(
                 child: Container(
                   padding:
@@ -2047,7 +1911,7 @@ class _TrackingScreenState extends State<TrackingScreen>
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('LIVE ETA',
+                          Text('WAIT TIME',
                               style: GoogleFonts.poppins(
                                   fontSize: 11,
                                   fontWeight: FontWeight.w600,
@@ -2081,7 +1945,7 @@ class _TrackingScreenState extends State<TrackingScreen>
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: _rideSurfaceAlt,
+        color: const Color(0xFFF8FAFF),
         borderRadius: BorderRadius.circular(18),
         border: Border.all(color: JT.primary.withValues(alpha: 0.08), width: 1),
       ),
@@ -2227,20 +2091,22 @@ class _TrackingScreenState extends State<TrackingScreen>
           ),
         ),
         const SizedBox(width: 12),
-        GestureDetector(
-          onTap: () => _startInAppCall(driverName),
-          child: Container(
-            width: 48,
-            height: 48,
-            decoration: BoxDecoration(
-              color: JT.primary.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: JT.primary, width: 1.2),
+        if (_isRideSafetyCallActive(_status)) ...[
+          GestureDetector(
+            onTap: () => _startInAppCall(driverName),
+            child: Container(
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(
+                color: JT.primary.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: JT.primary, width: 1.2),
+              ),
+              child: const Icon(Icons.call_rounded, color: JT.primary, size: 22),
             ),
-            child: const Icon(Icons.call_rounded, color: JT.primary, size: 22),
           ),
-        ),
-        const SizedBox(width: 12),
+          const SizedBox(width: 12),
+        ],
         GestureDetector(
           onTap: _triggerSos,
           child: Container(
@@ -2443,211 +2309,6 @@ class _TrackingScreenState extends State<TrackingScreen>
     );
   }
 
-  Widget _summaryStatTile({
-    required IconData icon,
-    required Color accent,
-    required String label,
-    required String value,
-  }) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.88),
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: accent.withValues(alpha: 0.14)),
-        ),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: accent.withValues(alpha: 0.10),
-                shape: BoxShape.circle,
-              ),
-              child: Icon(icon, size: 16, color: accent),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    label,
-                    style: GoogleFonts.poppins(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w600,
-                      color: const Color(0xFF94A3B8),
-                    ),
-                  ),
-                  Text(
-                    value,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: GoogleFonts.poppins(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
-                      color: const Color(0xFF0F172A),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildCompletedSummaryCard(
-      Map<String, dynamic> trip, dynamic actualFare, dynamic estimatedFare) {
-    final fareVal = (actualFare ?? estimatedFare)?.toString() ?? '--';
-    final dist =
-        (trip['estimatedDistance'] ?? trip['estimated_distance'])?.toString() ??
-            '--';
-    final destination = (trip['destinationShortName'] ??
-            trip['destinationAddress'] ??
-            'Destination')
-        .toString();
-    final paymentMethod = (trip['paymentMethod'] ??
-            trip['payment_method'] ??
-            'Payment')
-        .toString();
-
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [
-            Color(0xFFF5FBF8),
-            Color(0xFFFFFFFF),
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.16)),
-        boxShadow: [
-          BoxShadow(
-            color: const Color(0xFF10B981).withValues(alpha: 0.08),
-            blurRadius: 28,
-            offset: const Offset(0, 12),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF10B981).withValues(alpha: 0.10),
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(
-                  Icons.check_circle_rounded,
-                  size: 20,
-                  color: Color(0xFF10B981),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Trip wrapped up beautifully',
-                      style: GoogleFonts.poppins(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w700,
-                        color: const Color(0xFF0F172A),
-                      ),
-                    ),
-                    Text(
-                      'We are preparing your final trip details.',
-                      style: GoogleFonts.poppins(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                        color: const Color(0xFF64748B),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              _summaryStatTile(
-                icon: Icons.currency_rupee_rounded,
-                accent: const Color(0xFF10B981),
-                label: 'FINAL FARE',
-                value: '₹$fareVal',
-              ),
-              const SizedBox(width: 12),
-              _summaryStatTile(
-                icon: Icons.route_rounded,
-                accent: JT.primary,
-                label: 'DISTANCE',
-                value: '$dist km',
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            decoration: BoxDecoration(
-              color: const Color(0xFFF8FAFC),
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: const Color(0xFFE2E8F0)),
-            ),
-            child: Row(
-              children: [
-                const Icon(
-                  Icons.flag_rounded,
-                  size: 18,
-                  color: Color(0xFF475569),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    destination,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: GoogleFonts.poppins(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: const Color(0xFF0F172A),
-                    ),
-                  ),
-                ),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: JT.primary.withValues(alpha: 0.08),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Text(
-                    paymentMethod,
-                    style: GoogleFonts.poppins(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: JT.primary,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
 
   Widget _buildCancelledCard() {
     return Container(
@@ -2666,7 +2327,7 @@ class _TrackingScreenState extends State<TrackingScreen>
                 fontWeight: FontWeight.w600,
                 color: Colors.red[900])),
         const SizedBox(height: 16),
-        _rideGradientButton(
+        JT.gradientButton(
             label: 'Try Again', onTap: () => Navigator.pop(context)),
       ]),
     );
@@ -2678,42 +2339,42 @@ class _TrackingScreenState extends State<TrackingScreen>
         return {
           'label': 'Finding the best Pilot for you...',
           'icon': Icons.radar_rounded,
-          'color': _ridePrimary
+          'color': const Color(0xFF2D8CFF)
         };
       case 'driver_assigned':
       case 'accepted':
         return {
           'label': _isArriving
               ? 'Your pilot is about to arrive'
-              : 'Your pilot is on the way',
+              : 'Pilot accepted your ride',
           'icon':
               _isArriving ? Icons.bolt_rounded : Icons.electric_bike_rounded,
-          'color': _ridePrimary
+          'color': const Color(0xFF2D8CFF)
         };
       case 'arrived':
         return {
-          'label': 'Your pilot has arrived',
+          'label': 'Your pilot is arrived',
           'icon': Icons.location_on_rounded,
           'color': const Color(0xFF10B981)
         };
       case 'in_progress':
       case 'on_the_way':
         return {
-          'label': 'Your ride is in progress',
+          'label': 'Your ride is started',
           'icon': Icons.auto_awesome_rounded,
-          'color': _ridePrimary
+          'color': const Color(0xFF2D8CFF)
         };
       case 'completed':
         return {
-          'label': 'Your ride is complete',
+          'label': 'Your ride is ended',
           'icon': Icons.check_circle_rounded,
-          'color': _ridePrimary
+          'color': JT.primary
         };
       case 'cancelled':
         return {
           'label': 'Trip Cancelled',
           'icon': Icons.cancel_rounded,
-          'color': _ridePrimaryDark
+          'color': JT.primaryDark
         };
       default:
         return {
@@ -2779,16 +2440,8 @@ class _TrackingScreenState extends State<TrackingScreen>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            _bannerColor,
-            _bannerColor.withValues(alpha: 0.84),
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
+        color: _bannerColor,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
         boxShadow: [
           BoxShadow(
             color: _bannerColor.withValues(alpha: 0.3),
@@ -2814,7 +2467,7 @@ class _TrackingScreenState extends State<TrackingScreen>
               _bannerMessage!,
               style: GoogleFonts.poppins(
                 color: Colors.white,
-                fontWeight: FontWeight.w700,
+                fontWeight: FontWeight.w600,
                 fontSize: 14,
                 letterSpacing: 0.2,
               ),
@@ -2830,6 +2483,10 @@ class _TrackingScreenState extends State<TrackingScreen>
     );
   }
 
+  void _showArrivalBanner() {
+    _showStatusBanner('Your pilot is arrived', const Color(0xFF10B981));
+  }
+
   Widget _buildInProgressPanel(Map<String, dynamic> trip) {
     final dest = trip['destinationShortName'] ??
         trip['destinationAddress'] ??
@@ -2839,9 +2496,9 @@ class _TrackingScreenState extends State<TrackingScreen>
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: _rideSurfaceAlt,
+        color: const Color(0xFFF8FAFF),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: _ridePrimary.withValues(alpha: 0.1)),
+        border: Border.all(color: Colors.blue.withValues(alpha: 0.1)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2851,10 +2508,10 @@ class _TrackingScreenState extends State<TrackingScreen>
               Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                    color: _ridePrimary.withValues(alpha: 0.12),
+                    color: Colors.blue.withValues(alpha: 0.12),
                     shape: BoxShape.circle),
-                child: Icon(Icons.navigation_rounded,
-                    color: _ridePrimary, size: 20),
+                child: const Icon(Icons.navigation_rounded,
+                    color: Colors.blue, size: 20),
               ),
               const SizedBox(width: 14),
               Expanded(
@@ -2886,7 +2543,7 @@ class _TrackingScreenState extends State<TrackingScreen>
                       style: GoogleFonts.poppins(
                           fontSize: 13,
                           fontWeight: FontWeight.w700,
-                          color: _ridePrimary)),
+                          color: JT.primary)),
                 ),
             ],
           ),
@@ -2903,11 +2560,11 @@ class _TrackingScreenState extends State<TrackingScreen>
                   Text('Trip is in progress',
                       style: GoogleFonts.poppins(
                           fontSize: 12,
-                          color: JT.success,
+                          color: Colors.green,
                           fontWeight: FontWeight.w600)),
                 ],
               ),
-              Icon(Icons.security_rounded, color: _ridePrimary, size: 18),
+              const Icon(Icons.security_rounded, color: Colors.blue, size: 18),
             ],
           ),
         ],
@@ -2932,7 +2589,7 @@ class _TrackingScreenState extends State<TrackingScreen>
               MaterialPageRoute(builder: (_) => const MainScreen()),
               (_) => false);
         } else {
-          _showStatusBanner('Active trip in progress', _ridePrimary);
+          _showStatusBanner('Active trip in progress', JT.primary);
         }
       },
       child: Container(
@@ -2983,7 +2640,7 @@ class _TrackingScreenState extends State<TrackingScreen>
               MaterialPageRoute(builder: (_) => const MainScreen()),
               (_) => false);
         } else {
-          _showStatusBanner('Active trip in progress', _ridePrimary);
+          _showStatusBanner('Active trip in progress', JT.primary);
         }
       },
       child: AnimatedContainer(
@@ -2991,14 +2648,14 @@ class _TrackingScreenState extends State<TrackingScreen>
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         decoration: isSelected
             ? BoxDecoration(
-                gradient: _rideGradient,
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF7C3AED), Color(0xFF6366F1)], 
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
                 borderRadius: BorderRadius.circular(20),
                 boxShadow: [
-                  BoxShadow(
-                    color: _ridePrimaryDark.withValues(alpha: 0.3),
-                    blurRadius: 10,
-                    offset: const Offset(0, 4),
-                  ),
+                  BoxShadow(color: const Color(0xFF7C3AED).withValues(alpha: 0.3), blurRadius: 10, offset: const Offset(0, 4)),
                 ],
               )
             : null,
@@ -3018,39 +2675,6 @@ class _TrackingScreenState extends State<TrackingScreen>
               ),
             ]
           ],
-        ),
-      ),
-    );
-  }
-
-  Widget _rideGradientButton({
-    required String label,
-    required VoidCallback onTap,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        height: 54,
-        decoration: BoxDecoration(
-          gradient: _rideGradient,
-          borderRadius: BorderRadius.circular(16),
-          boxShadow: [
-            BoxShadow(
-              color: _ridePrimaryDark.withValues(alpha: 0.28),
-              blurRadius: 14,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Center(
-          child: Text(
-            label,
-            style: GoogleFonts.poppins(
-              fontSize: 15,
-              fontWeight: FontWeight.w600,
-              color: Colors.white,
-            ),
-          ),
         ),
       ),
     );

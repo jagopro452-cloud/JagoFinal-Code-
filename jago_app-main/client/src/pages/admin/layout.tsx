@@ -54,12 +54,12 @@ function useAdminBootstrap() {
     const fallback = setTimeout(() => setCssReady(true), 1500);
     return () => {
       clearTimeout(fallback);
-      // Keep admin CSS mounted after first load. Removing it during route
-      // transitions causes a visible layout flash/jump before links reload.
-      added.forEach(el => {
-        el.onload = null;
-        el.onerror = null;
+      added.forEach(el => el.remove());
+      cssFiles.forEach(({ id }) => {
+        const el = document.getElementById(id);
+        if (el) el.remove();
       });
+      setCssReady(false);
     };
   }, []);
 
@@ -78,12 +78,6 @@ interface NavSection {
   roles?: string[]; // undefined = visible to all
 }
 
-interface RouteMeta {
-  label: string;
-  href: string;
-  section: string;
-}
-
 // Sections accessible per employee role. Super admin / admin see everything.
 // Undefined roles = visible to all authenticated admins.
 const ROLE_SECTION_ACCESS: Record<string, string[]> = {
@@ -100,8 +94,8 @@ const navSections: NavSection[] = [
     category: "Dashboard",
     items: [
       { label: "Dashboard", icon: "bi-grid-fill", href: "/admin/dashboard" },
+      { label: "Realtime Ops", icon: "bi-broadcast-pin", href: "/admin/realtime-ops" },
       { label: "System Health", icon: "bi-activity", href: "/admin/system-health" },
-      { label: "Alert Engine", icon: "bi-robot", href: "/admin/alert-engine" },
       { label: "Service Management", icon: "bi-toggles", href: "/admin/service-management" },
       { label: "Heat Map", icon: "bi-pin-map", href: "/admin/heat-map" },
       { label: "Fleet View", icon: "bi-map-fill", href: "/admin/fleet-view" },
@@ -118,8 +112,8 @@ const navSections: NavSection[] = [
     category: "Trip Management",
     items: [
       { label: "All Trips", icon: "bi-car-front-fill", href: "/admin/trips" },
-      { label: "Intercity Pool", icon: "bi-people-fill", href: "/admin/intercity-pool" },
-      { label: "Local Pool", icon: "bi-people-fill", href: "/admin/local-pool" },
+      { label: "Local Pool", icon: "bi-people-fill", href: "/admin/car-sharing" },
+      { label: "Intercity Pool", icon: "bi-car-front-fill", href: "/admin/intercity-carsharing" },
       { label: "Outstation Pool", icon: "bi-signpost-2-fill", href: "/admin/outstation-pool" },
       { label: "Intercity Routes", icon: "bi-map", href: "/admin/intercity-routes" },
       { label: "Parcel Refund Request", icon: "bi-arrow-return-left", href: "/admin/parcel-refunds" },
@@ -226,41 +220,22 @@ const navSections: NavSection[] = [
   },
 ];
 
-const hiddenRouteMeta: RouteMeta[] = [
-  { section: "Hidden Admin", label: "Blogs", href: "/admin/blogs" },
-  { section: "Hidden Admin", label: "Newsletter", href: "/admin/newsletter" },
-  { section: "Hidden Admin", label: "Voice Commands", href: "/admin/voice-commands" },
-  { section: "Hidden Admin", label: "City Services", href: "/admin/city-services" },
-  { section: "Hidden Admin", label: "Parcel Vehicle Types", href: "/admin/parcel-vehicle-types" },
-  { section: "Hidden Admin", label: "AI Brain", href: "/admin/ai-brain" },
-];
-
-const pageRouteMeta: RouteMeta[] = [
-  ...navSections.flatMap((section) =>
-    section.items.map((item) => ({
-      section: section.category,
-      label: item.label,
-      href: item.href,
-    })),
-  ),
-  ...hiddenRouteMeta,
-];
-
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const cssReady = useAdminBootstrap();
   const [location, setLocation] = useLocation();
   const clock = useLiveClock();
   const { theme, setTheme } = useTheme();
   const isDark = theme === "dark";
-  const [navSearch, setNavSearch] = useState("");
 
   const currentPage = (() => {
-    for (const item of pageRouteMeta) {
-      if (location === item.href || location.startsWith(item.href + "/")) {
-        return { label: item.label, section: item.section };
+    for (const section of navSections) {
+      for (const item of section.items) {
+        if (location === item.href || location.startsWith(item.href + "/")) {
+          return { label: item.label, section: section.category };
+        }
       }
     }
-    return { label: "Module Not Found", section: "Admin" };
+    return { label: "Dashboard", section: "Overview" };
   })();
 
   // Persist sidebar fold state across page refreshes
@@ -331,19 +306,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const isSuperAdmin = adminRole === "superadmin" || adminRole === "super_admin";
   const isAdmin = isSuperAdmin || adminRole === "admin";
   const allowedSections: Set<string> | null = isAdmin ? null : (ROLE_SECTION_ACCESS[adminRole] ? new Set(ROLE_SECTION_ACCESS[adminRole]) : new Set()); // Empty set = no access
-  const baseVisibleNav = allowedSections ? navSections.filter(s => allowedSections.has(s.category)) : navSections;
-  const searchNeedle = navSearch.trim().toLowerCase();
-  const visibleNav = searchNeedle
-    ? baseVisibleNav
-        .map((section) => ({
-          ...section,
-          items: section.items.filter((item) => {
-            const hay = `${section.category} ${item.label}`.toLowerCase();
-            return hay.includes(searchNeedle);
-          }),
-        }))
-        .filter((section) => section.items.length > 0)
-    : baseVisibleNav;
+  const visibleNav = allowedSections ? navSections.filter(s => allowedSections.has(s.category)) : navSections;
 
   const handleLogout = async () => {
     try {
@@ -403,740 +366,6 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
   return (
     <div className="admin-wrapper admin-shell">
-      <style>{`
-        .admin-shell {
-          background:
-            radial-gradient(circle at top left, rgba(47,123,255,0.08), transparent 22%),
-            radial-gradient(circle at top right, rgba(8,145,178,0.08), transparent 20%),
-            linear-gradient(180deg, #f8fbff 0%, #f4f7fb 42%, #eef3f9 100%);
-        }
-        .admin-shell .aside {
-          box-shadow: 12px 0 32px rgba(15, 23, 42, 0.14);
-          border-right: 1px solid rgba(255,255,255,0.12);
-        }
-        .admin-shell .aside-header {
-          padding-bottom: 18px;
-          border-bottom: 1px solid rgba(255,255,255,0.08);
-        }
-        .admin-shell .admin-brand {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          min-width: 0;
-        }
-        .admin-shell .admin-brand-mark {
-          width: 28px;
-          height: 28px;
-          border-radius: 10px;
-          background: rgba(255,255,255,0.14);
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          box-shadow: inset 0 0 0 1px rgba(255,255,255,0.12);
-          flex-shrink: 0;
-        }
-        .admin-shell .admin-brand-mark img {
-          width: 18px;
-          height: 18px;
-          object-fit: contain;
-          display: block;
-        }
-        .admin-shell .admin-brand-copy {
-          display: flex;
-          flex-direction: column;
-          min-width: 0;
-        }
-        .admin-shell .admin-brand-name {
-          font-size: 0.95rem;
-          line-height: 1;
-          font-weight: 800;
-          letter-spacing: 0.12em;
-          color: #ffffff;
-        }
-        .admin-shell .admin-brand-tag {
-          margin-top: 4px;
-          font-size: 0.48rem;
-          font-weight: 700;
-          color: rgba(255,255,255,0.62);
-          letter-spacing: 0.24em;
-          text-transform: uppercase;
-        }
-        .admin-shell .user-profile {
-          background: linear-gradient(180deg, rgba(255,255,255,0.16), rgba(255,255,255,0.08));
-          border: 1px solid rgba(255,255,255,0.14);
-          border-radius: 20px;
-          padding: 16px 16px 14px;
-          box-shadow: inset 0 1px 0 rgba(255,255,255,0.14);
-          margin-bottom: 18px;
-        }
-        .admin-shell .aside-search .search-form__input_group {
-          background: rgba(255,255,255,0.12);
-          border: 1px solid rgba(255,255,255,0.14);
-          border-radius: 16px;
-          overflow: hidden;
-          transition: border-color .18s ease, background .18s ease, transform .18s ease;
-        }
-        .admin-shell .aside-search .search-form__input_group:focus-within {
-          background: rgba(255,255,255,0.2);
-          border-color: rgba(191,219,254,0.7);
-          transform: translateY(-1px);
-        }
-        .admin-shell .aside-search .search-form__input,
-        .admin-shell .aside-search .search-form__input::placeholder,
-        .admin-shell .aside-search .search-form__icon {
-          color: rgba(255,255,255,0.82);
-        }
-        .admin-shell .nav-category {
-          color: rgba(255,255,255,0.42);
-          font-size: 10px;
-          font-weight: 700;
-          letter-spacing: 1.45px;
-          margin: 18px 0 8px;
-          text-transform: uppercase;
-        }
-        .admin-shell .main-nav > li > ul > li > a {
-          border-radius: 14px;
-          margin: 3px 0;
-          transition: transform .16s ease, background .16s ease, box-shadow .16s ease;
-        }
-        .admin-shell .main-nav > li > ul > li > a:hover {
-          transform: translateX(2px);
-          background: rgba(255,255,255,0.12);
-        }
-        .admin-shell .main-nav > li.active > a,
-        .admin-shell .main-nav > li.open > a {
-          background: linear-gradient(90deg, rgba(255,255,255,0.2), rgba(255,255,255,0.1));
-          box-shadow: inset 0 0 0 1px rgba(255,255,255,0.1);
-        }
-        .admin-shell .header {
-          backdrop-filter: blur(16px);
-          background: rgba(255,255,255,0.82);
-          border-bottom: 1px solid rgba(226,232,240,0.9);
-          box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
-        }
-        .admin-shell .header-left-col,
-        .admin-shell .header-right-col,
-        .admin-shell .header-right,
-        .admin-shell .header-nav-list {
-          display: flex;
-          align-items: center;
-        }
-        .admin-shell .header-right-col {
-          justify-content: flex-end;
-        }
-        .admin-shell .header-icon-btn,
-        .admin-shell .header-avatar-btn {
-          box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
-        }
-        .admin-shell .header-icon-btn,
-        .admin-shell .header-avatar-btn,
-        .admin-shell .header-avatar-btn.avatar {
-          width: 42px !important;
-          height: 42px !important;
-          min-width: 42px !important;
-          min-height: 42px !important;
-          border-radius: 14px !important;
-        }
-        .admin-shell .header-nav-list > li {
-          display: flex;
-          align-items: center;
-        }
-        .admin-shell .admin-main-inner {
-          padding: 26px 26px 30px;
-        }
-        .admin-shell .admin-surface {
-          background: rgba(255,255,255,0.78);
-          border: 1px solid rgba(226,232,240,0.92);
-          border-radius: 26px;
-          box-shadow: 0 24px 50px rgba(15, 23, 42, 0.08);
-          padding: 22px 22px 26px;
-        }
-        .admin-shell .admin-page-header {
-          display: flex;
-          align-items: flex-start;
-          justify-content: space-between;
-          gap: 18px;
-          padding-bottom: 18px;
-          margin-bottom: 22px;
-          border-bottom: 1px solid rgba(226,232,240,0.85);
-        }
-        .admin-shell .admin-page-title {
-          font-size: 1.45rem;
-          line-height: 1.15;
-          font-weight: 800;
-          color: #0f172a;
-          margin: 0 0 6px;
-          letter-spacing: -0.03em;
-        }
-        .admin-shell .admin-page-subtitle {
-          font-size: 13px;
-          color: #64748b;
-          margin: 0;
-          font-weight: 500;
-        }
-        .admin-shell .admin-page-chip {
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-          background: linear-gradient(135deg, rgba(47,123,255,0.1), rgba(59,130,246,0.06));
-          color: #1e40af;
-          border: 1px solid rgba(147,197,253,0.75);
-          border-radius: 999px;
-          padding: 10px 14px;
-          font-size: 12px;
-          font-weight: 700;
-          white-space: nowrap;
-        }
-        .admin-shell .admin-empty-note {
-          padding: 14px 14px 2px;
-          color: rgba(255,255,255,0.62);
-          font-size: 12px;
-          font-weight: 500;
-        }
-        .admin-shell .admin-page-loading {
-          min-height: 420px;
-          border: 1px solid rgba(226,232,240,0.92);
-          border-radius: 22px;
-          background: linear-gradient(180deg, rgba(255,255,255,0.92), rgba(248,250,252,0.92));
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          gap: 12px;
-          color: #64748b;
-          font-size: 13px;
-          font-weight: 700;
-        }
-        .admin-shell .admin-page-loading__bar {
-          width: 120px;
-          height: 4px;
-          border-radius: 999px;
-          overflow: hidden;
-          background: #e2e8f0;
-          position: relative;
-        }
-        .admin-shell .admin-page-loading__bar::after {
-          content: "";
-          position: absolute;
-          inset: 0;
-          width: 42%;
-          border-radius: inherit;
-          background: linear-gradient(90deg, #2f7bff, #0891b2);
-          animation: admin-loading-bar 900ms ease-in-out infinite alternate;
-        }
-        @keyframes admin-loading-bar {
-          from { transform: translateX(0); }
-          to { transform: translateX(140%); }
-        }
-        .admin-shell .container-fluid {
-          padding-left: 0;
-          padding-right: 0;
-        }
-        .admin-shell .card {
-          border: 1px solid rgba(226,232,240,0.92);
-          border-radius: 22px;
-          box-shadow: 0 16px 38px rgba(15, 23, 42, 0.06);
-          overflow: hidden;
-          background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.98));
-        }
-        .admin-shell .card-header {
-          background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(248,250,252,0.96)) !important;
-          border-bottom: 1px solid rgba(226,232,240,0.82) !important;
-        }
-        .admin-shell .card-body {
-          padding: 1.15rem 1.25rem;
-        }
-        .admin-shell .card-footer {
-          background: rgba(255,255,255,0.84);
-          border-top: 1px solid rgba(226,232,240,0.82);
-          padding: 1rem 1.25rem 1.15rem;
-        }
-        .admin-shell .card-header,
-        .admin-shell .card-footer,
-        .admin-shell .card-body > .d-flex:first-child {
-          gap: 12px;
-        }
-        .admin-shell .table-responsive {
-          border: 1px solid rgba(226,232,240,0.85);
-          border-radius: 18px;
-          background: rgba(255,255,255,0.86);
-          box-shadow: inset 0 1px 0 rgba(255,255,255,0.65);
-        }
-        .admin-shell .table {
-          margin-bottom: 0;
-          vertical-align: middle;
-        }
-        .admin-shell .table > :not(caption) > * > * {
-          padding: 14px 16px;
-          border-bottom-color: rgba(226,232,240,0.72);
-        }
-        .admin-shell .table > thead {
-          background: linear-gradient(180deg, #f8fbff 0%, #f1f5f9 100%);
-        }
-        .admin-shell .table > thead th {
-          font-size: 11px;
-          font-weight: 800;
-          color: #64748b;
-          text-transform: uppercase;
-          letter-spacing: 0.08em;
-          border-bottom-color: rgba(226,232,240,0.9);
-        }
-        .admin-shell .table > tbody tr {
-          transition: background-color .18s ease, transform .18s ease;
-        }
-        .admin-shell .table > tbody tr:hover {
-          background: rgba(248,250,252,0.92);
-        }
-        .admin-shell .table > tbody td .btn,
-        .admin-shell .table > tbody td .badge,
-        .admin-shell .table > tbody td .switcher {
-          vertical-align: middle;
-        }
-        .admin-shell .table-hover > tbody > tr:hover > * {
-          box-shadow: inset 0 1px 0 rgba(255,255,255,0.62);
-        }
-        .admin-shell .form-label,
-        .admin-shell .form-label-jago {
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-          margin-bottom: 8px;
-          font-size: 12px;
-          font-weight: 700;
-          color: #334155;
-          letter-spacing: -0.01em;
-        }
-        .admin-shell .form-control,
-        .admin-shell .form-select,
-        .admin-shell .admin-form-control,
-        .admin-shell textarea.form-control,
-        .admin-shell input.admin-form-control,
-        .admin-shell textarea.admin-form-control,
-        .admin-shell select.admin-form-control {
-          min-height: 46px;
-          border-radius: 14px !important;
-          border: 1px solid rgba(203,213,225,0.92) !important;
-          background: rgba(255,255,255,0.96) !important;
-          color: #0f172a !important;
-          box-shadow: 0 1px 2px rgba(15,23,42,0.02);
-          transition: border-color .18s ease, box-shadow .18s ease, background-color .18s ease;
-          padding: 11px 14px;
-          font-size: 13px;
-          font-weight: 500;
-        }
-        .admin-shell textarea.form-control,
-        .admin-shell textarea.admin-form-control {
-          min-height: 110px;
-          resize: vertical;
-        }
-        .admin-shell .form-control::placeholder,
-        .admin-shell .admin-form-control::placeholder {
-          color: #94a3b8;
-          font-weight: 500;
-        }
-        .admin-shell .form-control:focus,
-        .admin-shell .form-select:focus,
-        .admin-shell .admin-form-control:focus {
-          border-color: rgba(96,165,250,0.95) !important;
-          box-shadow: 0 0 0 4px rgba(59,130,246,0.12), 0 8px 20px rgba(59,130,246,0.08) !important;
-          background: #fff !important;
-        }
-        .admin-shell .form-text,
-        .admin-shell .text-muted.small,
-        .admin-shell small.text-muted {
-          color: #64748b !important;
-          font-size: 11.5px;
-          line-height: 1.45;
-        }
-        .admin-shell .input-group {
-          border-radius: 14px;
-        }
-        .admin-shell .input-group > .form-control,
-        .admin-shell .input-group > .form-select,
-        .admin-shell .input-group > .admin-form-control {
-          position: relative;
-          z-index: 1;
-        }
-        .admin-shell .input-group-text {
-          border-radius: 14px !important;
-          border: 1px solid rgba(203,213,225,0.92) !important;
-          background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%) !important;
-          color: #475569 !important;
-          font-size: 12px;
-          font-weight: 700;
-          padding: 0 14px;
-        }
-        .admin-shell .btn {
-          border-radius: 14px;
-          font-weight: 700;
-          letter-spacing: -0.01em;
-          box-shadow: 0 8px 20px rgba(15,23,42,0.04);
-          transition: transform .16s ease, box-shadow .16s ease, background-color .16s ease, border-color .16s ease;
-        }
-        .admin-shell .btn:hover {
-          transform: translateY(-1px);
-          box-shadow: 0 14px 28px rgba(15,23,42,0.08);
-        }
-        .admin-shell .btn:active {
-          transform: translateY(0);
-        }
-        .admin-shell .btn-sm {
-          border-radius: 12px;
-          padding: 8px 13px;
-          font-size: 12px;
-        }
-        .admin-shell .btn-primary {
-          background: linear-gradient(135deg, #2f7bff 0%, #1d4ed8 100%);
-          border-color: rgba(37,99,235,0.92);
-        }
-        .admin-shell .btn-primary:hover,
-        .admin-shell .btn-primary:focus {
-          background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
-          border-color: rgba(30,64,175,0.95);
-        }
-        .admin-shell .btn-outline-secondary,
-        .admin-shell .btn-light {
-          border-color: rgba(203,213,225,0.92);
-          background: rgba(255,255,255,0.92);
-          color: #334155;
-        }
-        .admin-shell .btn-outline-secondary:hover,
-        .admin-shell .btn-light:hover {
-          background: #f8fafc;
-          color: #0f172a;
-          border-color: rgba(148,163,184,0.72);
-        }
-        .admin-shell .btn-outline-primary {
-          border-color: rgba(96,165,250,0.72);
-          background: rgba(255,255,255,0.92);
-          color: #2563eb;
-        }
-        .admin-shell .btn-outline-primary:hover,
-        .admin-shell .btn-outline-primary:focus {
-          background: rgba(239,246,255,0.98);
-          border-color: rgba(59,130,246,0.9);
-          color: #1d4ed8;
-        }
-        .admin-shell .btn-outline-danger {
-          border-color: rgba(252,165,165,0.72);
-          background: rgba(255,255,255,0.92);
-          color: #dc2626;
-        }
-        .admin-shell .btn-outline-danger:hover,
-        .admin-shell .btn-outline-danger:focus {
-          background: rgba(254,242,242,0.98);
-          border-color: rgba(248,113,113,0.88);
-          color: #b91c1c;
-        }
-        .admin-shell .btn-outline-success {
-          border-color: rgba(134,239,172,0.82);
-          background: rgba(255,255,255,0.92);
-          color: #15803d;
-        }
-        .admin-shell .btn-outline-success:hover,
-        .admin-shell .btn-outline-success:focus {
-          background: rgba(240,253,244,0.98);
-          border-color: rgba(74,222,128,0.88);
-          color: #166534;
-        }
-        .admin-shell .badge {
-          border-radius: 999px;
-          padding: 7px 10px;
-          font-size: 10.5px;
-          font-weight: 800;
-          letter-spacing: 0.03em;
-        }
-        .admin-shell .badge.bg-light {
-          color: #475569 !important;
-          background: #f8fafc !important;
-          border: 1px solid rgba(226,232,240,0.95);
-        }
-        .admin-shell .modal.show {
-          background: rgba(15,23,42,0.42);
-          backdrop-filter: blur(6px);
-        }
-        .admin-shell .modal-dialog {
-          margin-top: 2.5rem;
-          margin-bottom: 2.5rem;
-        }
-        .admin-shell .modal-content {
-          border: 1px solid rgba(226,232,240,0.9);
-          border-radius: 24px;
-          overflow: hidden;
-          background: linear-gradient(180deg, rgba(255,255,255,0.99), rgba(248,250,252,0.98));
-          box-shadow: 0 28px 80px rgba(15,23,42,0.18);
-        }
-        .admin-shell .modal-header,
-        .admin-shell .modal-footer {
-          border-color: rgba(226,232,240,0.86);
-          background: rgba(255,255,255,0.82);
-        }
-        .admin-shell .modal-header {
-          padding: 18px 22px;
-        }
-        .admin-shell .modal-body {
-          padding: 20px 22px 22px;
-        }
-        .admin-shell .modal-footer {
-          padding: 16px 22px 20px;
-          gap: 10px;
-        }
-        .admin-shell .modal-title {
-          font-size: 1.15rem;
-          font-weight: 800;
-          color: #0f172a;
-          letter-spacing: -0.02em;
-        }
-        .admin-shell .modal-backdrop-jago {
-          position: fixed;
-          inset: 0;
-          z-index: 1200;
-          background: rgba(15,23,42,0.5);
-          backdrop-filter: blur(7px);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          padding: 24px 16px;
-          animation: admin-modal-backdrop-in 140ms ease-out both;
-        }
-        .admin-shell .modal-jago {
-          width: min(100%, 760px);
-          max-height: calc(100vh - 48px);
-          overflow: auto;
-          border-radius: 24px;
-          border: 1px solid rgba(226,232,240,0.92);
-          background: linear-gradient(180deg, rgba(255,255,255,0.99), rgba(248,250,252,0.98));
-          box-shadow: 0 32px 90px rgba(15,23,42,0.22);
-          animation: admin-modal-in 180ms cubic-bezier(.16,1,.3,1) both;
-          transform-origin: center top;
-        }
-        .admin-shell .modal-jago.admin-add-driver-modal {
-          width: min(100%, 840px);
-          overflow-x: hidden;
-        }
-        .admin-shell .driver-field-feedback {
-          min-height: 18px;
-          margin-top: 4px;
-          font-size: 11.5px;
-          line-height: 1.35;
-        }
-        @keyframes admin-modal-backdrop-in {
-          from { opacity: 0; }
-          to { opacity: 1; }
-        }
-        @keyframes admin-modal-in {
-          from { opacity: 0; transform: translateY(10px) scale(.985); }
-          to { opacity: 1; transform: translateY(0) scale(1); }
-        }
-        .admin-shell .modal-jago-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 14px;
-          padding: 18px 22px;
-          border-bottom: 1px solid rgba(226,232,240,0.86);
-          background: rgba(255,255,255,0.88);
-          position: sticky;
-          top: 0;
-          z-index: 2;
-          backdrop-filter: blur(8px);
-        }
-        .admin-shell .modal-jago-title {
-          margin: 0;
-          font-size: 1.08rem;
-          font-weight: 800;
-          color: #0f172a;
-          letter-spacing: -0.02em;
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-          min-width: 0;
-        }
-        .admin-shell .modal-jago-close {
-          width: 36px;
-          height: 36px;
-          border: 1px solid rgba(226,232,240,0.92);
-          border-radius: 12px;
-          background: rgba(255,255,255,0.92);
-          color: #475569;
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          box-shadow: 0 6px 18px rgba(15,23,42,0.06);
-          transition: transform .16s ease, box-shadow .16s ease, background-color .16s ease;
-        }
-        .admin-shell .modal-jago-close:hover {
-          transform: translateY(-1px);
-          box-shadow: 0 10px 22px rgba(15,23,42,0.1);
-          background: #fff;
-        }
-        .admin-shell .modal-jago > :not(.modal-jago-header) {
-          padding-left: 22px;
-          padding-right: 22px;
-        }
-        .admin-shell .modal-jago > .d-flex:last-child,
-        .admin-shell .modal-jago > .border-top:last-child {
-          padding-bottom: 20px;
-        }
-        .admin-shell .switcher {
-          position: relative;
-          display: inline-flex;
-          align-items: center;
-          cursor: pointer;
-          user-select: none;
-          flex-shrink: 0;
-        }
-        .admin-shell .switcher_input {
-          position: absolute;
-          opacity: 0;
-          inset: 0;
-          width: 100%;
-          height: 100%;
-          cursor: pointer;
-        }
-        .admin-shell .switcher_control {
-          width: 44px;
-          height: 24px;
-          border-radius: 999px;
-          background: linear-gradient(180deg, #e2e8f0, #cbd5e1);
-          border: 1px solid rgba(148,163,184,0.44);
-          box-shadow: inset 0 1px 2px rgba(15,23,42,0.08);
-          position: relative;
-          transition: background-color .18s ease, border-color .18s ease, box-shadow .18s ease;
-        }
-        .admin-shell .switcher_control::after {
-          content: "";
-          position: absolute;
-          top: 2px;
-          left: 2px;
-          width: 18px;
-          height: 18px;
-          border-radius: 50%;
-          background: linear-gradient(180deg, #ffffff, #f8fafc);
-          box-shadow: 0 4px 10px rgba(15,23,42,0.18);
-          transition: transform .18s ease;
-        }
-        .admin-shell .switcher_input:checked + .switcher_control {
-          background: linear-gradient(135deg, #2f7bff 0%, #1d4ed8 100%);
-          border-color: rgba(37,99,235,0.9);
-          box-shadow: inset 0 1px 2px rgba(15,23,42,0.06), 0 0 0 4px rgba(59,130,246,0.08);
-        }
-        .admin-shell .switcher_input:checked + .switcher_control::after {
-          transform: translateX(20px);
-        }
-        .admin-shell .switcher_input:focus-visible + .switcher_control {
-          box-shadow: 0 0 0 4px rgba(59,130,246,0.12);
-        }
-        .admin-shell .nav--tabs,
-        .admin-shell .nav.nav--tabs {
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-          flex-wrap: wrap;
-          background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
-          border: 1px solid rgba(226,232,240,0.92);
-          border-radius: 18px;
-          padding: 6px;
-        }
-        .admin-shell .nav--tabs .nav-link {
-          border: none;
-          border-radius: 12px;
-          color: #64748b;
-          font-size: 12px;
-          font-weight: 700;
-          padding: 10px 14px;
-          background: transparent;
-          transition: background-color .16s ease, color .16s ease, box-shadow .16s ease;
-        }
-        .admin-shell .nav--tabs .nav-link.active {
-          background: linear-gradient(135deg, #2f7bff 0%, #1d4ed8 100%);
-          color: #fff;
-          box-shadow: 0 10px 24px rgba(37,99,235,0.22);
-        }
-        .admin-shell .nav--tabs .nav-link:not(.active):hover {
-          background: rgba(255,255,255,0.92);
-          color: #0f172a;
-        }
-        .admin-shell .text-danger {
-          color: #dc2626 !important;
-        }
-        .admin-shell .text-success {
-          color: #15803d !important;
-        }
-        .admin-shell .text-warning {
-          color: #d97706 !important;
-        }
-        .admin-shell .dropdown-menu {
-          border-radius: 18px;
-          border: 1px solid rgba(226,232,240,0.88);
-          box-shadow: 0 20px 46px rgba(15,23,42,0.14);
-          padding: 10px;
-        }
-        .admin-shell .dropdown-item {
-          border-radius: 12px;
-          font-weight: 600;
-          color: #334155;
-          padding: 10px 12px;
-        }
-        .admin-shell .dropdown-item:hover {
-          background: #f8fafc;
-        }
-        .admin-shell .dropdown-item-text {
-          padding: 10px 12px 8px;
-        }
-        .admin-shell .pagination,
-        .admin-shell .d-flex.gap-2,
-        .admin-shell .d-flex.flex-wrap.gap-2 {
-          row-gap: 10px !important;
-        }
-        .admin-shell .sticky-action-bar,
-        .admin-shell .admin-action-bar {
-          position: sticky;
-          bottom: 0;
-          z-index: 3;
-          margin-top: 16px;
-          padding: 14px 18px;
-          border: 1px solid rgba(226,232,240,0.88);
-          border-radius: 18px;
-          background: rgba(255,255,255,0.9);
-          backdrop-filter: blur(10px);
-          box-shadow: 0 16px 34px rgba(15,23,42,0.1);
-        }
-        .admin-shell .nav-pills .nav-link,
-        .admin-shell .nav-tabs .nav-link {
-          border-radius: 14px;
-          font-weight: 700;
-        }
-        .admin-shell .text-muted {
-          color: #64748b !important;
-        }
-        @media (max-width: 991px) {
-          .admin-shell .admin-main-inner {
-            padding: 18px 14px 22px;
-          }
-          .admin-shell .admin-surface {
-            border-radius: 20px;
-            padding: 18px 16px 20px;
-          }
-          .admin-shell .admin-page-header {
-            flex-direction: column;
-            align-items: flex-start;
-          }
-          .admin-shell .modal-jago {
-            max-height: calc(100vh - 28px);
-            border-radius: 20px;
-          }
-          .admin-shell .modal-jago-header,
-          .admin-shell .modal-jago > :not(.modal-jago-header) {
-            padding-left: 16px;
-            padding-right: 16px;
-          }
-          .admin-shell .nav--tabs,
-          .admin-shell .nav.nav--tabs {
-            width: 100%;
-          }
-        }
-      `}</style>
       {/* Overlay */}
       <div
         className={`aside-overlay${mobileOpen ? " active" : ""}`}
@@ -1151,17 +380,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             href="/admin/dashboard"
             className="logo"
             onClick={(e) => { e.preventDefault(); setLocation("/admin/dashboard"); }}
-            style={{ textDecoration: "none" }}
+            style={{ display: "flex", alignItems: "center", gap: 8, textDecoration: "none" }}
           >
-            <div className="admin-brand">
-              <span className="admin-brand-mark">
-                <img src="/jago-logo-small.png" alt="JAGO" />
-              </span>
-              <span className="admin-brand-copy">
-                <span className="admin-brand-name">JAGO</span>
-                <span className="admin-brand-tag">Admin Panel</span>
-              </span>
-            </div>
+            <Logo variant="white" size="sm" style={{ flexShrink: 0 }} />
+            <span style={{ fontSize: "0.5rem", fontWeight: 700, color: "rgba(255,255,255,0.6)", letterSpacing: 2.5, marginTop: 1, alignSelf: "flex-end", paddingBottom: 2 }}>ADMIN PANEL</span>
           </a>
           <button
             className="toggle-menu-button"
@@ -1195,8 +417,6 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                   type="search"
                   className="theme-input-style search-form__input"
                   placeholder="Search Here"
-                  value={navSearch}
-                  onChange={(e) => setNavSearch(e.target.value)}
                   data-testid="sidebar-search"
                 />
               </div>
@@ -1224,11 +444,6 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                   </ul>
                 </li>
               ))}
-              {visibleNav.length === 0 && (
-                <li className="admin-empty-note">
-                  No menu matches for "{navSearch.trim()}"
-                </li>
-              )}
             </ul>
 
             {/* Sidebar Logout */}
@@ -1365,21 +580,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       {/* Main Content */}
       <div className="main-area admin-main-area">
         <div className="main-area-inner admin-main-inner">
-          <div className="admin-surface">
-            <div className="admin-page-header">
-              <div>
-                <h1 className="admin-page-title">{currentPage.label}</h1>
-                <p className="admin-page-subtitle">
-                  {currentPage.section} workspace with live controls, aligned metrics, and operational visibility.
-                </p>
-              </div>
-              <div className="admin-page-chip">
-                <i className="bi bi-shield-check"></i>
-                {admin.role || "superadmin"} · Live Control Mode
-              </div>
-            </div>
-            {children}
-          </div>
+          {children}
         </div>
       </div>
     </div>

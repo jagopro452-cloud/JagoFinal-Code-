@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+﻿import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -58,20 +58,20 @@ export default function CarSharingPage() {
 
   const { data: ridesData, isLoading: ridesLoading } = useQuery<any>({
     queryKey: ["/api/car-sharing/rides"],
-    queryFn: () => apiRequest("GET", "/api/car-sharing/rides").then(r => r.json()).then(d => d?.data ? d : { data: Array.isArray(d) ? d : [] }),
+    queryFn: () => fetch("/api/car-sharing/rides").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => d?.data ? d : { data: Array.isArray(d) ? d : [] }),
   });
   const allRides: any[] = Array.isArray(ridesData?.data) ? ridesData.data : [];
 
   const { data: bookingsData, isLoading: bookingsLoading } = useQuery<any>({
     queryKey: ["/api/car-sharing/bookings"],
-    queryFn: () => apiRequest("GET", "/api/car-sharing/bookings").then(r => r.json()).then(d => d?.data ? d : { data: Array.isArray(d) ? d : [] }),
+    queryFn: () => fetch("/api/car-sharing/bookings").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => d?.data ? d : { data: Array.isArray(d) ? d : [] }),
     enabled: tab === "bookings",
   });
   const allBookings: any[] = Array.isArray(bookingsData?.data) ? bookingsData.data : [];
 
   const { data: settingsData, isLoading: settingsLoading } = useQuery<any>({
     queryKey: ["/api/car-sharing/settings"],
-    queryFn: () => apiRequest("GET", "/api/car-sharing/settings").then(r => r.json()).then(d => (d && !d.message && !d.error) ? d : {}),
+    queryFn: () => fetch("/api/car-sharing/settings").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => (d && !d.message && !d.error) ? d : {}),
     enabled: tab === "settings",
   });
 
@@ -115,20 +115,20 @@ export default function CarSharingPage() {
   };
 
   const statCards = [
-    { label: "Total Rides", val: stats.totalRides ?? "—", icon: "bi-people-fill", color: "#1a73e8", bg: "#e8f0fe" },
-    { label: "Active Rides", val: stats.activeRides ?? "—", icon: "bi-car-front-fill", color: "#16a34a", bg: "#f0fdf4" },
-    { label: "Completed", val: stats.completedRides ?? "—", icon: "bi-check-circle-fill", color: "#64748b", bg: "#f1f5f9" },
-    { label: "Seats Sold", val: stats.seatsSold ?? "—", icon: "bi-person-check-fill", color: "#7c3aed", bg: "#f5f3ff" },
-    { label: "Total Bookings", val: stats.totalBookings ?? "—", icon: "bi-ticket-fill", color: "#d97706", bg: "#fefce8" },
-    { label: "Revenue", val: stats.totalRevenue != null ? `₹${Number(stats.totalRevenue).toFixed(0)}` : "—", icon: "bi-currency-rupee", color: "#16a34a", bg: "#f0fdf4" },
+    { label: "Total Rides", val: stats.totalRides ?? "â€”", icon: "bi-people-fill", color: "#1a73e8", bg: "#e8f0fe" },
+    { label: "Active Rides", val: stats.activeRides ?? "â€”", icon: "bi-car-front-fill", color: "#16a34a", bg: "#f0fdf4" },
+    { label: "Completed", val: stats.completedRides ?? "â€”", icon: "bi-check-circle-fill", color: "#64748b", bg: "#f1f5f9" },
+    { label: "Seats Sold", val: stats.seatsSold ?? "â€”", icon: "bi-person-check-fill", color: "#7c3aed", bg: "#f5f3ff" },
+    { label: "Total Bookings", val: stats.totalBookings ?? "â€”", icon: "bi-ticket-fill", color: "#d97706", bg: "#fefce8" },
+    { label: "Revenue", val: stats.totalRevenue != null ? `â‚¹${Number(stats.totalRevenue).toFixed(0)}` : "â€”", icon: "bi-currency-rupee", color: "#16a34a", bg: "#f0fdf4" },
   ];
 
   return (
     <div className="container-fluid">
       <div className="d-flex align-items-center justify-content-between mb-4">
         <div>
-          <h4 className="fw-bold mb-0" data-testid="page-title">Intercity Pool</h4>
-          <div className="text-muted small">Local city sharing — Admin-fixed km-based fare, driver offers seats on their route</div>
+          <h4 className="fw-bold mb-0" data-testid="page-title">Local Pool</h4>
+          <div className="text-muted small">Local city pool service - Admin-fixed km-based fare, driver offers seats on their route</div>
         </div>
         <div className="d-flex gap-2 align-items-center">
           <span className="badge rounded-pill" style={{ background: "#e8f0fe", color: "#1a73e8", fontSize: 12, padding: "6px 14px" }}>
@@ -162,14 +162,14 @@ export default function CarSharingPage() {
       <div className="card border-0 mb-3" style={{ background: "#f0f9ff", borderRadius: 12, border: "1px solid #bae6fd" }}>
         <div className="card-body py-2 px-4">
           <div className="d-flex flex-wrap align-items-center gap-3" style={{ fontSize: 12.5, color: "#0369a1" }}>
-            <span className="fw-semibold"><i className="bi bi-info-circle me-1"></i>How Car Sharing Works:</span>
-            <span><i className="bi bi-1-circle-fill me-1"></i><strong>Admin</strong> fixes rate (₹/km/seat) — driver cannot change it</span>
+            <span className="fw-semibold"><i className="bi bi-info-circle me-1"></i>How Local Pool Works:</span>
+            <span><i className="bi bi-1-circle-fill me-1"></i><strong>Admin</strong> fixes rate (â‚¹/km/seat) â€” driver cannot change it</span>
             <i className="bi bi-chevron-right" style={{ fontSize: 10 }}></i>
             <span><i className="bi bi-2-circle-fill me-1"></i>Driver sets route, departure time &amp; available seats</span>
             <i className="bi bi-chevron-right" style={{ fontSize: 10 }}></i>
-            <span><i className="bi bi-3-circle-fill me-1"></i>System auto-calculates fare: Base + (km × ₹/km) × seats</span>
+            <span><i className="bi bi-3-circle-fill me-1"></i>System auto-calculates fare: Base + (km Ã— â‚¹/km) Ã— seats</span>
             <i className="bi bi-chevron-right" style={{ fontSize: 10 }}></i>
-            <span><i className="bi bi-4-circle-fill me-1"></i>Customer books 1 or 2 seats — driver earns, platform takes commission</span>
+            <span><i className="bi bi-4-circle-fill me-1"></i>Customer books 1 or 2 seats â€” driver earns, platform takes commission</span>
           </div>
         </div>
       </div>
@@ -197,13 +197,13 @@ export default function CarSharingPage() {
             <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#f8fafc", border: "1.5px solid #e2e8f0", borderRadius: 10, padding: "6px 12px" }}>
               <i className="bi bi-search" style={{ fontSize: 12, color: "#94a3b8" }}></i>
               <input style={{ border: "none", background: "transparent", outline: "none", fontSize: 13, width: 180 }}
-                placeholder={tab === "rides" ? "Search driver, route…" : "Search customer…"}
+                placeholder={tab === "rides" ? "Search driver, routeâ€¦" : "Search customerâ€¦"}
                 value={search} onChange={e => setSearch(e.target.value)} data-testid="input-cs-search" />
             </div>
           )}
         </div>
 
-        {/* ── Rides Tab ── */}
+        {/* â”€â”€ Rides Tab â”€â”€ */}
         {tab === "rides" && (
           <>
             <div className="px-4 pt-3 pb-2 d-flex gap-2 flex-wrap">
@@ -244,7 +244,7 @@ export default function CarSharingPage() {
                     <tr key={ride.id} data-testid={`row-cs-ride-${ride.id}`}>
                       <td className="ps-4 text-muted small">{idx + 1}</td>
                       <td>
-                        <div style={{ fontSize: 13, fontWeight: 600 }}>{ride.driverName || "—"}</div>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>{ride.driverName || "â€”"}</div>
                         <div style={{ fontSize: 11, color: "#94a3b8" }}>{ride.driverPhone || ""}</div>
                       </td>
                       <td style={{ maxWidth: 200 }}>
@@ -258,13 +258,13 @@ export default function CarSharingPage() {
                         </div>
                       </td>
                       <td style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-                        {ride.departureTime ? new Date(ride.departureTime).toLocaleString("en-IN", { dateStyle: "short", timeStyle: "short" }) : "—"}
+                        {ride.departureTime ? new Date(ride.departureTime).toLocaleString("en-IN", { dateStyle: "short", timeStyle: "short" }) : "â€”"}
                       </td>
-                      <td style={{ fontSize: 12, color: "#64748b" }}>{ride.vehicleName || "—"}</td>
+                      <td style={{ fontSize: 12, color: "#64748b" }}>{ride.vehicleName || "â€”"}</td>
                       <td>
                         <div>
                           <span className="fw-semibold" style={{ fontSize: 14, color: "#16a34a" }}>
-                            ₹{parseFloat(ride.seatPrice || 0).toFixed(0)}
+                            â‚¹{parseFloat(ride.seatPrice || 0).toFixed(0)}
                           </span>
                           <span style={{ fontSize: 10, color: "#94a3b8", fontWeight: 400 }}>/seat</span>
                         </div>
@@ -301,7 +301,7 @@ export default function CarSharingPage() {
           </>
         )}
 
-        {/* ── Bookings Tab ── */}
+        {/* â”€â”€ Bookings Tab â”€â”€ */}
         {tab === "bookings" && (
           <div className="table-responsive">
             <table className="table table-borderless align-middle table-hover mb-0">
@@ -331,21 +331,21 @@ export default function CarSharingPage() {
                     <tr key={b.id} data-testid={`row-cs-booking-${b.id}`}>
                       <td className="ps-4 text-muted small">{idx + 1}</td>
                       <td>
-                        <div style={{ fontSize: 13, fontWeight: 600 }}>{b.customerName || "—"}</div>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>{b.customerName || "â€”"}</div>
                         <div style={{ fontSize: 11, color: "#94a3b8" }}>{b.customerPhone || ""}</div>
                       </td>
                       <td>
-                        <div style={{ fontSize: 12 }}>{b.driverName || "—"}</div>
+                        <div style={{ fontSize: 12 }}>{b.driverName || "â€”"}</div>
                         <div style={{ fontSize: 11, color: "#94a3b8" }}>{b.vehicleName || ""}</div>
                       </td>
                       <td style={{ maxWidth: 180 }}>
                         <div style={{ fontSize: 11 }}>
                           <i className="bi bi-geo-alt-fill text-success me-1" style={{ fontSize: 9 }}></i>
-                          {b.pickupAddress || b.fromLocation || "—"}
+                          {b.pickupAddress || b.fromLocation || "â€”"}
                         </div>
                         <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>
                           <i className="bi bi-geo-alt-fill text-danger me-1" style={{ fontSize: 9 }}></i>
-                          {b.dropAddress || b.toLocation || "—"}
+                          {b.dropAddress || b.toLocation || "â€”"}
                         </div>
                       </td>
                       <td>
@@ -353,13 +353,13 @@ export default function CarSharingPage() {
                           <span className="fw-bold" style={{ fontSize: 18, color: "#1a73e8" }}>{b.seatsBooked}</span>
                           <span style={{ fontSize: 10, color: "#94a3b8" }}>
                             seat{b.seatsBooked > 1 ? "s" : ""}<br />
-                            ×₹{parseFloat(b.seatPrice || 0).toFixed(0)}
+                            Ã—â‚¹{parseFloat(b.seatPrice || 0).toFixed(0)}
                           </span>
                         </div>
                       </td>
                       <td>
                         <span className="fw-semibold" style={{ fontSize: 14, color: "#16a34a" }}>
-                          ₹{parseFloat(b.totalFare || 0).toFixed(0)}
+                          â‚¹{parseFloat(b.totalFare || 0).toFixed(0)}
                         </span>
                       </td>
                       <td>
@@ -373,7 +373,7 @@ export default function CarSharingPage() {
                         </span>
                       </td>
                       <td style={{ fontSize: 11, color: "#94a3b8", whiteSpace: "nowrap" }}>
-                        {b.createdAt ? new Date(b.createdAt).toLocaleDateString("en-IN") : "—"}
+                        {b.createdAt ? new Date(b.createdAt).toLocaleDateString("en-IN") : "â€”"}
                       </td>
                     </tr>
                   ))}
@@ -382,14 +382,14 @@ export default function CarSharingPage() {
           </div>
         )}
 
-        {/* ── Settings Tab ── */}
+        {/* â”€â”€ Settings Tab â”€â”€ */}
         {tab === "settings" && (
           <div className="card-body px-4 py-4">
             {settingsLoading ? (
-              <div className="text-center py-5 text-muted"><div className="spinner-border spinner-border-sm me-2"></div>Loading settings…</div>
+              <div className="text-center py-5 text-muted"><div className="spinner-border spinner-border-sm me-2"></div>Loading settingsâ€¦</div>
             ) : (
               <div className="row g-4">
-                {/* Admin Fare Rate — PRIMARY SECTION */}
+                {/* Admin Fare Rate â€” PRIMARY SECTION */}
                 <div className="col-12">
                   <div className="d-flex align-items-center gap-2 mb-1">
                     <div className="rounded-2 d-flex align-items-center justify-content-center"
@@ -402,23 +402,23 @@ export default function CarSharingPage() {
                     </div>
                   </div>
                   <div className="text-muted mb-3" style={{ fontSize: 12 }}>
-                    Fare Formula: <strong>Fare per Seat = Base Fare + (Distance km × Rate/km)</strong> — system auto-calculates when driver creates a ride
+                    Fare Formula: <strong>Fare per Seat = Base Fare + (Distance km Ã— Rate/km)</strong> â€” system auto-calculates when driver creates a ride
                   </div>
                   {/* Live preview */}
                   <div className="p-3 mb-3 rounded-3" style={{ background: "#f0f9ff", border: "1px dashed #93c5fd" }}>
                     <div style={{ fontSize: 12.5, color: "#1E5FCC" }}>
                       <i className="bi bi-calculator me-1"></i>
-                      <strong>Example:</strong> 10 km route →
-                      ₹{settings["base_fare_per_seat"] || 20} base + (10 × ₹{settings["fare_per_km_per_seat"] || 5}) =
-                      <strong> ₹{(parseFloat(settings["base_fare_per_seat"] || "20") + 10 * parseFloat(settings["fare_per_km_per_seat"] || "5")).toFixed(0)} per seat</strong>
-                      {" | "}2 seats booked →
-                      <strong style={{ color: "#16a34a" }}> ₹{(2 * (parseFloat(settings["base_fare_per_seat"] || "20") + 10 * parseFloat(settings["fare_per_km_per_seat"] || "5"))).toFixed(0)} total fare</strong>
+                      <strong>Example:</strong> 10 km route â†’
+                      â‚¹{settings["base_fare_per_seat"] || 20} base + (10 Ã— â‚¹{settings["fare_per_km_per_seat"] || 5}) =
+                      <strong> â‚¹{(parseFloat(settings["base_fare_per_seat"] || "20") + 10 * parseFloat(settings["fare_per_km_per_seat"] || "5")).toFixed(0)} per seat</strong>
+                      {" | "}2 seats booked â†’
+                      <strong style={{ color: "#16a34a" }}> â‚¹{(2 * (parseFloat(settings["base_fare_per_seat"] || "20") + 10 * parseFloat(settings["fare_per_km_per_seat"] || "5"))).toFixed(0)} total fare</strong>
                     </div>
                   </div>
                   <div className="row g-3">
                     {[
-                      { key: "base_fare_per_seat", label: "Base Fare per Seat (₹)", prefix: "₹", placeholder: "20", help: "Fixed base charge per seat regardless of distance" },
-                      { key: "fare_per_km_per_seat", label: "Rate per KM per Seat (₹)", prefix: "₹/km", placeholder: "5", help: "Per km charge multiplied by distance of the route" },
+                      { key: "base_fare_per_seat", label: "Base Fare per Seat (â‚¹)", prefix: "â‚¹", placeholder: "20", help: "Fixed base charge per seat regardless of distance" },
+                      { key: "fare_per_km_per_seat", label: "Rate per KM per Seat (â‚¹)", prefix: "â‚¹/km", placeholder: "5", help: "Per km charge multiplied by distance of the route" },
                       { key: "platform_commission_pct", label: "Platform Commission (%)", prefix: "%", placeholder: "12", help: "% deducted from total fare as platform earnings" },
                     ].map(field => (
                       <div key={field.key} className="col-md-4">
@@ -449,8 +449,8 @@ export default function CarSharingPage() {
                   </div>
                   <div className="row g-3">
                     {[
-                      { key: "min_fare_per_seat", label: "Minimum Fare per Seat (₹)", prefix: "₹", placeholder: "30", help: "Fare won't go below this even for very short routes" },
-                      { key: "max_fare_per_seat", label: "Maximum Fare per Seat (₹)", prefix: "₹", placeholder: "500", help: "Fare won't exceed this even for very long routes" },
+                      { key: "min_fare_per_seat", label: "Minimum Fare per Seat (â‚¹)", prefix: "â‚¹", placeholder: "30", help: "Fare won't go below this even for very short routes" },
+                      { key: "max_fare_per_seat", label: "Maximum Fare per Seat (â‚¹)", prefix: "â‚¹", placeholder: "500", help: "Fare won't exceed this even for very long routes" },
                     ].map(field => (
                       <div key={field.key} className="col-md-4">
                         <label className="form-label small fw-semibold text-muted">{field.label}</label>
@@ -556,7 +556,7 @@ export default function CarSharingPage() {
                     disabled={!settingsDirty || settingsMutation.isPending}
                     onClick={() => settingsMutation.mutate(settings)}
                     data-testid="btn-save-cs-settings">
-                    {settingsMutation.isPending ? <><span className="spinner-border spinner-border-sm me-2"></span>Saving…</> : <><i className="bi bi-save me-2"></i>Save Settings</>}
+                    {settingsMutation.isPending ? <><span className="spinner-border spinner-border-sm me-2"></span>Savingâ€¦</> : <><i className="bi bi-save me-2"></i>Save Settings</>}
                   </button>
                   {settingsDirty && (
                     <span className="text-warning d-flex align-items-center" style={{ fontSize: 12 }}>
@@ -572,3 +572,4 @@ export default function CarSharingPage() {
     </div>
   );
 }
+

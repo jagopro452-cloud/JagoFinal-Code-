@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import '../../config/api_config.dart';
 import '../../config/jago_theme.dart';
 import '../../services/auth_service.dart';
+import '../call/call_screen.dart';
 
 class SupportChatScreen extends StatefulWidget {
   const SupportChatScreen({super.key});
@@ -13,6 +14,7 @@ class SupportChatScreen extends StatefulWidget {
 
 class _SupportChatScreenState extends State<SupportChatScreen> {
   static final _blue = JT.primary;
+  static const _supportTargetUserId = '__admin_support__';
 
   List<dynamic> _messages = [];
   bool _loading = true;
@@ -91,6 +93,17 @@ class _SupportChatScreenState extends State<SupportChatScreen> {
     return '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
   }
 
+  void _startSupportCall() {
+    final sessionId = 'support-customer-${DateTime.now().millisecondsSinceEpoch}';
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => CallScreen(
+        contactName: 'Jago Support',
+        tripId: sessionId,
+        targetUserId: _supportTargetUserId,
+      ),
+    ));
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -108,6 +121,7 @@ class _SupportChatScreenState extends State<SupportChatScreen> {
         ]),
         elevation: 0,
         actions: [
+          IconButton(icon: const Icon(Icons.call_outlined), onPressed: _startSupportCall),
           IconButton(icon: const Icon(Icons.refresh_outlined), onPressed: _load),
         ],
       ),

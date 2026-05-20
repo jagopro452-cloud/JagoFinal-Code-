@@ -5,10 +5,10 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/components/theme-provider";
-import AdminRoutes from "@/pages/admin/admin-routes";
 
 const LandingPage = lazy(() => import("@/pages/landing"));
 const AdminLogin = lazy(() => import("@/pages/admin/login"));
+const AdminRoutes = lazy(() => import("@/pages/admin/admin-routes"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 const AboutPage = lazy(() => import("@/pages/policy-pages").then((m) => ({ default: m.AboutPage })));
 const PrivacyPage = lazy(() => import("@/pages/policy-pages").then((m) => ({ default: m.PrivacyPage })));

@@ -2431,11 +2431,8 @@ html, body {
   background: #eef2f8 !important;
 }
 
-body:not(.admin-route) * {
-  transition-property: background-color, border-color, box-shadow, transform, opacity;
-  transition-duration: 160ms;
-  transition-timing-function: cubic-bezier(.4,0,.2,1);
-}
+* { transition-property: background-color, border-color, box-shadow, transform, opacity;
+    transition-duration: 160ms; transition-timing-function: cubic-bezier(.4,0,.2,1); }
 *:focus-visible { outline: 2px solid #2F7BFF; outline-offset: 2px; }
 
 /* ── Page Fade-In ── */
@@ -4684,12 +4681,370 @@ html[data-theme="dark"] .jd-view-all-btn:hover {
   box-shadow: 0 0 0 3px rgba(148,163,184,0.18);
 }
 
-/* Admin Stability Guard: prevents sidebar/header/content jump from delayed
-   body classes, global page animations, and broad transform transitions. */
+/* ============================================================
+   Executive Admin UX Hardening
+   ============================================================ */
+.admin-shell {
+  --admin-layer-dropdown: 1085;
+  --admin-layer-modal: 1095;
+  --admin-layer-savebar: 1088;
+  --admin-sticky-offset: 64px;
+}
+
+.admin-shell .card {
+  overflow: hidden;
+}
+
+.admin-shell .admin-dashboard-page .card:hover,
+.admin-shell .card:hover {
+  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.06), 0 1px 4px rgba(15, 23, 42, 0.04) !important;
+  transform: none !important;
+}
+
+.admin-shell .dropdown-menu,
+.admin-shell .user-dropdown-menu {
+  z-index: var(--admin-layer-dropdown) !important;
+}
+
+.admin-shell .table-responsive {
+  position: relative;
+  overflow: auto hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.admin-shell .table-responsive .table {
+  width: max-content;
+  min-width: 100%;
+}
+
+.admin-shell .card-body.p-0 > .table-responsive {
+  max-height: min(68vh, 760px);
+}
+
+.admin-shell .table thead th {
+  top: var(--admin-sticky-offset);
+  background-clip: padding-box;
+  box-shadow: inset 0 -1px 0 rgba(226, 232, 240, 0.9);
+}
+
+.admin-shell .table tbody td {
+  white-space: nowrap;
+}
+
+.admin-shell .table tbody td:first-child,
+.admin-shell .table tbody td:nth-child(2),
+.admin-shell .table tbody td:nth-child(3) {
+  white-space: normal;
+}
+
+.admin-shell .modal-backdrop-jago,
+.admin-shell .modal.show.d-block {
+  z-index: var(--admin-layer-modal) !important;
+}
+
+.admin-shell .modal-backdrop-jago {
+  background: rgba(15, 23, 42, 0.48);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.admin-shell .modal-jago {
+  width: min(100%, 960px);
+  max-width: min(100%, 960px);
+  max-height: min(92vh, 920px);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.admin-shell .modal-jago > :not(.modal-jago-header) {
+  padding-left: 24px;
+  padding-right: 24px;
+}
+
+.admin-shell .modal-jago > :last-child {
+  padding-bottom: 24px;
+}
+
+.admin-shell .modal-jago-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #ffffff;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+  margin-bottom: 0;
+}
+
+.admin-shell .modal-jago-close {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.admin-shell .modal-jago-close:hover {
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+.admin-shell .modal.show.d-block {
+  background: rgba(15, 23, 42, 0.48) !important;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.admin-shell .modal.show.d-block .modal-dialog {
+  margin: 1.25rem auto;
+  max-width: min(96vw, 960px);
+}
+
+.admin-shell .modal.show.d-block .modal-content {
+  max-height: calc(100vh - 2.5rem);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-shell .modal.show.d-block .modal-body {
+  overflow: auto;
+}
+
+.admin-shell .ops-page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.admin-shell .ops-page-header__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.admin-shell .ops-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.admin-shell .ops-section-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.admin-shell .ops-section-card {
+  min-height: 100%;
+  border-radius: 14px;
+}
+
+.admin-shell .ops-safety-panel {
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  background: linear-gradient(180deg, rgba(255, 251, 235, 0.98), rgba(255, 255, 255, 0.98));
+}
+
+.admin-shell .ops-safety-panel.is-danger {
+  border-color: rgba(239, 68, 68, 0.25);
+  background: linear-gradient(180deg, rgba(254, 242, 242, 0.98), rgba(255, 255, 255, 0.98));
+}
+
+.admin-shell .ops-impact-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.admin-shell .ops-impact-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+}
+
+.admin-shell .ops-impact-item.is-high {
+  border-color: rgba(239, 68, 68, 0.28);
+  background: rgba(254, 242, 242, 0.9);
+}
+
+.admin-shell .ops-impact-item.is-medium {
+  border-color: rgba(245, 158, 11, 0.28);
+  background: rgba(255, 251, 235, 0.92);
+}
+
+.admin-shell .ops-savebar {
+  position: fixed;
+  left: calc(max(16px, env(safe-area-inset-left)) + 16px);
+  right: calc(max(16px, env(safe-area-inset-right)) + 16px);
+  bottom: calc(max(16px, env(safe-area-inset-bottom)) + 8px);
+  z-index: var(--admin-layer-savebar);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.96);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.24);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.admin-shell .ops-savebar__summary {
+  min-width: 0;
+}
+
+.admin-shell .ops-savebar__summary strong,
+.admin-shell .ops-savebar__summary span {
+  display: block;
+}
+
+.admin-shell .ops-savebar__summary strong {
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.admin-shell .ops-savebar__summary span {
+  color: #cbd5e1;
+  font-size: 11px;
+}
+
+.admin-shell .ops-savebar__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.admin-shell .ops-subtle-button {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: #e2e8f0 !important;
+}
+
+.admin-shell .ops-subtle-button:hover {
+  background: rgba(255, 255, 255, 0.14) !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+}
+
+@media (max-width: 1399px) {
+  .admin-shell .ops-section-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 991px) {
+  .admin-shell {
+    --admin-sticky-offset: 0px;
+  }
+
+  .admin-shell .card-body.p-0 > .table-responsive {
+    max-height: none;
+  }
+
+  .admin-shell .ops-section-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 767px) {
+  .admin-shell .modal-backdrop-jago {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .admin-shell .modal-jago,
+  .admin-shell .modal.show.d-block .modal-dialog {
+    width: 100%;
+    max-width: 100%;
+    margin: 0;
+  }
+
+  .admin-shell .modal-jago {
+    border-radius: 20px 20px 0 0 !important;
+    max-height: 94vh;
+  }
+
+  .admin-shell .modal-jago > :not(.modal-jago-header) {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .admin-shell .modal-jago-header {
+    padding: 16px;
+  }
+
+  .admin-shell .modal.show.d-block {
+    padding: 0 !important;
+  }
+
+  .admin-shell .modal.show.d-block .modal-dialog {
+    min-height: 100vh;
+    display: flex;
+    align-items: flex-end;
+  }
+
+  .admin-shell .modal.show.d-block .modal-content {
+    border-radius: 20px 20px 0 0 !important;
+    max-height: 94vh;
+  }
+
+  .admin-shell .ops-page-header {
+    flex-direction: column;
+  }
+
+  .admin-shell .ops-section-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-shell .ops-savebar {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .admin-shell .ops-savebar__actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .admin-shell .ops-savebar__actions .btn {
+    flex: 1 1 100%;
+  }
+}
+
+/* ============================================================
+   Admin Stability Guard
+   Prevent layout jump/jerk from global animations and delayed
+   body class updates. Keep admin chrome dimensions deterministic.
+   ============================================================ */
 body.admin-route {
-  --admin-sidebar-width: 256px;
-  --admin-sidebar-folded-width: 72px;
-  --admin-header-height: 76px;
   overflow-x: hidden;
   background: #F3F6FB !important;
 }
@@ -4706,110 +5061,33 @@ body.admin-route .admin-shell .admin-main-inner {
 }
 
 body.admin-route .admin-shell .aside {
-  width: var(--admin-sidebar-width) !important;
-  min-width: var(--admin-sidebar-width) !important;
-  max-width: var(--admin-sidebar-width) !important;
-  height: 100vh !important;
+  width: 220px !important;
+  min-width: 220px !important;
+  max-width: 220px !important;
   transition: none !important;
   will-change: auto !important;
 }
 
 body.admin-route.aside-folded .admin-shell .aside {
-  width: var(--admin-sidebar-folded-width) !important;
-  min-width: var(--admin-sidebar-folded-width) !important;
-  max-width: var(--admin-sidebar-folded-width) !important;
-}
-
-body.admin-route .admin-shell .aside-header {
-  height: var(--admin-header-height) !important;
-  min-height: var(--admin-header-height) !important;
-  padding: 0 18px !important;
-  display: flex !important;
-  align-items: center !important;
-  overflow: visible !important;
-}
-
-body.admin-route .admin-shell .aside-header .logo {
-  flex: 1 1 auto !important;
-  min-width: 0 !important;
-  overflow: hidden !important;
-}
-
-body.admin-route .admin-shell .admin-brand {
-  min-width: 0 !important;
-}
-
-body.admin-route .admin-shell .admin-brand-mark {
-  flex: 0 0 34px !important;
-  width: 34px !important;
-  height: 34px !important;
-}
-
-body.admin-route .admin-shell .admin-brand-mark img {
-  width: 21px !important;
-  height: 21px !important;
-}
-
-body.admin-route .admin-shell .admin-brand-name {
-  font-size: 1rem !important;
-  line-height: 1 !important;
-}
-
-body.admin-route .admin-shell .admin-brand-tag {
-  font-size: 0.56rem !important;
-  line-height: 1 !important;
-}
-
-body.admin-route.aside-folded .admin-shell .admin-brand-copy {
-  display: none !important;
-}
-
-body.admin-route .admin-shell .toggle-menu-button {
-  position: static !important;
-  flex: 0 0 32px !important;
-  width: 32px !important;
-  height: 32px !important;
-  margin-left: 12px !important;
-  transform: none !important;
-}
-
-body.admin-route.aside-folded .admin-shell .toggle-menu-button {
-  margin-left: 0 !important;
+  width: 60px !important;
+  min-width: 60px !important;
+  max-width: 60px !important;
 }
 
 body.admin-route .admin-shell .header {
-  left: var(--admin-sidebar-width) !important;
-  height: var(--admin-header-height) !important;
-  min-height: var(--admin-header-height) !important;
+  left: 220px !important;
   transition: none !important;
   will-change: auto !important;
 }
 
 body.admin-route.aside-folded .admin-shell .header {
-  left: var(--admin-sidebar-folded-width) !important;
-}
-
-body.admin-route .admin-shell .header-inner {
-  min-height: var(--admin-header-height) !important;
-  height: var(--admin-header-height) !important;
-  padding: 0 28px !important;
-}
-
-body.admin-route .admin-shell .header-left-col,
-body.admin-route .admin-shell .header-right,
-body.admin-route .admin-shell .header-nav-list {
-  min-height: var(--admin-header-height) !important;
-  align-items: center !important;
-}
-
-body.admin-route .admin-shell .aside-body-wrapper {
-  min-height: 0 !important;
+  left: 60px !important;
 }
 
 body.admin-route .admin-shell .main-area,
 body.admin-route .admin-shell .admin-main-area {
-  margin-left: var(--admin-sidebar-width) !important;
-  padding-top: var(--admin-header-height) !important;
+  margin-left: 220px !important;
+  padding-top: 64px !important;
   min-height: 100vh !important;
   transition: none !important;
   will-change: auto !important;
@@ -4817,7 +5095,7 @@ body.admin-route .admin-shell .admin-main-area {
 
 body.admin-route.aside-folded .admin-shell .main-area,
 body.admin-route.aside-folded .admin-shell .admin-main-area {
-  margin-left: var(--admin-sidebar-folded-width) !important;
+  margin-left: 60px !important;
 }
 
 body.admin-route .admin-shell .card,
@@ -4855,4 +5133,3 @@ body.admin-route .admin-shell .jd-stat-card:hover {
     margin-left: 0 !important;
   }
 }
-

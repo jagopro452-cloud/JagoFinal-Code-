@@ -287,83 +287,74 @@ export default function Drivers() {
       </div>
 
       {showAdd && (
-        <div className="modal-backdrop-jago" role="dialog" aria-modal="true" aria-labelledby="add-driver-title"
-          onMouseDown={(e) => { if (e.target === e.currentTarget) setShowAdd(false); }}>
-          <div className="modal-jago admin-add-driver-modal" onMouseDown={(e) => e.stopPropagation()}>
-              <div className="modal-jago-header">
-                <h5 id="add-driver-title" className="modal-jago-title">
-                  <i className="bi bi-person-plus-fill text-primary"></i>
-                  Add New Driver (JAGO Pilot)
-                </h5>
-                <button className="modal-jago-close" onClick={() => setShowAdd(false)} aria-label="Close add driver form">
-                  <i className="bi bi-x-lg"></i>
-                </button>
+        <div className="modal show d-block" style={{ background: "rgba(0,0,0,0.4)" }}>
+          <div className="modal-dialog modal-dialog-centered modal-lg">
+            <div className="modal-content border-0 shadow-lg" style={{ borderRadius: 16 }}>
+              <div className="modal-header border-0 pb-0">
+                <h5 className="modal-title fw-bold">Add New Driver (JAGO Pilot)</h5>
+                <button className="btn-close" onClick={() => setShowAdd(false)}></button>
               </div>
-              <div style={{ paddingTop: 20, paddingBottom: 22 }}>
+              <div className="modal-body px-4 pb-4">
                 <div className="row g-3">
                   <div className="col-md-6">
                     <label className="form-label fw-semibold small">Full Name <span className="text-danger">*</span></label>
                     <input className="form-control" placeholder="e.g. Suresh Reddy"
                       value={form.fullName} onChange={e => setForm(f => ({ ...f, fullName: e.target.value }))}
                       data-testid="input-driver-name" />
-                    <div className="driver-field-feedback" />
                   </div>
                   <div className="col-md-6">
                     <label className="form-label fw-semibold small">Phone Number <span className="text-danger">*</span></label>
                     <input className="form-control" placeholder="+91 9876543210" type="tel"
                       value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))}
                       data-testid="input-driver-phone" />
-                    <div className="driver-field-feedback text-danger">
-                      {form.phone && normalizedPhone.length < 10 ? "Enter a valid 10-digit phone number" : ""}
-                    </div>
+                    {form.phone && normalizedPhone.length < 10 && (
+                      <div className="text-danger small mt-1">Enter a valid 10-digit phone number</div>
+                    )}
                   </div>
                   <div className="col-md-6">
                     <label className="form-label fw-semibold small">Email <span className="text-muted">(optional)</span></label>
                     <input className="form-control" placeholder="suresh@example.com" type="email"
                       value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
                       data-testid="input-driver-email" />
-                    <div className="driver-field-feedback text-danger">
-                      {form.email && !emailLooksValid ? "Enter a valid email address" : ""}
-                    </div>
+                    {form.email && !emailLooksValid && (
+                      <div className="text-danger small mt-1">Enter a valid email address</div>
+                    )}
                   </div>
                   <div className="col-md-6">
                     <label className="form-label fw-semibold small">Login Password <span className="text-danger">*</span></label>
                     <input className="form-control" placeholder="Minimum 8 characters" type="password"
                       value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
                       data-testid="input-driver-password" />
-                    <div className="driver-field-feedback text-danger">
-                      {form.password && form.password.length < 8 ? "Password must be at least 8 characters" : ""}
-                    </div>
+                    {form.password && form.password.length < 8 && (
+                      <div className="text-danger small mt-1">Password must be at least 8 characters</div>
+                    )}
                   </div>
                   <div className="col-md-6">
                     <label className="form-label fw-semibold small">Confirm Password <span className="text-danger">*</span></label>
                     <input className="form-control" placeholder="Re-enter password" type="password"
                       value={form.confirmPassword} onChange={e => setForm(f => ({ ...f, confirmPassword: e.target.value }))}
                       data-testid="input-driver-confirm-password" />
-                    <div className="driver-field-feedback text-danger">
-                      {form.confirmPassword && form.password !== form.confirmPassword ? "Passwords do not match" : ""}
-                    </div>
+                    {form.confirmPassword && form.password !== form.confirmPassword && (
+                      <div className="text-danger small mt-1">Passwords do not match</div>
+                    )}
                   </div>
                   <div className="col-md-6">
                     <label className="form-label fw-semibold small">License Number</label>
                     <input className="form-control" placeholder="e.g. AP1234567890"
                       value={form.licenseNumber} onChange={e => setForm(f => ({ ...f, licenseNumber: e.target.value }))}
                       data-testid="input-driver-license" />
-                    <div className="driver-field-feedback" />
                   </div>
                   <div className="col-md-6">
                     <label className="form-label fw-semibold small">Vehicle Number</label>
                     <input className="form-control" placeholder="e.g. TS 09 AB 1234"
                       value={form.vehicleNumber} onChange={e => setForm(f => ({ ...f, vehicleNumber: e.target.value }))}
                       data-testid="input-driver-vehicle-number" />
-                    <div className="driver-field-feedback" />
                   </div>
                   <div className="col-md-6">
                     <label className="form-label fw-semibold small">Vehicle Model</label>
                     <input className="form-control" placeholder="e.g. Honda Activa, TVS Jupiter"
                       value={form.vehicleModel} onChange={e => setForm(f => ({ ...f, vehicleModel: e.target.value }))}
                       data-testid="input-driver-vehicle-model" />
-                    <div className="driver-field-feedback" />
                   </div>
                 </div>
                 <div className="alert alert-info mt-3 mb-0 py-2" style={{ fontSize: 12, borderRadius: 8 }}>
@@ -380,6 +371,7 @@ export default function Drivers() {
                   </button>
                 </div>
               </div>
+            </div>
           </div>
         </div>
       )}

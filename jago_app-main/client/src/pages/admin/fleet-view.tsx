@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+﻿import { useEffect, useRef, useState, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 
 declare global { interface Window { L: any; } }
 
-/* ── CSS injected once ── */
+/*  CSS injected once  */
 function injectMapStyles() {
   if (document.getElementById("jago-map-styles")) return;
   const style = document.createElement("style");
@@ -85,7 +85,7 @@ const VEHICLE_CONFIG: Record<string, { color: string; dark: string; label: strin
 };
 const getVC = (t: string) => VEHICLE_CONFIG[t] || VEHICLE_CONFIG["default"];
 
-/* SVG vehicle silhouettes — top-down view */
+/* SVG vehicle silhouettes  top-down view */
 function getVehicleSVG(type: string, color: string, dark: string): string {
   const w = `rgba(255,255,255,0.55)`;
   const wm = `rgba(255,255,255,0.3)`;
@@ -173,8 +173,8 @@ function createVehicleIcon(L: any, type: string) {
 function createEndIcon(L: any, type: "pickup" | "dest") {
   const isPick = type === "pickup";
   const c = isPick ? "#16a34a" : "#dc2626";
-  const icon = isPick ? "📍" : "🏁";
-  // Teardrop pin style — clean, no thick circles
+  const icon = isPick ? "" : "";
+  // Teardrop pin style  clean, no thick circles
   return L.divIcon({
     html: `<div style="display:flex;flex-direction:column;align-items:center;pointer-events:none;">
       <div style="
@@ -212,7 +212,7 @@ function createDriverIcon(L: any, status: string) {
         background:${bg};border:2.5px solid ${color};
         display:flex;align-items:center;justify-content:center;
         box-shadow:0 3px 12px rgba(0,0,0,0.18);font-size:18px;
-      ">🧑‍✈️</div>
+      "></div>
       <div style="width:8px;height:8px;border-radius:50%;background:${color};margin-top:2px;box-shadow:0 0 0 2px white;"></div>
     </div>`,
     className: "",
@@ -245,11 +245,16 @@ export default function FleetViewPage() {
   });
   const { data: zones = [] } = useQuery<any[]>({ queryKey: ["/api/zones"] });
 
-  const filtered = filter === "all" ? trips : trips.filter((t: any) => t.type === filter);
+  const filtered = (trips as any[]).filter((t: any) => {
+    const typeMatch = filter === "all" ? true : t.type === filter;
+    const zoneMatch = zoneFilter === "all" ? true : t.zoneId === zoneFilter;
+    return typeMatch && zoneMatch;
+  });
   const rideCount = trips.filter((t: any) => t.type === "ride").length;
   const parcelCount = trips.filter((t: any) => t.type === "parcel").length;
 
   const filteredDrivers = (fleetDrivers as any[]).filter(d => {
+    if (zoneFilter !== "all" && d.zoneId !== zoneFilter) return false;
     if (driverStatusFilter === "active") return d.status === "active";
     if (driverStatusFilter === "inactive") return d.status !== "active";
     return true;
@@ -343,7 +348,7 @@ export default function FleetViewPage() {
           <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;width:200px">
             <div style="background:${statusColor};padding:12px 14px;color:white">
               <div style="display:flex;align-items:center;gap:8px">
-                <div style="width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,0.2);display:flex;align-items:center;justify-content:center;font-size:18px">🧑‍✈️</div>
+                <div style="width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,0.2);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700">DRV</div>
                 <div>
                   <div style="font-weight:700;font-size:14px">${driver.name}</div>
                   <div style="font-size:11px;opacity:.85">${statusLabel}</div>
@@ -353,11 +358,16 @@ export default function FleetViewPage() {
             <div style="padding:12px 14px">
               <div style="margin-bottom:8px">
                 <div style="font-size:11px;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.5px">Phone</div>
-                <div style="font-weight:600;font-size:13px">${driver.phone || "—"}</div>
+                <div style="font-weight:600;font-size:13px">${driver.phone || "-"}</div>
+              </div>
+              <div style="margin-bottom:8px">
+                <div style="font-size:11px;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.5px">Coverage</div>
+                <div style="font-weight:600;font-size:13px">${driver.zoneName || "All zones"}</div>
+                <div style="font-size:12px;color:#64748b">${driver.vehicleCategoryName || "General fleet"}</div>
               </div>
               <div style="display:flex;gap:8px;margin-top:8px">
                 <div style="flex:1;background:#f8fafc;border-radius:8px;padding:8px;text-align:center">
-                  <div style="font-weight:700;font-size:14px;color:${statusColor}">●</div>
+                  <div style="font-weight:700;font-size:12px;color:${statusColor}">LIVE</div>
                   <div style="font-size:10px;color:#94a3b8">Status</div>
                   <div style="font-size:11px;font-weight:600;color:${statusColor}">${statusLabel}</div>
                 </div>
@@ -417,13 +427,13 @@ export default function FleetViewPage() {
         // Pickup marker
         const pickM = L.marker([trip.pickupLat, trip.pickupLng], { icon: createEndIcon(L, "pickup") })
           .addTo(map)
-          .bindTooltip(`📍 ${trip.pickupAddress}`, { className: "jago-marker-tooltip", direction: "top", offset: [0, -8] });
+          .bindTooltip(`Pickup: ${trip.pickupAddress}`, { className: "jago-marker-tooltip", direction: "top", offset: [0, -8] });
         all.push(pickM);
 
         // Destination marker
         const destM = L.marker([trip.destinationLat, trip.destinationLng], { icon: createEndIcon(L, "dest") })
           .addTo(map)
-          .bindTooltip(`🏁 ${trip.destinationAddress}`, { className: "jago-marker-tooltip", direction: "top", offset: [0, -8] });
+          .bindTooltip(`Drop: ${trip.destinationAddress}`, { className: "jago-marker-tooltip", direction: "top", offset: [0, -8] });
         all.push(destM);
 
         // Vehicle marker with popup
@@ -448,10 +458,20 @@ export default function FleetViewPage() {
                 <div style="font-size:11px;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.5px">Customer</div>
                 <div style="font-weight:600;font-size:13px;color:#1e293b">${trip.customerName}</div>
               </div>
+              <div style="display:flex;gap:8px;margin-bottom:8px">
+                <div style="flex:1;background:#f8fafc;border-radius:8px;padding:8px">
+                  <div style="font-size:10px;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.5px">Zone</div>
+                  <div style="font-weight:600;font-size:12px;color:#1e293b">${trip.zoneName || "Unassigned"}</div>
+                </div>
+                <div style="flex:1;background:#f8fafc;border-radius:8px;padding:8px">
+                  <div style="font-size:10px;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.5px">Status</div>
+                  <div style="font-weight:600;font-size:12px;color:#1e293b">${trip.status || "Active"}</div>
+                </div>
+              </div>
               <div style="margin-bottom:8px">
                 <div style="font-size:11px;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.5px">Route</div>
-                <div style="font-size:12px;color:#475569">📍 ${trip.pickupAddress}</div>
-                <div style="font-size:12px;color:#475569">🏁 ${trip.destinationAddress}</div>
+                <div style="font-size:12px;color:#475569">Pickup: ${trip.pickupAddress}</div>
+                <div style="font-size:12px;color:#475569">Drop: ${trip.destinationAddress}</div>
               </div>
               <div style="background:#f8fafc;border-radius:8px;padding:10px;margin-top:10px">
                 <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:6px">
@@ -462,7 +482,7 @@ export default function FleetViewPage() {
                   <div style="height:6px;background:${cfg.color};border-radius:6px;width:${trip.progress}%;transition:width 1s ease"></div>
                 </div>
                 <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:12px">
-                  <span style="color:#1e293b;font-weight:600">₹${parseFloat(trip.estimatedFare).toFixed(0)}</span>
+                  <span style="color:#1e293b;font-weight:600">Rs. ${parseFloat(trip.estimatedFare).toFixed(0)}</span>
                   <span style="color:#64748b">${parseFloat(trip.estimatedDistance).toFixed(1)} km</span>
                 </div>
               </div>
@@ -503,18 +523,46 @@ export default function FleetViewPage() {
     { label: "Zones", val: (zones as any[]).length, icon: "bi-map-fill", color: "#7c3aed", bg: "linear-gradient(135deg,#7c3aed15,#c4b5fd15)" },
   ];
   const stats = viewMode === "drivers" ? driverStats : tripStats;
+  const activeZoneName =
+    zoneFilter === "all"
+      ? "All zones"
+      : ((zones as any[]).find((zone: any) => zone.id === zoneFilter)?.name || "Selected zone");
 
   return (
     <>
       <div className="content-header">
         <div className="container-fluid">
-          <div className="d-flex align-items-center justify-content-between gap-3 flex-wrap mb-3">
-            <div className="d-flex align-items-center gap-3">
-              <h2 className="h5 mb-0 fw-bold">{viewMode === "drivers" ? "All Drivers Map" : "Live Vehicle Tracking"}</h2>
-              <span className="live-badge">
-                <span className="live-dot"></span>
-                <span className="text-danger fw-semibold" style={{ fontSize: 12 }}>LIVE</span>
-              </span>
+          <div
+            className="d-flex align-items-center justify-content-between gap-3 flex-wrap mb-3 px-3 py-3"
+            style={{
+              borderRadius: 18,
+              background: "linear-gradient(135deg, rgba(255,255,255,.95), rgba(239,246,255,.9))",
+              boxShadow: "0 18px 40px rgba(15,23,42,.06)",
+              border: "1px solid rgba(226,232,240,.8)",
+            }}
+          >
+            <div className="d-flex flex-column gap-2">
+              <div className="d-flex align-items-center gap-3">
+                <h2 className="h5 mb-0 fw-bold">{viewMode === "drivers" ? "All Drivers Map" : "Live Vehicle Tracking"}</h2>
+                <span className="live-badge">
+                  <span className="live-dot"></span>
+                  <span className="text-danger fw-semibold" style={{ fontSize: 12 }}>LIVE</span>
+                </span>
+              </div>
+              <div className="d-flex flex-wrap gap-2 align-items-center" style={{ fontSize: 12 }}>
+                <span
+                  className="badge rounded-pill"
+                  style={{ background: "rgba(37,99,235,.1)", color: "#1d4ed8", padding: "0.45rem 0.7rem" }}
+                >
+                  {viewMode === "drivers" ? "Driver visibility" : "Trip telemetry"}
+                </span>
+                <span
+                  className="badge rounded-pill"
+                  style={{ background: "rgba(15,23,42,.06)", color: "#475569", padding: "0.45rem 0.7rem" }}
+                >
+                  {activeZoneName}
+                </span>
+              </div>
             </div>
             <div className="d-flex gap-2 align-items-center flex-wrap">
               {/* Mode toggle */}
@@ -580,7 +628,7 @@ export default function FleetViewPage() {
         <div className="row g-3 mb-3">
           {stats.map((s, i) => (
             <div key={i} className="col-sm-6 col-xl-3">
-              <div className="map-stat-card d-flex align-items-center gap-3">
+              <div className="map-stat-card d-flex align-items-center gap-3" style={{ background: "linear-gradient(180deg,#ffffff,#f8fafc)" }}>
                 <div className="rounded-3 p-2 d-flex align-items-center justify-content-center"
                   style={{ background: s.bg, width: 48, height: 48, flexShrink: 0 }}>
                   <i className={`bi ${s.icon} fs-5`} style={{ color: s.color }}></i>
@@ -598,13 +646,20 @@ export default function FleetViewPage() {
         <div className="row g-3">
           {/* Map panel */}
           <div className="col-lg-8">
-            <div className="card border-0 shadow-sm" style={{ borderRadius: 16, overflow: "hidden" }}>
-              <div className="card-header bg-white py-2 px-3 d-flex align-items-center justify-content-between"
-                style={{ borderBottom: "1px solid #f1f5f9" }}>
-                <h6 className="mb-0 fw-semibold d-flex align-items-center gap-2">
-                  <i className="bi bi-map text-primary"></i> Live Map
-                </h6>
-                <div className="d-flex gap-3" style={{ fontSize: 11 }}>
+            <div className="card border-0 shadow-sm" style={{ borderRadius: 18, overflow: "hidden", boxShadow: "0 24px 48px rgba(15,23,42,.08)" }}>
+              <div className="card-header bg-white py-3 px-3 d-flex align-items-center justify-content-between flex-wrap gap-2"
+                style={{ borderBottom: "1px solid #f1f5f9", background: "linear-gradient(180deg,#ffffff,#f8fafc)" }}>
+                <div>
+                  <h6 className="mb-1 fw-semibold d-flex align-items-center gap-2">
+                    <i className="bi bi-map text-primary"></i> Live Map
+                  </h6>
+                  <div style={{ fontSize: 11, color: "#64748b" }}>
+                    {viewMode === "drivers"
+                      ? "Real-time driver availability with zone-aware filtering"
+                      : "Live trip positions with route progress and fare visibility"}
+                  </div>
+                </div>
+                <div className="d-flex gap-3 flex-wrap" style={{ fontSize: 11 }}>
                   {Object.entries(VEHICLE_CONFIG).filter(([k]) => k !== "default").map(([k, v]) => (
                     <span key={k} className="d-flex align-items-center gap-1">
                       <span style={{ width: 10, height: 10, borderRadius: 3, background: v.color, display: "inline-block", boxShadow: `0 0 0 2px ${v.color}30` }} />
@@ -619,7 +674,7 @@ export default function FleetViewPage() {
                     style={{ background: "rgba(255,255,255,0.75)", zIndex: 1000, backdropFilter: "blur(2px)" }}>
                     <div className="text-center">
                       <div className="spinner-border text-primary mb-2" role="status" />
-                      <div className="text-muted small">Loading trips…</div>
+                      <div className="text-muted small">Loading trips</div>
                     </div>
                   </div>
                 )}
@@ -631,8 +686,20 @@ export default function FleetViewPage() {
 
           {/* Right panel */}
           <div className="col-lg-4">
-            <div className="card border-0 shadow-sm h-100" style={{ borderRadius: 16, overflow: "hidden" }}>
-              <div className="card-header bg-white py-2 px-3" style={{ borderBottom: "1px solid #f1f5f9" }}>
+            <div className="card border-0 shadow-sm h-100" style={{ borderRadius: 18, overflow: "hidden", boxShadow: "0 24px 48px rgba(15,23,42,.08)" }}>
+              <div className="card-header bg-white py-3 px-3" style={{ borderBottom: "1px solid #f1f5f9", background: "linear-gradient(180deg,#ffffff,#f8fafc)" }}>
+                <div className="d-flex align-items-center justify-content-between gap-2 mb-2 flex-wrap">
+                  <div>
+                    <div className="fw-semibold" style={{ color: "#0f172a" }}>
+                      {viewMode === "trips" ? "Trip Feed" : "Driver Feed"}
+                    </div>
+                    <div style={{ fontSize: 11, color: "#64748b" }}>
+                      {viewMode === "trips"
+                        ? `${filtered.length} visible trip${filtered.length === 1 ? "" : "s"} in ${activeZoneName}`
+                        : `${filteredDrivers.length} visible driver${filteredDrivers.length === 1 ? "" : "s"} in ${activeZoneName}`}
+                    </div>
+                  </div>
+                </div>
                 {viewMode === "trips" ? (
                   <div className="d-flex gap-1">
                     {(["all","ride","parcel"] as const).map(f => {
@@ -640,7 +707,7 @@ export default function FleetViewPage() {
                       const active = filter === f;
                       return (
                         <button key={f} className="btn btn-sm flex-fill fw-semibold"
-                          style={{ fontSize: 12, borderRadius: 8, background: active ? "#1a73e8" : "#f1f5f9", color: active ? "white" : "#64748b", border: "none", transition: "all 0.2s" }}
+                          style={{ fontSize: 12, borderRadius: 10, background: active ? "#1a73e8" : "#f1f5f9", color: active ? "white" : "#64748b", border: "none", transition: "all 0.2s" }}
                           onClick={() => setFilter(f)} data-testid={`tab-trip-${f}`}>
                           {f === "all" ? "All" : f === "ride" ? "Rides" : "Parcels"}
                           <span className="ms-1 badge rounded-pill"
@@ -658,7 +725,7 @@ export default function FleetViewPage() {
                       const active = driverStatusFilter === f;
                       return (
                         <button key={f} className="btn btn-sm flex-fill fw-semibold"
-                          style={{ fontSize: 12, borderRadius: 8, background: active ? "#16a34a" : "#f1f5f9", color: active ? "white" : "#64748b", border: "none", transition: "all 0.2s" }}
+                          style={{ fontSize: 12, borderRadius: 10, background: active ? "#16a34a" : "#f1f5f9", color: active ? "white" : "#64748b", border: "none", transition: "all 0.2s" }}
                           onClick={() => setDriverStatusFilter(f)} data-testid={`tab-driver-${f}`}>
                           {f === "all" ? "All" : f === "active" ? "Online" : "Offline"}
                           <span className="ms-1 badge rounded-pill"
@@ -676,7 +743,7 @@ export default function FleetViewPage() {
                 {viewMode === "trips" ? (
                   filtered.length === 0 ? (
                     <div className="text-center py-5 text-muted">
-                      <div style={{ fontSize: 42, marginBottom: 10 }}>🛣️</div>
+                      <div style={{ fontSize: 42, marginBottom: 10 }}></div>
                       <div className="fw-semibold">No active trips</div>
                       <div className="small mt-1">Live trips appear here</div>
                     </div>
@@ -698,10 +765,13 @@ export default function FleetViewPage() {
                               <span className="badge rounded-pill" style={{ background: cfg.color + "18", color: cfg.color, fontSize: 9, fontWeight: 700 }}>{cfg.label}</span>
                             </div>
                             <div className="text-truncate mt-1" style={{ fontSize: 11, color: "#64748b" }}>
-                              👤 <b style={{ color: "#374151" }}>{trip.customerName}</b>
+                              Customer: <b style={{ color: "#374151" }}>{trip.customerName}</b>
                             </div>
-                            <div style={{ fontSize: 10.5, color: "#94a3b8" }} className="text-truncate">📍 {trip.pickupAddress}</div>
-                            <div style={{ fontSize: 10.5, color: "#94a3b8" }} className="text-truncate">🏁 {trip.destinationAddress}</div>
+                            <div style={{ fontSize: 10.5, color: "#64748b" }} className="text-truncate">
+                              Zone: {trip.zoneName || "Unassigned"}
+                            </div>
+                            <div style={{ fontSize: 10.5, color: "#94a3b8" }} className="text-truncate">Pickup: {trip.pickupAddress}</div>
+                            <div style={{ fontSize: 10.5, color: "#94a3b8" }} className="text-truncate">Drop: {trip.destinationAddress}</div>
                             <div className="mt-2">
                               <div className="d-flex justify-content-between align-items-center mb-1" style={{ fontSize: 10 }}>
                                 <span style={{ color: "#94a3b8" }}>Journey</span>
@@ -713,7 +783,7 @@ export default function FleetViewPage() {
                               </div>
                             </div>
                             <div className="d-flex justify-content-between mt-2" style={{ fontSize: 11 }}>
-                              <span className="fw-semibold" style={{ color: "#1e293b" }}>₹{parseFloat(trip.estimatedFare).toFixed(0)}</span>
+                              <span className="fw-semibold" style={{ color: "#1e293b" }}>Rs. {parseFloat(trip.estimatedFare).toFixed(0)}</span>
                               <span style={{ color: "#94a3b8" }}>{parseFloat(trip.estimatedDistance).toFixed(1)} km</span>
                               <span className="badge rounded-pill"
                                 style={{ fontSize: 9, background: trip.type === "ride" ? "#dbeafe" : "#dcfce7", color: trip.type === "ride" ? "#1E5FCC" : "#166534" }}>
@@ -730,7 +800,7 @@ export default function FleetViewPage() {
                     <div className="text-center py-5"><div className="spinner-border text-success" role="status" /></div>
                   ) : filteredDrivers.length === 0 ? (
                     <div className="text-center py-5 text-muted">
-                      <div style={{ fontSize: 42, marginBottom: 10 }}>🧑‍✈️</div>
+                      <div style={{ fontSize: 42, marginBottom: 10 }}>DRV</div>
                       <div className="fw-semibold">No drivers found</div>
                     </div>
                   ) : filteredDrivers.map((driver: any) => {
@@ -755,18 +825,24 @@ export default function FleetViewPage() {
                         <div className="d-flex align-items-center gap-2">
                           <div className="rounded-circle d-flex align-items-center justify-content-center flex-shrink-0"
                             style={{ width: 38, height: 38, background: statusColor + "15", fontSize: 18, border: `2px solid ${statusColor}33` }}>
-                            🧑‍✈️
+                            DRV
                           </div>
                           <div className="flex-grow-1" style={{ minWidth: 0 }}>
                             <div className="d-flex justify-content-between align-items-center">
                               <span className="fw-semibold" style={{ fontSize: 13, color: "#0f172a" }}>{driver.name}</span>
                               <span className="badge rounded-pill"
                                 style={{ background: statusColor + "18", color: statusColor, fontSize: 9, fontWeight: 700 }}>
-                                {isOnline ? "● Online" : "○ Offline"}
+                                {isOnline ? "Live Online" : "Currently Offline"}
                               </span>
                             </div>
                             <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>
-                              <i className="bi bi-phone me-1"></i>{driver.phone || "—"}
+                              <i className="bi bi-phone me-1"></i>{driver.phone || "-"}
+                            </div>
+                            <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 2 }} className="text-truncate">
+                              Zone: {driver.zoneName || "All zones"}
+                            </div>
+                            <div style={{ fontSize: 10.5, color: "#94a3b8" }} className="text-truncate">
+                              Category: {driver.vehicleCategoryName || "General fleet"}
                             </div>
                           </div>
                         </div>
@@ -787,3 +863,4 @@ export default function FleetViewPage() {
     </>
   );
 }
+

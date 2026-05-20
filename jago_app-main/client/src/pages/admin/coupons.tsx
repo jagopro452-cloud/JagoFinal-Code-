@@ -4,9 +4,42 @@ import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 const EMPTY_FORM = {
-  name: "", code: "", discountType: "amount", discountAmount: "50",
-  minTripAmount: "0", maxDiscountAmount: "", limitPerUser: "1",
-  totalUsageLimit: "", endDate: "",
+  name: "",
+  code: "",
+  discountType: "amount",
+  discountAmount: "50",
+  minTripAmount: "0",
+  maxDiscountAmount: "",
+  limitPerUser: "1",
+  totalUsageLimit: "",
+  endDate: "",
+};
+
+const formatCurrencyLabel = (value: any) => `Rs. ${Number(value || 0).toFixed(0)}`;
+
+const getCouponCodeStyle = () => ({
+  background: "linear-gradient(135deg, rgba(37,99,235,.9), rgba(59,130,246,.95))",
+  color: "#fff",
+  letterSpacing: "0.08em",
+  padding: "0.5rem 0.8rem",
+  borderRadius: "999px",
+  fontWeight: 700,
+});
+
+const getDiscountBadgeStyle = (coupon: any) => {
+  const isPercent =
+    coupon.discountType === "percentage" || coupon.discountType === "percent";
+  return isPercent
+    ? {
+        background: "linear-gradient(135deg, rgba(22,163,74,.12), rgba(5,150,105,.18))",
+        color: "#047857",
+        border: "1px solid rgba(5,150,105,.15)",
+      }
+    : {
+        background: "linear-gradient(135deg, rgba(249,115,22,.12), rgba(234,88,12,.18))",
+        color: "#c2410c",
+        border: "1px solid rgba(234,88,12,.15)",
+      };
 };
 
 function CouponModal({ open, onClose, editing, form, setForm, onSave, saving }: any) {
@@ -20,7 +53,6 @@ function CouponModal({ open, onClose, editing, form, setForm, onSave, saving }: 
           <button className="modal-jago-close" onClick={onClose}><i className="bi bi-x-lg"></i></button>
         </div>
         <div className="d-flex flex-column gap-3">
-          {/* Row 1: name + code */}
           <div className="row g-3">
             <div className="col-6">
               <label className="form-label-jago">Coupon Name <span className="text-danger">*</span></label>
@@ -31,35 +63,32 @@ function CouponModal({ open, onClose, editing, form, setForm, onSave, saving }: 
               <input className="form-control" value={form.code} onChange={e => f("code", e.target.value.toUpperCase())} placeholder="e.g. WELCOME50" data-testid="input-coupon-code" />
             </div>
           </div>
-          {/* Row 2: discount type + value */}
           <div className="row g-3">
             <div className="col-6">
               <label className="form-label-jago">Discount Type</label>
               <select className="form-select" value={form.discountType} onChange={e => f("discountType", e.target.value)}>
-                <option value="amount">Fixed Amount (₹)</option>
+                <option value="amount">Fixed Amount (Rs.)</option>
                 <option value="percentage">Percentage (%)</option>
               </select>
             </div>
             <div className="col-6">
-              <label className="form-label-jago">Discount {form.discountType === "percentage" ? "%" : "₹"} <span className="text-danger">*</span></label>
+              <label className="form-label-jago">Discount {form.discountType === "percentage" ? "%" : "Rs."} <span className="text-danger">*</span></label>
               <input type="number" min="0" className="form-control" value={form.discountAmount} onChange={e => f("discountAmount", e.target.value)} data-testid="input-discount-amount" />
             </div>
           </div>
-          {/* Row 3: max discount cap + min trip */}
           <div className="row g-3">
             <div className="col-6">
               <label className="form-label-jago">
-                Max Discount (₹)
-                <small className="text-muted ms-1">{form.discountType === "percentage" ? "— caps % discount" : "— optional"}</small>
+                Max Discount (Rs.)
+                <small className="text-muted ms-1">{form.discountType === "percentage" ? "- caps % discount" : "- optional"}</small>
               </label>
               <input type="number" min="0" className="form-control" value={form.maxDiscountAmount} onChange={e => f("maxDiscountAmount", e.target.value)} placeholder="No cap" />
             </div>
             <div className="col-6">
-              <label className="form-label-jago">Min Trip Amount (₹)</label>
+              <label className="form-label-jago">Min Trip Amount (Rs.)</label>
               <input type="number" min="0" className="form-control" value={form.minTripAmount} onChange={e => f("minTripAmount", e.target.value)} />
             </div>
           </div>
-          {/* Row 4: per-user limit + total usage + expiry */}
           <div className="row g-3">
             <div className="col-4">
               <label className="form-label-jago">Limit Per User</label>
@@ -96,28 +125,35 @@ export default function Coupons() {
 
   const { data, isLoading } = useQuery<any>({
     queryKey: ["/api/coupons", { page }],
-    queryFn: () => fetch(`/api/coupons?page=${page}&limit=15`)
-      .then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error"); }))
-      .then(d => d?.data ? d : { data: Array.isArray(d) ? d : [], total: 0 }),
+    queryFn: () =>
+      fetch(`/api/coupons?page=${page}&limit=15`)
+        .then((r) => (r.ok ? r.json() : r.json().then((d) => { throw new Error(d?.message || "Error"); })))
+        .then((d) => (d?.data ? d : { data: Array.isArray(d) ? d : [], total: 0 })),
   });
 
   const resetForm = () => setForm({ ...EMPTY_FORM });
 
   const save = useMutation({
-    mutationFn: (d: any) => editing
-      ? apiRequest("PUT", `/api/coupons/${editing.id}`, d)
-      : apiRequest("POST", "/api/coupons", d),
+    mutationFn: (d: any) =>
+      editing
+        ? apiRequest("PUT", `/api/coupons/${editing.id}`, d)
+        : apiRequest("POST", "/api/coupons", d),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/coupons"] });
       toast({ title: editing ? "Coupon updated" : "Coupon created" });
-      setOpen(false); setEditing(null); resetForm();
+      setOpen(false);
+      setEditing(null);
+      resetForm();
     },
     onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
 
   const remove = useMutation({
     mutationFn: (id: string) => apiRequest("DELETE", `/api/coupons/${id}`),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/coupons"] }); toast({ title: "Coupon deleted" }); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/coupons"] });
+      toast({ title: "Coupon deleted" });
+    },
   });
 
   const toggleStatus = useMutation({
@@ -126,10 +162,14 @@ export default function Coupons() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/coupons"] }),
   });
 
-  const openCreate = () => { setEditing(null); resetForm(); setOpen(true); };
+  const openCreate = () => {
+    setEditing(null);
+    resetForm();
+    setOpen(true);
+  };
+
   const openEdit = (c: any) => {
     setEditing(c);
-    // Normalize date for input[type=date] (ISO → YYYY-MM-DD)
     const endDate = c.endDate ? c.endDate.substring(0, 10) : "";
     setForm({
       name: c.name || "",
@@ -147,17 +187,19 @@ export default function Coupons() {
 
   const formatDiscount = (c: any) => {
     const isPercent = c.discountType === "percentage" || c.discountType === "percent";
-    const label = isPercent ? `${c.discountAmount}%` : `₹${c.discountAmount}`;
-    const cap = c.maxDiscountAmount ? ` (max ₹${c.maxDiscountAmount})` : "";
+    const label = isPercent ? `${c.discountAmount}%` : formatCurrencyLabel(c.discountAmount);
+    const cap = c.maxDiscountAmount ? ` (max ${formatCurrencyLabel(c.maxDiscountAmount)})` : "";
     return label + cap;
   };
 
   const formatExpiry = (c: any) => {
-    if (!c.endDate) return "—";
+    if (!c.endDate) return "-";
     try {
       const dt = new Date(c.endDate);
       return dt.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
-    } catch { return c.endDate; }
+    } catch {
+      return c.endDate;
+    }
   };
 
   const totalPages = Math.ceil((data?.total || 0) / 15);
@@ -173,7 +215,14 @@ export default function Coupons() {
       </div>
 
       <div className="card">
-        <div className="card-body">
+        <div
+          className="card-body"
+          style={{
+            borderRadius: 18,
+            background: "linear-gradient(180deg, rgba(255,255,255,.98), rgba(248,250,252,.96))",
+            boxShadow: "0 18px 40px rgba(15,23,42,.06)",
+          }}
+        >
           <div className="table-responsive">
             <table className="table table-borderless align-middle table-hover">
               <thead className="table-light align-middle text-capitalize">
@@ -193,16 +242,38 @@ export default function Coupons() {
               <tbody>
                 {isLoading ? (
                   Array(5).fill(0).map((_, i) => (
-                    <tr key={i}>{Array(10).fill(0).map((_, j) => <td key={j}><div style={{ height: "14px", background: "#f1f5f9", borderRadius: "4px" }} /></td>)}</tr>
+                    <tr key={i}>{Array(10).fill(0).map((__, j) => <td key={j}><div style={{ height: "14px", background: "#f1f5f9", borderRadius: "4px" }} /></td>)}</tr>
                   ))
                 ) : coupons.length ? (
                   coupons.map((c: any, idx: number) => (
-                    <tr key={c.id} data-testid={`coupon-row-${c.id}`}>
+                    <tr
+                      key={c.id}
+                      data-testid={`coupon-row-${c.id}`}
+                      style={{ borderBottom: "1px solid rgba(226,232,240,.7)" }}
+                    >
                       <td>{(page - 1) * 15 + idx + 1}</td>
-                      <td className="fw-medium title-color">{c.name}</td>
-                      <td><span className="badge bg-primary" style={{ letterSpacing: "1px" }}>{c.code}</span></td>
-                      <td><span className="badge bg-success-subtle text-success">{formatDiscount(c)}</span></td>
-                      <td>{c.minTripAmount > 0 ? `₹${c.minTripAmount}` : "—"}</td>
+                      <td>
+                        <div className="fw-semibold title-color">{c.name}</div>
+                        <div style={{ fontSize: "0.74rem", color: "#64748b" }}>
+                          {c.discountType === "percentage" || c.discountType === "percent"
+                            ? "Percentage offer"
+                            : "Fixed amount offer"}
+                        </div>
+                      </td>
+                      <td><span style={getCouponCodeStyle()}>{c.code}</span></td>
+                      <td>
+                        <span
+                          className="badge rounded-pill"
+                          style={{
+                            ...getDiscountBadgeStyle(c),
+                            padding: "0.5rem 0.8rem",
+                            fontWeight: 700,
+                          }}
+                        >
+                          {formatDiscount(c)}
+                        </span>
+                      </td>
+                      <td>{Number(c.minTripAmount) > 0 ? formatCurrencyLabel(c.minTripAmount) : "-"}</td>
                       <td>{c.limitPerUser || 1}x</td>
                       <td>{c.totalUsageLimit || <span className="text-muted">∞</span>}</td>
                       <td className={c.endDate && new Date(c.endDate) < new Date() ? "text-danger" : ""}>{formatExpiry(c)}</td>
@@ -233,11 +304,11 @@ export default function Coupons() {
           </div>
           {totalPages > 1 && (
             <div className="d-flex flex-wrap align-items-center justify-content-end gap-2 mt-3">
-              <button className="btn btn-sm btn-outline-secondary" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}><i className="bi bi-chevron-left"></i></button>
-              {Array.from({ length: Math.min(5, totalPages) }, (_, i) => i + 1).map(p => (
+              <button className="btn btn-sm btn-outline-secondary" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}><i className="bi bi-chevron-left"></i></button>
+              {Array.from({ length: Math.min(5, totalPages) }, (_, i) => i + 1).map((p) => (
                 <button key={p} className={`btn btn-sm ${p === page ? "btn-primary" : "btn-outline-secondary"}`} onClick={() => setPage(p)}>{p}</button>
               ))}
-              <button className="btn btn-sm btn-outline-secondary" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}><i className="bi bi-chevron-right"></i></button>
+              <button className="btn btn-sm btn-outline-secondary" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages}><i className="bi bi-chevron-right"></i></button>
             </div>
           )}
         </div>

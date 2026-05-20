@@ -14,7 +14,13 @@ export interface IStorage {
   // Auth
   getAdminByEmail(email: string): Promise<Admin | undefined>;
   // Users
-  getUsers(userType?: string, search?: string, page?: number, limit?: number): Promise<{ data: User[]; total: number }>;
+  getUsers(
+    userType?: string,
+    search?: string,
+    page?: number,
+    limit?: number,
+    isActive?: boolean,
+  ): Promise<{ data: User[]; total: number }>;
   getUserById(id: string): Promise<User | undefined>;
   updateUserStatus(id: string, isActive: boolean): Promise<User>;
   updateUser(id: string, data: Partial<User>): Promise<User>;
@@ -71,11 +77,18 @@ export class DatabaseStorage implements IStorage {
     return admin;
   }
 
-  async getUsers(userType?: string, search?: string, page = 1, limit = 15): Promise<{ data: User[]; total: number }> {
+  async getUsers(
+    userType?: string,
+    search?: string,
+    page = 1,
+    limit = 15,
+    isActive?: boolean,
+  ): Promise<{ data: User[]; total: number }> {
     const offset = (page - 1) * limit;
     let query = db.select().from(users);
     const conditions = [];
     if (userType) conditions.push(eq(users.userType, userType));
+    if (typeof isActive === "boolean") conditions.push(eq(users.isActive, isActive));
     if (search) conditions.push(or(
       ilike(users.fullName, `%${search}%`),
       ilike(users.email, `%${search}%`),

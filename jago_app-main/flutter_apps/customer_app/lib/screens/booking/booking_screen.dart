@@ -61,21 +61,28 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
   final _receiverNameCtrl = TextEditingController();
   final _receiverPhoneCtrl = TextEditingController();
   final _noteCtrl = TextEditingController();
+  bool _popularForPickup = false;
+  
   Set<Polyline> _polylines = {};
   double _routedDistanceKm = 0.0;
 
+  // Populated dynamically from /api/app/popular-locations; static data used as fallback
+  List<Map<String, dynamic>> _popularLocations = const [
+    {'name': 'Benz Circle', 'lat': 16.5062, 'lng': 80.6480},
+    {'name': 'Vijayawada Railway Station', 'lat': 16.5175, 'lng': 80.6400},
+    {'name': 'Vijayawada Bus Stand', 'lat': 16.5179, 'lng': 80.6238},
+    {'name': 'Balaji Bus Stand', 'lat': 16.5106, 'lng': 80.6248},
+    {'name': 'Kanaka Durga Temple', 'lat': 16.5176, 'lng': 80.6121},
+    {'name': 'Gannavaram Airport', 'lat': 16.5304, 'lng': 80.7968},
+    {'name': 'Governorpet', 'lat': 16.5135, 'lng': 80.6346},
+    {'name': 'Patamata', 'lat': 16.4883, 'lng': 80.6681},
+  ];
+
   static const Color _jagoPrimary = JT.primary;
+  static const Color _jagoSecondary = JT.secondary;
 
   static const Color _blue = Color(0xFF6366F1); // Vibrant Indigo
   static const Color _green = JT.success;
-  static const Color _ridePrimary = Color(0xFF6366F1);
-  static const Color _ridePrimaryDark = Color(0xFF4F4ACF);
-  static const Color _rideSecondary = Color(0xFF8B5CF6);
-  static const Color _rideBg = Color(0xFFF5F3FF);
-  static const Color _parcelPrimary = Color(0xFFC29763);
-  static const Color _parcelPrimaryDark = Color(0xFFB07D42);
-  static const Color _parcelSecondary = Color(0xFFD6B58F);
-  static const Color _parcelBg = Color(0xFFFBF8F3);
 
   LatLng get _pickupLatLng => LatLng(widget.pickupLat, widget.pickupLng);
   LatLng get _destLatLng => widget.destLat != 0 && widget.destLng != 0
@@ -84,81 +91,24 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
 
   Map<String, dynamic>? get _fare => _allFares.isNotEmpty ? _allFares[_selectedFareIndex] : null;
 
-  bool get _useParcelPalette => widget.category == 'parcel' || _isParcel;
-  Color get _accentPrimary => _useParcelPalette ? _parcelPrimary : _ridePrimary;
-  Color get _accentPrimaryDark =>
-      _useParcelPalette ? _parcelPrimaryDark : _ridePrimaryDark;
-  Color get _accentSecondary =>
-      _useParcelPalette ? _parcelSecondary : _rideSecondary;
-  Color get _accentBg => _useParcelPalette ? _parcelBg : _rideBg;
-  LinearGradient get _accentGradient => LinearGradient(
-        colors: [_accentPrimaryDark, _accentPrimary],
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-      );
+  double get _autoDiscount {
+    if (_appliedPromo != null) return 0;
+    return double.tryParse(_fare?['autoDiscountAmount']?.toString() ?? '0') ?? 0;
+  }
 
-  String get _vehicleName => _fareVehicleName(_fare ?? const <String, dynamic>{});
+  String? get _autoDiscountName {
+    if (_appliedPromo != null) return null;
+    final name = _fare?['autoDiscountName']?.toString();
+    return name != null && name.isNotEmpty ? name : null;
+  }
+
+  String get _vehicleName => _fare?['vehicleCategoryName']?.toString() ?? _fare?['name']?.toString() ?? widget.vehicleCategoryName ?? 'Bike';
 
   String _fareVehicleName(Map<String, dynamic> fare) {
     return fare['vehicleCategoryName']?.toString() ??
         fare['vehicleName']?.toString() ??
         fare['name']?.toString() ??
-        widget.vehicleCategoryName ??
         'Bike';
-  }
-
-  String? _normalizedVehicleTypeForBooking(Map<String, dynamic>? fare) {
-    final raw = (fare?['vehicleType'] ??
-            fare?['type'] ??
-            fare?['vehicleCategoryName'] ??
-            fare?['vehicleName'] ??
-            fare?['name'] ??
-            widget.vehicleCategoryName)
-        ?.toString()
-        .trim()
-        .toLowerCase();
-    if (raw == null || raw.isEmpty) return null;
-    if (raw.contains('bike') && raw.contains('parcel')) return 'bike_parcel';
-    if (raw.contains('auto') && raw.contains('parcel')) return 'auto_parcel';
-    if (raw.contains('tata') || raw.contains('mini truck')) return 'tata_ace';
-    if (raw.contains('pickup') || raw.contains('bolero')) return 'pickup_truck';
-    if (raw.contains('tempo')) return 'tempo_407';
-    if (raw.contains('bike')) return 'bike';
-    if (raw.contains('auto')) return 'auto';
-    if (raw.contains('premium') || raw.contains('luxury')) return 'premium';
-    if (raw.contains('cab') || raw.contains('car') || raw.contains('sedan') || raw.contains('suv') || raw == 'mini') {
-      return raw.contains('premium') ? 'premium' : 'mini_car';
-    }
-    return raw.replaceAll(RegExp(r'[^a-z0-9]+'), '_').replaceAll(RegExp(r'^_+|_+$'), '');
-  }
-
-  Map<String, dynamic> _selectedVehiclePayload() {
-    final fare = _fare;
-    final vehicleId =
-        fare?['vehicleCategoryId']?.toString() ??
-        fare?['id']?.toString() ??
-        widget.vehicleCategoryId;
-    final vehicleType = _normalizedVehicleTypeForBooking(fare);
-    final vehicleName = fare?['vehicleCategoryName']?.toString() ??
-        fare?['vehicleName']?.toString() ??
-        fare?['name']?.toString() ??
-        widget.vehicleCategoryName;
-
-    return <String, dynamic>{
-      if (vehicleId != null && vehicleId.trim().isNotEmpty) ...{
-        'vehicleCategoryId': vehicleId.trim(),
-        'vehicle_category_id': vehicleId.trim(),
-        'vehicle_type_id': vehicleId.trim(),
-      },
-      if (vehicleType != null && vehicleType.trim().isNotEmpty) ...{
-        'vehicleType': vehicleType.trim(),
-        'vehicle_type': vehicleType.trim(),
-      },
-      if (vehicleName != null && vehicleName.trim().isNotEmpty) ...{
-        'vehicleCategoryName': vehicleName.trim(),
-        'vehicleName': vehicleName.trim(),
-      },
-    };
   }
 
   List<MapEntry<int, Map<String, dynamic>>> _visibleFareEntries(
@@ -168,6 +118,17 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
       final name = _fareVehicleName(entry.value);
       return VehicleStatusService.isActive(statuses, name);
     }).toList();
+  }
+
+  void _syncSelectedFareToVisible(Map<String, VehicleStatus> statuses) {
+    if (_allFares.isEmpty) return;
+    final selectedName = _fareVehicleName(_allFares[_selectedFareIndex]);
+    if (VehicleStatusService.isActive(statuses, selectedName)) return;
+    final visible = _visibleFareEntries(statuses);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || visible.isEmpty) return;
+      setState(() => _selectedFareIndex = visible.first.key);
+    });
   }
 
   static IconData _iconForVehicle(String name) {
@@ -204,6 +165,20 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
   }
 
   // Rule 3: Parcel Auto subtitle must clearly say GOODS ONLY
+  static String _subtitleForVehicle(String name) {
+    final n = name.toLowerCase();
+    if (n.contains('parcel auto')) return 'Goods Carrier Auto · CARGO ONLY';
+    if (n.contains('parcel bike')) return 'Delivery bike · Up to 10 kg';
+    if (n.contains('mini truck') || n.contains('tata ace')) return 'Mini cargo truck · Up to 500 kg';
+    if (n.contains('pickup van') || n.contains('pickup')) return 'Large pickup van · Up to 2000 kg';
+    if (n.contains('parcel')) return 'Parcel delivery';
+    if (n.contains('bike')) return '1 passenger · Fastest';
+    if (n.contains('auto')) return 'Up to 3 passengers';
+    if (n.contains('suv')) return 'Up to 6 passengers · AC';
+    if (n.contains('car')) return 'Up to 4 passengers · AC';
+    return '';
+  }
+
   // Rule 4: Returns true if vehicle should be HIDDEN
   static bool _shouldHideVehicle(String name) {
     final n = name.toLowerCase();
@@ -227,29 +202,25 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
 
   // ── Vehicle image URLs (real vehicle images, network with emoji fallback) ──
   // Matches the premium Cloudinary assets used in home_screen.dart
-  static const Map<String, String> _vehicleImageUrls = {
+  static final Map<String, String> _vehicleImageUrls = {
     'bike': 'https://res.cloudinary.com/kits/image/upload/q_auto/f_auto/v1775123974/bike_logo_g7idrq.png',
     'auto': 'https://res.cloudinary.com/kits/image/upload/q_auto/f_auto/v1775125550/ChatGPT_Image_Apr_2_2026_03_55_30_PM_ywb7fj.png',
     'cab': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_27_28_AM_w0rcnh',
     'premium': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_31_05_AM_kavp5e',
-    'bike_parcel': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_49_26_AM_gjbrxs',
-    'auto_parcel': 'https://oyster-app-9e9cd.ondigitalocean.app/static/vehicles/parcel_auto.png',
-    'tata_ace':  'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_51_59_AM_jzd119',
-    'pickup_truck':  'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_54_02_AM_hicx7s',
-    'bolero_cargo':  'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_54_02_AM_hicx7s',
-    'tempo_407':  'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_54_02_AM_hicx7s',
+    'parcel_bike': 'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_49_26_AM_gjbrxs',
+    'parcel_auto': '${ApiConfig.baseUrl}/static/vehicles/parcel_auto.png',
+    'mini_truck':  'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_51_59_AM_jzd119',
+    'pickup_van':  'https://res.cloudinary.com/dg5ct7fys/image/upload/f_auto,q_auto/ChatGPT_Image_Apr_17_2026_11_54_02_AM_hicx7s',
   };
 
   static String? _vehicleImageKey(String name) {
     final n = name.toLowerCase();
     if (n.contains('premium')) return 'premium';
-    if (n.contains('bolero')) return 'bolero_cargo';
-    if (n.contains('tempo') || n.contains('407')) return 'tempo_407';
-    if (n.contains('pickup van') || n.contains('pickup')) return 'pickup_truck';
-    if (n.contains('mini truck') || n.contains('tata ace')) return 'tata_ace';
-    if (n.contains('parcel bike') || n.contains('bike parcel')) return 'bike_parcel';
-    if (n.contains('parcel auto')) return 'auto_parcel';
-    if (n.contains('parcel')) return 'bike_parcel';
+    if (n.contains('pickup van') || n.contains('pickup')) return 'pickup_van';
+    if (n.contains('mini truck') || n.contains('tata ace')) return 'mini_truck';
+    if (n.contains('parcel bike') || n.contains('bike parcel')) return 'parcel_bike';
+    if (n.contains('parcel auto')) return 'parcel_auto';
+    if (n.contains('parcel')) return 'parcel_bike';
     if (n.contains('bike')) return 'bike';
     if (n.contains('auto')) return 'auto';
     if (n.contains('cab') || n.contains('car') || n.contains('suv')) return 'cab';
@@ -257,7 +228,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
   }
 
   /// Renders vehicle artwork — real network image with icon fallback.
-  Widget buildVehicleArtwork(String name, Color accent, bool isSelected, {double size = 96}) {
+  Widget _buildVehicleArtwork(String name, Color accent, bool isSelected, {double size = 96}) {
     final imageKey = _vehicleImageKey(name);
     final imageUrl = imageKey != null ? _vehicleImageUrls[imageKey] : null;
     final icon = _iconForVehicle(name);
@@ -309,17 +280,17 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     );
   }
 
-  Widget buildVehicleHero() {
+  Widget _buildVehicleHero() {
     if (_allFares.isEmpty) return const SizedBox.shrink();
     final fare = _allFares[_selectedFareIndex];
-    final name = _fareVehicleName(fare);
+    final name = fare['vehicleCategoryName']?.toString() ?? fare['name']?.toString() ?? 'Bike';
     final emoji = _emojiForVehicle(name);
     final accent = _accentForVehicle(name);
     final fareVal = (fare['estimatedFare'] ?? 0).toDouble();
     final rawMin = (fare['fareMin'] ?? (fareVal * 0.95)).toDouble();
     final rawMax = (fare['fareMax'] ?? (fareVal * 1.05)).toDouble();
-    final displayMin = (rawMin - _promoDiscount).clamp(0.0, double.infinity);
-    final displayMax = (rawMax - _promoDiscount).clamp(0.0, double.infinity);
+    final displayMin = (rawMin - _promoDiscount - _autoDiscount).clamp(0.0, double.infinity);
+    final displayMax = (rawMax - _promoDiscount - _autoDiscount).clamp(0.0, double.infinity);
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 320),
       transitionBuilder: (child, anim) => SlideTransition(
@@ -399,6 +370,22 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     return '$h:$m $ampm';
   }
 
+  static String _capacityForVehicle(String name) {
+    final n = name.toLowerCase();
+    if (n.contains('pickup van') || n.contains('pickup')) return 'Up to 2000 kg';
+    if (n.contains('mini truck') || n.contains('tata ace')) return 'Up to 500 kg';
+    if (n.contains('parcel bike') || n.contains('bike parcel')) return 'Up to 10 kg';
+    if (n.contains('parcel auto')) return 'Up to 50 kg';
+    if (n.contains('parcel')) return 'Package delivery';
+    if (n.contains('suv')) return '6 seats';
+    if (n.contains('car')) return '4 seats';
+    if (n.contains('auto')) return '3 seats';
+    if (n.contains('bike')) return '1 rider';
+    if (n.contains('cargo truck')) return 'Up to 1000 kg';
+    if (n.contains('cargo')) return 'Up to 500 kg';
+    return '';
+  }
+
   double get _distanceKm {
     if (_routedDistanceKm > 0) return _routedDistanceKm;
     if (widget.destLat == 0 && widget.destLng == 0) return 3.0;
@@ -421,9 +408,29 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     return v.split(',').first.trim();
   }
 
+  void _quickSelectPopular(Map<String, dynamic> location) {
+    final name = (location['name'] ?? '').toString();
+    final lat = (location['lat'] as num?)?.toDouble() ?? 0.0;
+    final lng = (location['lng'] as num?)?.toDouble() ?? 0.0;
+    if (name.isEmpty || lat == 0 || lng == 0) return;
+
+    final next = BookingScreen(
+      pickup: _popularForPickup ? name : widget.pickup,
+      destination: _popularForPickup ? widget.destination : name,
+      pickupLat: _popularForPickup ? lat : widget.pickupLat,
+      pickupLng: _popularForPickup ? lng : widget.pickupLng,
+      destLat: _popularForPickup ? widget.destLat : lat,
+      destLng: _popularForPickup ? widget.destLng : lng,
+      vehicleCategoryId: widget.vehicleCategoryId,
+      vehicleCategoryName: widget.vehicleCategoryName,
+      category: widget.category,
+    );
+    Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => next));
+  }
+
   double get _finalFare {
     final f = (_fare?['estimatedFare'] ?? 0).toDouble();
-    return (f - _promoDiscount).clamp(0, double.infinity);
+    return (f - _promoDiscount - _autoDiscount).clamp(0, double.infinity);
   }
 
   @override
@@ -435,7 +442,30 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     _razorpay.on(Razorpay.EVENT_EXTERNAL_WALLET, _handleExternalWallet);
     _estimateFare();
     _fetchWallet();
+    _fetchPopularLocations();
     _fetchRoutePolyline();
+  }
+
+  Future<void> _fetchPopularLocations() async {
+    try {
+      final uri = Uri.parse(ApiConfig.popularLocations).replace(
+        queryParameters: {'lat': widget.pickupLat.toString(), 'lng': widget.pickupLng.toString()},
+      );
+      final r = await http.get(uri).timeout(const Duration(seconds: 5));
+      if (r.statusCode == 200) {
+        final data = jsonDecode(r.body);
+        if (data is! Map) return;
+        final rawList = data['locations'];
+        final list = rawList is List ? rawList.whereType<Map<String, dynamic>>().toList() : <Map<String, dynamic>>[];
+        if (mounted && list.isNotEmpty) {
+          setState(() => _popularLocations = list.map((l) => {
+            'name': l['name']?.toString() ?? '',
+            'lat': (l['lat'] as num?)?.toDouble() ?? 0.0,
+            'lng': (l['lng'] as num?)?.toDouble() ?? 0.0,
+          }).toList());
+        }
+      }
+    } catch (_) { /* keep static fallback */ }
   }
 
   @override
@@ -533,7 +563,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
             final cat = widget.category ?? 'ride';
             if (cat == 'parcel') {
               filtered = filtered.where((f) {
-                final vname = (f['vehicleCategoryName'] ?? f['vehicleName'] ?? f['name'] ?? '').toString().toLowerCase();
+                final vname = (f['vehicleCategoryName'] ?? f['name'] ?? '').toString().toLowerCase();
                 final vtype = (f['type'] ?? f['vehicleType'] ?? '').toString().toLowerCase();
                 return vtype == 'parcel' || vname.contains('parcel') ||
                     vname.contains('truck') || vname.contains('van') ||
@@ -541,7 +571,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
               }).toList();
             } else {
               filtered = filtered.where((f) {
-                final vname = (f['vehicleCategoryName'] ?? f['vehicleName'] ?? f['name'] ?? '').toString().toLowerCase();
+                final vname = (f['vehicleCategoryName'] ?? f['name'] ?? '').toString().toLowerCase();
                 final vtype = (f['type'] ?? f['vehicleType'] ?? '').toString().toLowerCase();
                 // Exclude parcel/cargo vehicles from ride
                 if (vtype == 'parcel' || vname.contains('parcel') || vname.contains('truck') || vname.contains('cargo')) return false;
@@ -559,7 +589,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
                 final fbName = fb['vehicleCategoryName'].toString();
                 // Add fallback if no similar category exists in server result
                 if (!_allFares.any((f) {
-                  final name = (f['vehicleCategoryName'] ?? f['vehicleName'] ?? f['name'] ?? '').toString().toLowerCase();
+                  final name = (f['vehicleCategoryName'] ?? f['name'] ?? '').toString().toLowerCase();
                   return name.contains(fbName.split(' ').first.toLowerCase());
                 })) {
                   _allFares.add(fb);
@@ -572,7 +602,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
             if (widget.vehicleCategoryId != null || widget.vehicleCategoryName != null) {
               final targetName = (widget.vehicleCategoryName ?? '').toLowerCase();
               final idx = _allFares.indexWhere((f) {
-                final fName = (f['vehicleCategoryName'] ?? f['vehicleName'] ?? f['name'] ?? '').toString().toLowerCase();
+                final fName = (f['vehicleCategoryName'] ?? f['name'] ?? '').toString().toLowerCase();
                 final fId = f['vehicleCategoryId']?.toString() ?? f['id']?.toString();
                 return fId == widget.vehicleCategoryId || 
                        (targetName.isNotEmpty && fName.contains(targetName));
@@ -599,8 +629,8 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
   /// no fares. Formula: Total = Base + (Distance × Per-KM Rate) + 5% GST.
   List<Map<String, dynamic>> _buildFallbackFares() {
     final dist = _distanceKm;
-    Map<String, dynamic> make(String name, String vehicleType, double base,
-        double perKm, double minFareVal, int eta) {
+    Map<String, dynamic> make(
+        String name, double base, double perKm, double minFareVal, int eta) {
       final raw = (base + dist * perKm).clamp(minFareVal, double.infinity);
       final gst = double.parse((raw * 0.05).toStringAsFixed(2));
       final grandTotal = double.parse((raw + gst).toStringAsFixed(2));
@@ -608,8 +638,6 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         'vehicleCategoryId': null,
         'vehicleCategoryName': name,
         'vehicleName': name,
-        'vehicleType': vehicleType,
-        'type': widget.category == 'parcel' ? 'parcel' : 'ride',
         'baseFare': base,
         'farePerKm': perKm,
         'billableKm': dist,
@@ -632,18 +660,18 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     // Parcel-specific vehicles — never mix with ride vehicles
     if (widget.category == 'parcel') {
       return [
-        make('Parcel Bike', 'bike_parcel', 20, 8, 25, (dist * 4).ceil()),
-        make('Parcel Auto', 'auto_parcel', 30, 10, 35, (dist * 4).ceil()),
-        make('Mini Truck', 'tata_ace', 100, 25, 120, (dist * 5).ceil()),
-        make('Pickup Van', 'pickup_truck', 150, 35, 180, (dist * 5).ceil()),
+        make('Parcel Bike',  20,  8,  25, (dist * 4).ceil()),
+        make('Parcel Auto',  30, 10,  35, (dist * 4).ceil()),
+        make('Mini Truck',  100, 25, 120, (dist * 5).ceil()),
+        make('Pickup Van',  150, 35, 180, (dist * 5).ceil()),
       ];
     }
     // Ride vehicles (default)
     return [
-      make('Bike', 'bike', 25, 10, 28, (dist * 3).ceil()),
-      make('Auto', 'auto', 35, 13, 40, (dist * 3.5).ceil()),
-      make('Mini Car', 'mini_car', 50, 16, 60, (dist * 4).ceil()),
-      make('Premium Cab', 'premium', 70, 20, 80, (dist * 4).ceil()),
+      make('Bike', 25, 10, 28, (dist * 3).ceil()),
+      make('Auto', 35, 13, 40, (dist * 3.5).ceil()),
+      make('Cab',  50, 16, 60, (dist * 4).ceil()),
+      make('Premium Cab', 70, 20, 80, (dist * 4).ceil()),
     ];
   }
 
@@ -681,15 +709,11 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         if (_bookForSomeone && _noteCtrl.text.trim().isNotEmpty)
           'note': _noteCtrl.text.trim(),
       };
-      final vehiclePayload = _selectedVehiclePayload();
-      body.addAll(vehiclePayload);
-      debugPrint('[BOOKING][submit] endpoint=${ApiConfig.bookRide} '
-          'selectedIndex=$_selectedFareIndex vehicle=$vehiclePayload '
-          'payment=$_paymentMethod fare=$_finalFare distance=$_distanceKm');
+      final vcId = _fare?['vehicleCategoryId']?.toString() ?? _fare?['id']?.toString() ?? widget.vehicleCategoryId;
+      if (vcId != null && vcId.isNotEmpty) body['vehicleCategoryId'] = vcId;
       final res = await http.post(Uri.parse(ApiConfig.bookRide),
         headers: headers,
         body: jsonEncode(body));
-      debugPrint('[BOOKING][response] status=${res.statusCode} body=${res.body}');
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
         final tripId = data['trip']?['id']?.toString() ?? '';
@@ -720,7 +744,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
 
   /// Offers Google Maps navigation to pickup location after booking is confirmed.
   /// Shows a premium bottom sheet with "Navigate" and "Skip" options.
-  Future<void> offerNavigateToPickup() async {
+  Future<void> _offerNavigateToPickup() async {
     if (!mounted) return;
     final pickupLat = widget.pickupLat;
     final pickupLng = widget.pickupLng;
@@ -1003,34 +1027,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
       }
     } catch (_) {}
 
-    // Attempt 2: Backend routing proxy (uses server-managed key/caching)
-    if (!success) {
-      try {
-        final headers = await AuthService.getHeaders();
-        final res = await http.post(
-          Uri.parse(ApiConfig.routeMultiWaypoint),
-          headers: {...headers, 'Content-Type': 'application/json'},
-          body: jsonEncode({
-            'origin': {'lat': widget.pickupLat, 'lng': widget.pickupLng},
-            'destination': {'lat': widget.destLat, 'lng': widget.destLng},
-            'waypoints': [],
-            'optimize': false,
-          }),
-        ).timeout(const Duration(seconds: 4));
-        if (res.statusCode == 200) {
-          final data = jsonDecode(res.body) as Map<String, dynamic>;
-          final overviewPolyline = data['overviewPolyline']?.toString();
-          if (overviewPolyline != null && overviewPolyline.isNotEmpty) {
-            points = _decodePolyline(overviewPolyline);
-            fetchedDistMeters =
-                ((data['totalDistanceKm'] as num?)?.toDouble() ?? 0.0) * 1000;
-            success = points.isNotEmpty;
-          }
-        }
-      } catch (_) {}
-    }
-
-    // Attempt 3: Direct Google Directions API fallback
+    // Attempt 2: Direct Google Directions API
     if (!success) {
       try {
         final uri = Uri.parse(
@@ -1046,6 +1043,32 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
             if (legs != null && legs.isNotEmpty) {
                fetchedDistMeters = (legs[0]['distance']['value'] as num).toDouble();
             }
+            success = points.isNotEmpty;
+          }
+        }
+      } catch (_) {}
+    }
+
+    // Attempt 3: Backend Navigation API
+    if (!success) {
+      try {
+        final headers = await AuthService.getHeaders();
+        final res = await http.post(
+          Uri.parse(ApiConfig.routeMultiWaypoint),
+          headers: {...headers, 'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'origin': {'lat': widget.pickupLat, 'lng': widget.pickupLng},
+            'destination': {'lat': widget.destLat, 'lng': widget.destLng},
+            'waypoints': [],
+            'optimize': false,
+          }),
+        ).timeout(const Duration(seconds: 4));
+        
+        if (res.statusCode == 200) {
+          final data = jsonDecode(res.body) as Map<String, dynamic>;
+          final overviewPolyline = data['overviewPolyline']?.toString();
+          if (overviewPolyline != null && overviewPolyline.isNotEmpty) {
+            points = _decodePolyline(overviewPolyline);
             success = points.isNotEmpty;
           }
         }
@@ -1094,7 +1117,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: _accentBg,
+      backgroundColor: const Color(0xFFF5F3FF),
       body: Column(
         children: [
           // Global Header
@@ -1194,7 +1217,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
                                   ),
                                   boxShadow: [
                                     BoxShadow(
-                                      color: Colors.black.withValues(alpha: 0.1),
+                                      color: Colors.black.withOpacity(0.1),
                                       blurRadius: 20,
                                       offset: const Offset(0, -5),
                                     ),
@@ -1224,13 +1247,13 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
                                               borderRadius: BorderRadius.circular(16),
                                               boxShadow: [
                                                 BoxShadow(
-                                                  color: _accentPrimaryDark.withValues(alpha: 0.3),
+                                                  color: const Color(0xFF2D8CFF).withOpacity(0.3),
                                                   blurRadius: 15,
                                                   offset: const Offset(0, 8),
                                                 ),
                                               ],
                                             ),
-                                            child: _accentGradientButton(
+                                            child: JT.gradientButton(
                                               label: visibleFares.isEmpty ? 'No vehicles available' : 'Confirm Ride',
                                               loading: _loading,
                                               onTap: canBook ? () => _goToRideForWhomScreen() : () {},
@@ -1317,16 +1340,16 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
-            color: _accentPrimary.withValues(alpha: 0.07),
+            color: const Color(0xFFF0F7FF),
             borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: _accentPrimary.withValues(alpha: 0.2)),
+            border: Border.all(color: _blue.withValues(alpha: 0.2)),
           ),
           child: Row(children: [
-            Icon(Icons.lock_rounded, color: _accentPrimary, size: 15),
+            const Icon(Icons.lock_rounded, color: _blue, size: 15),
             const SizedBox(width: 8),
-            Expanded(child: Text(
+            const Expanded(child: Text(
               'Secure payment via Razorpay — UPI, Cards, Netbanking accepted',
-              style: TextStyle(fontSize: 12, color: _accentPrimary, fontWeight: FontWeight.w500),
+              style: TextStyle(fontSize: 12, color: JT.primary, fontWeight: FontWeight.w500),
             )),
           ]),
         ),
@@ -1336,7 +1359,8 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
 
   Widget _payBtn(String method, IconData icon, String label) {
     final selected = _paymentMethod == method;
-    final accent = _accentSecondary;
+    const blue = Color(0xFF2D8CFF);
+    const lavender = Color(0xFF8B5CF6);
     
     return GestureDetector(
       onTap: () {
@@ -1347,27 +1371,27 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         duration: const Duration(milliseconds: 250),
         padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
         decoration: BoxDecoration(
-          color: selected ? accent.withValues(alpha: 0.08) : Colors.white,
+          color: selected ? lavender.withOpacity(0.08) : Colors.white,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
-            color: selected ? accent : Colors.grey.shade200,
+            color: selected ? lavender : Colors.grey.shade200,
             width: selected ? 2 : 1.5,
           ),
           boxShadow: selected ? [
-            BoxShadow(color: accent.withValues(alpha: 0.15), blurRadius: 10, offset: const Offset(0, 4))
+            BoxShadow(color: lavender.withOpacity(0.15), blurRadius: 10, offset: const Offset(0, 4))
           ] : [],
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 22, color: selected ? accent : Colors.grey.shade500),
+            Icon(icon, size: 22, color: selected ? lavender : Colors.grey.shade500),
             const SizedBox(height: 6),
             Text(
               label,
               style: GoogleFonts.outfit(
                 fontSize: 13,
                 fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                color: selected ? accent : Colors.grey.shade600,
+                color: selected ? lavender : Colors.grey.shade600,
               ),
             ),
           ],
@@ -1409,7 +1433,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     return hour >= 22 || hour < 6;
   }
 
-  Widget buildNightChargeIndicator() {
+  Widget _buildNightChargeIndicator() {
     if (!_isNightTime()) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -1455,7 +1479,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     return null;
   }
 
-  Widget vehicleTagBadge(String tag) {
+  Widget _vehicleTagBadge(String tag) {
     Color color;
     IconData icon;
     switch (tag) {
@@ -1582,7 +1606,14 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         final name = f['vehicleCategoryName']?.toString() ?? f['vehicleName']?.toString() ?? f['name']?.toString() ?? 'Bike';
         final fareVal = (f['estimatedFare'] ?? 0).toDouble();
         final time = f['estimatedTime']?.toString() ?? '~5 min';
-        final displayFare = isSelected ? (fareVal - _promoDiscount).clamp(0.0, double.infinity) : fareVal;
+        final autoDiscount =
+            double.tryParse(f['autoDiscountAmount']?.toString() ?? '0') ?? 0;
+        final selectedCouponDiscount = isSelected ? _promoDiscount : 0.0;
+        final selectedAutoDiscount =
+            isSelected && _appliedPromo == null ? autoDiscount : 0.0;
+        final displayFare =
+            (fareVal - selectedCouponDiscount - selectedAutoDiscount)
+                .clamp(0.0, double.infinity);
         
         final etaMins = _etaMins(time);
         final dropTime = _dropTimeStr(time);
@@ -1601,25 +1632,22 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
             if (!isActive) return;
             HapticFeedback.selectionClick();
             setState(() => _selectedFareIndex = i);
-            debugPrint('[BOOKING][vehicle_select] index=$i name=$name '
-                'id=${f['vehicleCategoryId'] ?? f['id'] ?? 'missing'} '
-                'type=${f['vehicleType'] ?? f['type'] ?? 'missing'}');
           },
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 300),
             margin: const EdgeInsets.only(bottom: 12),
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: isSelected ? selColor.withValues(alpha: 0.06) : Colors.white,
+              color: isSelected ? selColor.withOpacity(0.06) : Colors.white,
               borderRadius: BorderRadius.circular(20),
               border: Border.all(
-                color: isSelected ? selColor.withValues(alpha: 0.3) : Colors.grey.shade100,
+                color: isSelected ? selColor.withOpacity(0.3) : Colors.grey.shade100,
                 width: isSelected ? 2 : 1,
               ),
               boxShadow: isSelected ? [
-                BoxShadow(color: selColor.withValues(alpha: 0.08), blurRadius: 12, offset: const Offset(0, 4))
+                BoxShadow(color: selColor.withOpacity(0.08), blurRadius: 12, offset: const Offset(0, 4))
               ] : [
-                BoxShadow(color: Colors.black.withValues(alpha: 0.02), blurRadius: 5, offset: const Offset(0, 2))
+                BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 5, offset: const Offset(0, 2))
               ],
             ),
             child: Opacity(
@@ -1631,7 +1659,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
                     width: 70, height: 70,
                     padding: const EdgeInsets.all(4),
                     decoration: BoxDecoration(
-                      color: isSelected ? selColor.withValues(alpha: 0.1) : const Color(0xFFF9FAFB),
+                      color: isSelected ? selColor.withOpacity(0.1) : const Color(0xFFF9FAFB),
                       borderRadius: BorderRadius.circular(16),
                     ),
                     child: Builder(builder: (_) {
@@ -1718,7 +1746,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     );
   }
 
-  Widget buildFareBreakdown(Map<String, dynamic> fare) {
+  Widget _buildFareBreakdown(Map<String, dynamic> fare) {
     const cardBg = Color(0xFFF8FAFF);
     const borderCol = Color(0xFFE8EFFF);
     const textMain = JT.textPrimary;
@@ -1847,6 +1875,8 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
             _fareRow('GST (5%)', '₹${gst.toStringAsFixed(0)}', textSub: textSub),
             if (_promoDiscount > 0)
               _fareRow('Promo Discount', '-₹${_promoDiscount.toInt()}', positive: true, textSub: textSub),
+            if (_promoDiscount == 0 && _autoDiscount > 0)
+              _fareRow(_autoDiscountName ?? 'Auto Discount', '-₹${_autoDiscount.toInt()}', positive: true, textSub: textSub),
             const SizedBox(height: 8),
             // Total row — bold, large, orange
             Row(children: [
@@ -1881,20 +1911,39 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     );
   }
 
-  Widget buildPromoRow() {
-    const cardBg = Color(0xFFF8FAFF);
-    const borderCol = Color(0xFFE2E8F0);
+  Widget _buildPromoRow() {
+    const cardBg = Color(0xFFF8FBFF);
+    const borderCol = Color(0xFFDCE8F8);
     const textColor = JT.textPrimary;
     if (_appliedPromo != null) {
       return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         decoration: BoxDecoration(
-          color: const Color(0xFFF0FDF4),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: const Color(0xFF86EFAC))),
+          gradient: const LinearGradient(
+            colors: [Color(0xFFF0FDF4), Color(0xFFECFDF5)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: const Color(0xFF86EFAC)),
+          boxShadow: [
+            BoxShadow(
+              color: JT.success.withValues(alpha: 0.08),
+              blurRadius: 16,
+              offset: const Offset(0, 6),
+            ),
+          ]),
         child: Row(children: [
-          const Icon(Icons.local_offer_rounded, color: Color(0xFF16A34A), size: 18),
-          const SizedBox(width: 10),
+          Container(
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.75),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(Icons.local_offer_rounded, color: Color(0xFF16A34A), size: 20),
+          ),
+          const SizedBox(width: 12),
           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text('$_appliedPromo applied!',
               style: const TextStyle(fontWeight: FontWeight.w500, color: Color(0xFF16A34A), fontSize: 13)),
@@ -1908,37 +1957,81 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
       );
     }
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
-        color: cardBg, borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: borderCol)),
+        color: cardBg, borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: borderCol),
+        boxShadow: JT.shadowXs),
       child: Column(children: [
         Row(children: [
-          const Icon(Icons.local_offer_outlined, color: _jagoPrimary, size: 18),
-          const SizedBox(width: 10),
+          Container(
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [Color(0xFFE8F2FF), Color(0xFFD7E8FF)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(Icons.local_offer_outlined, color: _jagoPrimary, size: 18),
+          ),
+          const SizedBox(width: 12),
           Expanded(
             child: TextField(
               controller: _promoCtrl,
               textCapitalization: TextCapitalization.characters,
               onChanged: _onCouponChanged,
               decoration: InputDecoration(
-                hintText: 'Promo code',
+                hintText: 'Enter coupon code',
                 border: InputBorder.none, isDense: true,
-                hintStyle: const TextStyle(fontSize: 13, color: Color(0xFFADB5BD))),
-              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, letterSpacing: 1.5, color: textColor),
+                hintStyle: const TextStyle(fontSize: 13, color: Color(0xFF94A3B8))),
+              style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, letterSpacing: 1.2, color: textColor),
             ),
           ),
+          const SizedBox(width: 10),
           GestureDetector(
             onTap: _promoLoading ? null : _applyPromo,
-            child: _promoLoading
-              ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: _jagoPrimary))
-              : const Text('APPLY', style: TextStyle(color: _jagoPrimary, fontSize: 13, fontWeight: FontWeight.w400)),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [JT.primary, JT.primaryDark],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: JT.btnShadow,
+              ),
+              child: _promoLoading
+                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                : const Text('Apply', style: TextStyle(color: Colors.white, fontSize: 12.5, fontWeight: FontWeight.w600)),
+            ),
           ),
         ]),
         if (_promoError != null)
           Padding(
-            padding: const EdgeInsets.only(bottom: 8, left: 28),
-            child: Text(_promoError!, style: const TextStyle(color: Color(0xFFDC2626), fontSize: 11))),
+            padding: const EdgeInsets.only(top: 10, left: 52, right: 6),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(_promoError!, style: const TextStyle(color: Color(0xFFDC2626), fontSize: 11.5, fontWeight: FontWeight.w500)),
+            )),
+        if (_promoError == null && _autoDiscount > 0)
+          Padding(
+            padding: const EdgeInsets.only(top: 10, left: 52, right: 6),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                '${_autoDiscountName ?? 'Auto Discount'} applied: save ₹${_autoDiscount.toInt()}',
+                style: const TextStyle(
+                  color: Color(0xFF16A34A),
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ),
       ]),
     );
   }
@@ -1991,14 +2084,14 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         decoration: isSelected
             ? BoxDecoration(
-                gradient: _accentGradient,
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF7C3AED), Color(0xFF6366F1)], 
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
                 borderRadius: BorderRadius.circular(20),
                 boxShadow: [
-                  BoxShadow(
-                    color: _accentPrimaryDark.withValues(alpha: 0.3),
-                    blurRadius: 10,
-                    offset: const Offset(0, 4),
-                  ),
+                  BoxShadow(color: const Color(0xFF7C3AED).withValues(alpha: 0.3), blurRadius: 10, offset: const Offset(0, 4)),
                 ],
               )
             : null,
@@ -2018,51 +2111,6 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
               ),
             ]
           ],
-        ),
-      ),
-    );
-  }
-
-  Widget _accentGradientButton({
-    required String label,
-    required VoidCallback onTap,
-    bool loading = false,
-    double height = 54,
-    double radius = 16,
-  }) {
-    return GestureDetector(
-      onTap: loading ? null : onTap,
-      child: Container(
-        height: height,
-        decoration: BoxDecoration(
-          gradient: _accentGradient,
-          borderRadius: BorderRadius.circular(radius),
-          boxShadow: [
-            BoxShadow(
-              color: _accentPrimaryDark.withValues(alpha: 0.28),
-              blurRadius: 14,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Center(
-          child: loading
-              ? const SizedBox(
-                  width: 22,
-                  height: 22,
-                  child: CircularProgressIndicator(
-                    color: Colors.white,
-                    strokeWidth: 2.5,
-                  ),
-                )
-              : Text(
-                  label,
-                  style: GoogleFonts.poppins(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.white,
-                  ),
-                ),
         ),
       ),
     );

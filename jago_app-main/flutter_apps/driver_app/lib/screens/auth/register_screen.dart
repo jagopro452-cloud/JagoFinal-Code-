@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
@@ -22,18 +21,18 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final PageController _pageController = PageController();
   int _currentStep = 0;
   bool _loading = false;
-  String _uploadStatusText = '';
 
   // Step 1: Basic Info
   final _nameCtrl = TextEditingController();
   final _phoneCtrl = TextEditingController();
+  final _referralCtrl = TextEditingController();
   DateTime? _dob;
   final _cityCtrl = TextEditingController();
 
-  // Step 2: Password setup
+  // Step 2: Password
   final _passwordCtrl = TextEditingController();
-  final _confirmPasswordCtrl = TextEditingController();
-  bool _accountCreated = false;
+  final _confirmCtrl = TextEditingController();
+  bool _showPassword = false;
 
   // Step 3: Driving License
   final _licenseNumCtrl = TextEditingController();
@@ -75,8 +74,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
   @override
   void dispose() {
     _pageController.dispose();
-    _nameCtrl.dispose(); _phoneCtrl.dispose(); _cityCtrl.dispose();
-    _passwordCtrl.dispose(); _confirmPasswordCtrl.dispose();
+    _nameCtrl.dispose(); _phoneCtrl.dispose(); _referralCtrl.dispose(); _cityCtrl.dispose();
+    _passwordCtrl.dispose(); _confirmCtrl.dispose();
     _licenseNumCtrl.dispose(); _vehicleBrandCtrl.dispose();
     _vehicleModelCtrl.dispose(); _vehicleColorCtrl.dispose();
     _vehicleYearCtrl.dispose(); _vehicleNumCtrl.dispose();
@@ -91,396 +90,51 @@ class _RegisterScreenState extends State<RegisterScreen> {
     ));
   }
 
-  Future<void> _createDriverAccountForOnboarding() async {
-    final phone = _phoneCtrl.text.trim();
-    final password = _passwordCtrl.text;
-    final confirmPassword = _confirmPasswordCtrl.text;
-    if (phone.length != 10) {
-      _showSnack('Enter a valid 10-digit phone number', error: true);
-      return;
-    }
-    if (password.length < 8) {
-      _showSnack('Password must be at least 8 characters', error: true);
-      return;
-    }
-    if (password != confirmPassword) {
-      _showSnack('Passwords do not match', error: true);
-      return;
-    }
-    setState(() => _loading = true);
-    final authRes = await AuthService.registerWithPassword(
-      phone,
-      password,
-      _nameCtrl.text.trim(),
-      vehicleNumber: _vehicleNumCtrl.text.trim().toUpperCase(),
-      vehicleModel: _vehicleModelCtrl.text.trim(),
-    );
-    if (!mounted) return;
-    setState(() => _loading = false);
-    if (authRes['success'] == true || authRes['token'] != null) {
-      setState(() => _accountCreated = true);
-      _showSnack('Account created. Continue onboarding.');
-      return;
-    }
-    _showSnack(authRes['message']?.toString() ?? 'Could not create account', error: true);
-  }
-
-  Widget _requiredLabel(String label, {bool required = true}) {
-    return RichText(
-      text: TextSpan(
-        style: JT.body,
-        children: [
-          TextSpan(text: label),
-          if (required)
-            const TextSpan(
-              text: ' *',
-              style: TextStyle(
-                color: JT.error,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Future<ImageSource?> _chooseImageSource(String type) async {
-    final isSelfie = type == 'selfie';
-    return showModalBottomSheet<ImageSource>(
-      context: context,
-      backgroundColor: JT.surface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (context) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const SizedBox(height: 12),
-              Container(
-                width: 42,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: JT.border,
-                  borderRadius: BorderRadius.circular(999),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                isSelfie ? 'Choose Selfie Photo' : 'Choose Document Photo',
-                style: JT.h3,
-              ),
-              const SizedBox(height: 8),
-              Text(
-                isSelfie
-                    ? 'Use camera or gallery for a clear selfie.'
-                    : 'Use camera or gallery for a clear upload.',
-                style: JT.body,
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 16),
-              ListTile(
-                leading: const Icon(Icons.camera_alt, color: JT.primary),
-                title: Text(
-                  isSelfie ? 'Take Photo' : 'Open Camera',
-                  style: JT.bodyPrimary,
-                ),
-                onTap: () => Navigator.pop(
-                  context,
-                  ImageSource.camera,
-                ),
-              ),
-              ListTile(
-                leading: const Icon(Icons.photo_library, color: JT.primary),
-                title: Text(
-                  'Choose from Gallery',
-                  style: JT.bodyPrimary,
-                ),
-                onTap: () => Navigator.pop(
-                  context,
-                  ImageSource.gallery,
-                ),
-              ),
-              const SizedBox(height: 12),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  void _assignPickedFile(String type, File file) {
-    setState(() {
-      if (type == 'dl_front') _dlFront = file;
-      if (type == 'dl_back') _dlBack = file;
-      if (type == 'rc') _rcPhoto = file;
-      if (type == 'insurance') _insurancePhoto = file;
-      if (type == 'vehicle') _vehicleFrontPhoto = file;
-      if (type == 'selfie') _selfiePhoto = file;
-    });
-  }
-
   Future<void> _pickImage(String type) async {
-    try {
-      final source = await _chooseImageSource(type);
-      if (source == null) return;
-
-      final picked = await _picker.pickImage(
-        source: source,
-        preferredCameraDevice: type == 'selfie' ? CameraDevice.front : CameraDevice.rear,
-        imageQuality: type == 'selfie' ? 55 : 62,
-        maxWidth: type == 'selfie' ? 900 : 1080,
-        maxHeight: type == 'selfie' ? 900 : 1080,
-      );
-      if (picked == null) return;
-
-      final file = File(picked.path);
-      final sizeBytes = await file.length();
-      if (sizeBytes > 5 * 1024 * 1024) {
-        _showSnack('Photo is too large. Please choose a smaller image.', error: true);
-        return;
-      }
-      _assignPickedFile(type, file);
-    } catch (e) {
-      _showSnack('Could not pick image. Please try again.', error: true);
-    }
-  }
-
-  String _friendlyUploadError(Object error) {
-    final rawMessage = error.toString().replaceFirst('Exception: ', '').trim();
-    final parts = rawMessage.split(':');
-    final hasDocPrefix = parts.length > 1;
-    final docPrefix = hasDocPrefix ? '${parts.first.trim()}: ' : '';
-    final message = rawMessage.toLowerCase();
-    if (message.contains('session expired') || message.contains('login again')) {
-      return '${docPrefix}Session expired. Please login again.';
-    }
-    if (message.contains('failed to update registration details') || message.contains('failed to update profile')) {
-      return '${docPrefix}Could not save your registration details. Please check all fields and retry.';
-    }
-    if (message.contains('full name')) return '${docPrefix}Please enter your full name correctly.';
-    if (message.contains('license number')) return '${docPrefix}Please enter your license number correctly.';
-    if (message.contains('license expiry')) return '${docPrefix}Please select a valid license expiry date.';
-    if (message.contains('vehicle type')) return '${docPrefix}Please select your vehicle type.';
-    if (message.contains('unsupported')) return '${docPrefix}Unsupported image format. Please take a fresh photo.';
-    if (message.contains('network') || message.contains('socket') || message.contains('connection')) {
-      return '${docPrefix}Network issue, please retry.';
-    }
-    if (message.contains('timeout')) return '${docPrefix}Server temporarily unavailable. Please retry.';
-    if (message.contains('face')) return '${docPrefix}Face not detected properly. Please retake your selfie.';
-    if (message.contains('upload')) return '${docPrefix}Image upload failed. Please retry.';
-    return '${docPrefix}Server temporarily unavailable. Please retry.';
-  }
-
-  Future<void> _uploadDocumentMultipart(
-    String docType,
-    File file, {
-    String? expiryDate,
-  }) async {
-    final token = await AuthService.getToken();
-    if (token == null || token.isEmpty) {
-      throw Exception('Session expired. Please login again.');
-    }
-
-    final fileName = file.path.split(Platform.pathSeparator).last;
-    final length = await file.length();
-    if (length <= 0) {
-      throw Exception('Image upload failed');
-    }
-
-    Object? lastError;
-    for (var attempt = 1; attempt <= 3; attempt++) {
-      try {
-        if (mounted) {
-          setState(() {
-            _uploadStatusText = 'Uploading ${_docLabel(docType)} ($attempt/3)...';
-          });
-        }
-
-        final request = http.MultipartRequest(
-          'POST',
-          Uri.parse(ApiConfig.uploadDocument),
-        );
-        request.headers.addAll({
-          'Authorization': 'Bearer $token',
-          'Accept': 'application/json',
-          'User-Agent': 'JAGOPro-Driver/1.0 (Android)',
-          'x-device-model': Platform.operatingSystem,
-          'x-os-version': Platform.operatingSystemVersion,
-          'x-network-type': 'mobile_app',
-        });
-        request.fields['docType'] = docType;
-        if (expiryDate != null && expiryDate.isNotEmpty) {
-          request.fields['expiryDate'] = expiryDate;
-        }
-        request.files.add(await http.MultipartFile.fromPath(
-          'document',
-          file.path,
-          filename: fileName,
-        ));
-
-        final streamed = await request.send().timeout(const Duration(seconds: 60));
-        final response = await http.Response.fromStream(streamed);
-        if (response.statusCode == 200) {
-          return;
-        }
-
-        String message = 'Image upload failed';
-        try {
-          if ((response.headers['content-type'] ?? '').contains('application/json')) {
-            final decoded = jsonDecode(response.body);
-            if (decoded is Map && decoded['message'] != null) {
-              message = decoded['message'].toString();
-            }
-          }
-        } catch (_) {}
-        if (docType == 'selfie' && message.toLowerCase().contains('image upload failed')) {
-          throw Exception('Selfie upload failed. Please retake your selfie and retry.');
-        }
-        throw Exception(message);
-      } on SocketException catch (e) {
-        lastError = e;
-      } on HttpException catch (e) {
-        lastError = e;
-      } on HandshakeException catch (e) {
-        lastError = e;
-      } on TimeoutException catch (e) {
-        lastError = e;
-      } catch (e) {
-        lastError = e;
-        final lower = e.toString().toLowerCase();
-        if (!(lower.contains('network') || lower.contains('timeout') || lower.contains('temporarily unavailable'))) {
-          rethrow;
-        }
-      }
-
-      if (attempt < 3) {
-        await Future.delayed(Duration(milliseconds: 500 * attempt));
-      }
-    }
-
-    throw lastError ?? Exception('Image upload failed');
-  }
-
-  Future<void> _uploadDocumentBase64Fallback(
-    String docType,
-    File file, {
-    String? expiryDate,
-  }) async {
-    final token = await AuthService.getToken();
-    if (token == null || token.isEmpty) {
-      throw Exception('Session expired. Please login again.');
-    }
-
-    if (mounted) {
+    final picked = await _picker.pickImage(
+      source: type == 'selfie' ? ImageSource.camera : ImageSource.gallery,
+      preferredCameraDevice: type == 'selfie' ? CameraDevice.front : CameraDevice.rear,
+      imageQuality: 70,
+    );
+    if (picked != null) {
       setState(() {
-        _uploadStatusText = 'Retrying ${_docLabel(docType)} upload...';
+        if (type == 'dl_front') _dlFront = File(picked.path);
+        if (type == 'dl_back') _dlBack = File(picked.path);
+        if (type == 'rc') _rcPhoto = File(picked.path);
+        if (type == 'insurance') _insurancePhoto = File(picked.path);
+        if (type == 'vehicle') _vehicleFrontPhoto = File(picked.path);
+        if (type == 'selfie') _selfiePhoto = File(picked.path);
       });
     }
-
-    final bytes = await file.readAsBytes();
-    if (bytes.isEmpty) {
-      throw Exception('Image upload failed');
-    }
-    if (bytes.length > 8 * 1024 * 1024) {
-      throw Exception('Image is too large. Please retake a smaller photo.');
-    }
-
-    final mimeType = _mimeTypeForFile(file.path);
-    final encoded = base64Encode(bytes);
-    final payload = 'data:$mimeType;base64,$encoded';
-
-    final response = await http.post(
-      Uri.parse('${ApiConfig.baseUrl}/api/app/driver/upload-document-base64'),
-      headers: {
-        'Authorization': 'Bearer $token',
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'User-Agent': 'JAGOPro-Driver/1.0 (Android)',
-        'x-device-model': Platform.operatingSystem,
-        'x-os-version': Platform.operatingSystemVersion,
-        'x-network-type': 'mobile_app',
-      },
-      body: jsonEncode({
-        'docType': docType,
-        'imageData': payload,
-        if (expiryDate != null && expiryDate.isNotEmpty) 'expiryDate': expiryDate,
-      }),
-    ).timeout(const Duration(seconds: 60));
-
-    if (response.statusCode == 200) {
-      return;
-    }
-
-    String message = 'Image upload failed';
-    try {
-      if ((response.headers['content-type'] ?? '').contains('application/json')) {
-        final decoded = jsonDecode(response.body);
-        if (decoded is Map && decoded['message'] != null) {
-          message = decoded['message'].toString();
-        }
-      }
-    } catch (_) {}
-    throw Exception('${_docLabel(docType)}: $message');
   }
 
-  String _mimeTypeForFile(String path) {
-    final lower = path.toLowerCase();
-    if (lower.endsWith('.png')) return 'image/png';
-    if (lower.endsWith('.webp')) return 'image/webp';
-    if (lower.endsWith('.heic')) return 'image/heic';
-    if (lower.endsWith('.heif')) return 'image/heif';
-    return 'image/jpeg';
-  }
-
-  String _docLabel(String docType) {
-    switch (docType) {
-      case 'dl_front':
-        return 'DL Front';
-      case 'dl_back':
-        return 'DL Back';
-      case 'rc':
-        return 'RC';
-      case 'insurance':
-        return 'Insurance';
-      case 'vehicle_photo':
-        return 'Vehicle Front Photo';
-      case 'selfie':
-        return 'Selfie';
-      default:
-        return docType;
-    }
+  Future<String?> _fileToBase64(File? file) async {
+    if (file == null) return null;
+    return base64Encode(await file.readAsBytes());
   }
 
   Future<void> _submit() async {
     setState(() => _loading = true);
     try {
-      // Ensure driver has a password-based backend session before submit.
+      // Ensure driver has an account and token. If not logged in, register first.
       String? token = await AuthService.getToken();
       if (token == null || token.isEmpty) {
         final phone = _phoneCtrl.text.trim();
+        final password = _passwordCtrl.text;
+        final name = _nameCtrl.text.trim();
         if (phone.length != 10) throw Exception('Enter a valid 10-digit phone number');
-        if (mounted) {
-          setState(() {
-            _uploadStatusText = 'Creating your driver account...';
-          });
-        }
-        final authRes = await AuthService.registerWithPassword(
+        if (password.length < 6) throw Exception('Password must be at least 6 characters');
+        if (name.length < 2) throw Exception('Please enter your full name');
+        final regRes = await AuthService.registerWithPassword(
           phone,
-          _passwordCtrl.text,
-          _nameCtrl.text.trim(),
-          vehicleNumber: _vehicleNumCtrl.text.trim().toUpperCase(),
-          vehicleModel: _vehicleModelCtrl.text.trim(),
+          password,
+          name,
+          referralCode: _referralCtrl.text.trim(),
         );
-        if (!(authRes['success'] == true || authRes['token'] != null)) {
-          throw Exception(authRes['message'] ?? 'Could not create driver session.');
+        if (regRes['success'] != true) {
+          throw Exception(regRes['message'] ?? 'Registration failed. Try again.');
         }
-        _accountCreated = true;
         token = await AuthService.getToken();
-        if (token == null || token.isEmpty) {
-          throw Exception('Session expired. Please login again.');
-        }
       }
 
       final authHeaders = await AuthService.getHeaders();
@@ -494,6 +148,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
           'name': _nameCtrl.text.trim(),
           'dob': _dob?.toIso8601String(),
           'city': _cityCtrl.text.trim(),
+          'password': _passwordCtrl.text,
           'licenseNumber': _licenseNumCtrl.text.trim(),
           'licenseExpiry': _licenseExpiry?.toIso8601String(),
           'vehicleBrand': _vehicleBrandCtrl.text.trim(),
@@ -505,9 +160,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         }),
       );
 
-      if (profileRes.statusCode == 401 || profileRes.statusCode == 403) {
-        throw Exception('Session expired. Please login again.');
-      } else if (profileRes.statusCode != 200) {
+      if (profileRes.statusCode != 200) {
         String msg = 'Failed to update profile';
         try {
           if ((profileRes.headers['content-type'] ?? '').contains('application/json')) {
@@ -530,50 +183,21 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
       for (var entry in docs.entries) {
         if (entry.value != null) {
-          final docLabel = _docLabel(entry.key);
-          if (mounted) {
-            setState(() {
-              _uploadStatusText = 'Preparing $docLabel...';
-            });
-          }
-          final expiryDate = (entry.key == 'dl_front' || entry.key == 'dl_back') && _licenseExpiry != null
-              ? DateFormat('yyyy-MM-dd').format(_licenseExpiry!)
-              : null;
-          try {
-            await _uploadDocumentMultipart(
-              entry.key,
-              entry.value!,
-              expiryDate: expiryDate,
-            );
-          } catch (e) {
-            final lower = e.toString().toLowerCase();
-            final canFallback = lower.contains('temporarily unavailable') ||
-                lower.contains('timeout') ||
-                lower.contains('network') ||
-                lower.contains('upload failed');
-            if (!canFallback) {
-              throw Exception('$docLabel upload failed. ${_friendlyUploadError(e)}');
-            }
-            await _uploadDocumentBase64Fallback(
-              entry.key,
-              entry.value!,
-              expiryDate: expiryDate,
-            );
-          }
+          final b64 = await _fileToBase64(entry.value);
+          await http.post(
+            Uri.parse('${ApiConfig.baseUrl}/api/app/driver/upload-document-base64'),
+            headers: headers,
+            body: jsonEncode({'docType': entry.key, 'imageData': b64}),
+          );
         }
       }
 
       if (!mounted) return;
       Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => const PendingVerificationScreen()), (_) => false);
     } catch (e) {
-      _showSnack(_friendlyUploadError(e), error: true);
+      _showSnack(e.toString(), error: true);
     } finally {
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _uploadStatusText = '';
-        });
-      }
+      if (mounted) setState(() => _loading = false);
     }
   }
 
@@ -637,18 +261,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
           Expanded(
             flex: 2,
             child: ElevatedButton(
-              onPressed: _loading ? null : () async {
+              onPressed: _loading ? null : () {
                 if (_currentStep == 0) {
                   if (_nameCtrl.text.trim().length < 2) { _showSnack('Enter your full name', error: true); return; }
                   if (_phoneCtrl.text.trim().length != 10) { _showSnack('Enter a valid 10-digit phone number', error: true); return; }
                 }
                 if (_currentStep == 1) {
-                  if (_passwordCtrl.text.length < 8) { _showSnack('Set a password with at least 8 characters', error: true); return; }
-                  if (_passwordCtrl.text != _confirmPasswordCtrl.text) { _showSnack('Passwords do not match', error: true); return; }
-                  if (!_accountCreated) {
-                    await _createDriverAccountForOnboarding();
-                    if (!_accountCreated) return;
-                  }
+                  if (_passwordCtrl.text.length < 6) { _showSnack('Password must be at least 6 characters', error: true); return; }
+                  if (_passwordCtrl.text != _confirmCtrl.text) { _showSnack('Passwords do not match', error: true); return; }
                 }
                 if (_currentStep == 2) {
                   if (_licenseNumCtrl.text.trim().isEmpty) { _showSnack('Enter your license number', error: true); return; }
@@ -698,6 +318,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
       const SizedBox(height: 16),
       _phoneInput(),
       const SizedBox(height: 16),
+      _input('Referral Code (Optional)', _referralCtrl, Icons.card_giftcard),
+      const SizedBox(height: 16),
       _datePicker('Date of Birth', _dob, (d) => setState(() => _dob = d)),
       const SizedBox(height: 16),
       _input('City', _cityCtrl, Icons.location_city),
@@ -705,19 +327,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   Widget _buildStep2() {
-    return _stepContainer('Password Setup', 'Create a secure driver account before document upload', [
-      Text('Mobile: +91 ${_phoneCtrl.text.trim()}', style: JT.body),
+    return _stepContainer('Security', 'Set a strong password', [
+      _input('Password', _passwordCtrl, Icons.lock, obscure: !_showPassword, suffix: IconButton(icon: Icon(_showPassword ? Icons.visibility : Icons.visibility_off, color: JT.iconInactive), onPressed: () => setState(() => _showPassword = !_showPassword))),
       const SizedBox(height: 16),
-      _input('Password', _passwordCtrl, Icons.lock, obscure: true, required: true),
-      const SizedBox(height: 16),
-      _input('Confirm Password', _confirmPasswordCtrl, Icons.lock_outline, obscure: true, required: true),
-      const SizedBox(height: 12),
-      Text(
-        _accountCreated
-            ? 'Account created. Continue onboarding and submit documents for admin approval.'
-            : 'Password must be at least 8 characters. OTP/Firebase verification is not used.',
-        style: JT.body.copyWith(color: _accountCreated ? JT.success : JT.textSecondary),
-      ),
+      _input('Confirm Password', _confirmCtrl, Icons.lock, obscure: true),
     ]);
   }
 
@@ -747,21 +360,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       const SizedBox(height: 16),
       _input('Vehicle Number', _vehicleNumCtrl, Icons.numbers),
       const SizedBox(height: 16),
-      _dropdown('Vehicle Type', _vehicleType, [
-        'bike',
-        'auto',
-        'car',
-        'mini',
-        'sedan',
-        'suv',
-        'xl',
-        'bike_parcel',
-        'auto_parcel',
-        'tata_ace',
-        'pickup_truck',
-        'bolero_cargo',
-        'tempo_407',
-      ], (v) => setState(() => _vehicleType = v!)),
+      _dropdown('Vehicle Type', _vehicleType, ['bike', 'auto', 'car', 'mini', 'sedan', 'suv', 'xl'], (v) => setState(() => _vehicleType = v!)),
     ]);
   }
 
@@ -799,31 +398,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
       ),
       const SizedBox(height: 24),
       Text(
-        'Use camera or gallery. Make sure your face is clearly visible without glasses or hats.',
+        'Make sure your face is clearly visible without glasses or hats.',
         textAlign: TextAlign.center,
         style: JT.body,
       ),
-      if (_loading && _uploadStatusText.isNotEmpty) ...[
-        const SizedBox(height: 16),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const SizedBox(
-              width: 18,
-              height: 18,
-              child: CircularProgressIndicator(strokeWidth: 2, color: JT.primary),
-            ),
-            const SizedBox(width: 10),
-            Flexible(
-              child: Text(
-                _uploadStatusText,
-                textAlign: TextAlign.center,
-                style: JT.body.copyWith(color: JT.primary),
-              ),
-            ),
-          ],
-        ),
-      ],
     ]);
   }
 
@@ -855,7 +433,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
           inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(10)],
           style: JT.bodyPrimary,
           decoration: InputDecoration(
-            label: _requiredLabel('Phone Number'),
+            labelText: 'Phone Number',
+            labelStyle: JT.body,
             prefixIcon: const Icon(Icons.phone, color: JT.primary),
             filled: true,
             fillColor: JT.surfaceAlt,
@@ -873,12 +452,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
     );
   }
 
-  Widget _input(String label, TextEditingController ctrl, IconData icon, {bool readOnly = false, bool obscure = false, Widget? suffix, TextInputType keyboard = TextInputType.text, bool required = true}) {
+  Widget _input(String label, TextEditingController ctrl, IconData icon, {bool readOnly = false, bool obscure = false, Widget? suffix, TextInputType keyboard = TextInputType.text}) {
     return TextField(
       controller: ctrl, readOnly: readOnly, obscureText: obscure, keyboardType: keyboard,
       style: JT.bodyPrimary,
       decoration: InputDecoration(
-        label: _requiredLabel(label, required: required),
+        labelText: label,
+        labelStyle: JT.body,
         prefixIcon: Icon(icon, color: JT.primary),
         suffixIcon: suffix,
         filled: true,
@@ -890,7 +470,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     );
   }
 
-  Widget _datePicker(String label, DateTime? value, Function(DateTime) onPick, {bool required = true}) {
+  Widget _datePicker(String label, DateTime? value, Function(DateTime) onPick) {
     // Determine date range based on label
     bool isExpiry = label.toLowerCase().contains('expiry');
     bool isDOB = label.toLowerCase().contains('birth');
@@ -923,7 +503,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         side: BorderSide(color: JT.border),
       ),
       leading: const Icon(Icons.calendar_month, color: JT.primary),
-      title: _requiredLabel(label, required: required),
+      title: Text(label, style: JT.caption),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -992,7 +572,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     return TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: const Color(0xFF059669));
   }
 
-  Widget _imageTile(String label, File? file, VoidCallback onTap, {bool required = true}) {
+  Widget _imageTile(String label, File? file, VoidCallback onTap) {
     return ListTile(
       tileColor: JT.surfaceAlt,
       shape: RoundedRectangleBorder(
@@ -1000,7 +580,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         side: BorderSide(color: JT.border),
       ),
       leading: const Icon(Icons.image, color: JT.primary),
-      title: _requiredLabel(label, required: required),
+      title: Text(label, style: JT.bodyPrimary),
       trailing: file != null
           ? Icon(Icons.check_circle, color: JT.success)
           : Text('Upload', style: JT.body.copyWith(color: JT.primary)),
@@ -1008,35 +588,26 @@ class _RegisterScreenState extends State<RegisterScreen> {
     );
   }
 
-  Widget _dropdown(String label, String value, List<String> options, Function(String?) onChange, {bool required = true}) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(left: 4, bottom: 8),
-          child: _requiredLabel(label, required: required),
+  Widget _dropdown(String label, String value, List<String> options, Function(String?) onChange) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: JT.surfaceAlt,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: JT.border),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: value,
+          isExpanded: true,
+          dropdownColor: JT.surface,
+          items: options.map((s) => DropdownMenuItem(
+            value: s,
+            child: Text(s.toUpperCase(), style: JT.bodyPrimary),
+          )).toList(),
+          onChanged: onChange,
         ),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          decoration: BoxDecoration(
-            color: JT.surfaceAlt,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: JT.border),
-          ),
-          child: DropdownButtonHideUnderline(
-            child: DropdownButton<String>(
-              value: value,
-              isExpanded: true,
-              dropdownColor: JT.surface,
-              items: options.map((s) => DropdownMenuItem(
-                value: s,
-                child: Text(s.toUpperCase(), style: JT.bodyPrimary),
-              )).toList(),
-              onChanged: onChange,
-            ),
-          ),
-        ),
-      ],
+      ),
     );
   }
 }

@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'auth_service.dart';
 
 class SocketService {
   static final SocketService _instance = SocketService._internal();
@@ -12,9 +11,6 @@ class SocketService {
   IO.Socket? _socket;
   bool _isConnected = false;
   String? _activeTripId; // stored so we can re-join trip room after server restart
-  String? _activeParcelId;
-  String? _lastBaseUrl;
-  Timer? _heartbeatTimer;
 
   final _driverAssignedController = StreamController<Map<String, dynamic>>.broadcast();
   final _driverLocationController = StreamController<Map<String, dynamic>>.broadcast();
@@ -26,18 +22,13 @@ class SocketService {
   final _noDriversController = StreamController<Map<String, dynamic>>.broadcast();
   final _tripSearchingController = StreamController<Map<String, dynamic>>.broadcast();
   final _paymentPendingController = StreamController<Map<String, dynamic>>.broadcast();
-  final _parcelStatusController = StreamController<Map<String, dynamic>>.broadcast();
-  final _parcelLocationController = StreamController<Map<String, dynamic>>.broadcast();
-  final _poolMatchedController = StreamController<Map<String, dynamic>>.broadcast();
-  final _poolSeatUpdateController = StreamController<Map<String, dynamic>>.broadcast();
-  final _poolStatusController = StreamController<Map<String, dynamic>>.broadcast();
-  final _configUpdatedController = StreamController<Map<String, dynamic>>.broadcast();
   final _callIncomingController = StreamController<Map<String, dynamic>>.broadcast();
   final _callOfferController = StreamController<Map<String, dynamic>>.broadcast();
   final _callAnswerController = StreamController<Map<String, dynamic>>.broadcast();
   final _callIceController = StreamController<Map<String, dynamic>>.broadcast();
   final _callEndedController = StreamController<Map<String, dynamic>>.broadcast();
   final _callRejectedController = StreamController<Map<String, dynamic>>.broadcast();
+  final _callErrorController = StreamController<Map<String, dynamic>>.broadcast();
 
   Stream<Map<String, dynamic>> get onDriverAssigned => _driverAssignedController.stream;
   Stream<Map<String, dynamic>> get onDriverLocation => _driverLocationController.stream;
@@ -49,22 +40,16 @@ class SocketService {
   Stream<Map<String, dynamic>> get onNoDrivers => _noDriversController.stream;
   Stream<Map<String, dynamic>> get onTripSearching => _tripSearchingController.stream;
   Stream<Map<String, dynamic>> get onPaymentPending => _paymentPendingController.stream;
-  Stream<Map<String, dynamic>> get onParcelStatus => _parcelStatusController.stream;
-  Stream<Map<String, dynamic>> get onParcelLocation => _parcelLocationController.stream;
-  Stream<Map<String, dynamic>> get onPoolMatched => _poolMatchedController.stream;
-  Stream<Map<String, dynamic>> get onPoolSeatUpdate => _poolSeatUpdateController.stream;
-  Stream<Map<String, dynamic>> get onPoolStatus => _poolStatusController.stream;
-  Stream<Map<String, dynamic>> get onConfigUpdated => _configUpdatedController.stream;
   Stream<Map<String, dynamic>> get onCallIncoming => _callIncomingController.stream;
   Stream<Map<String, dynamic>> get onCallOffer => _callOfferController.stream;
   Stream<Map<String, dynamic>> get onCallAnswer => _callAnswerController.stream;
   Stream<Map<String, dynamic>> get onCallIce => _callIceController.stream;
   Stream<Map<String, dynamic>> get onCallEnded => _callEndedController.stream;
   Stream<Map<String, dynamic>> get onCallRejected => _callRejectedController.stream;
+  Stream<Map<String, dynamic>> get onCallError => _callErrorController.stream;
   bool get isConnected => _isConnected;
 
   Future<void> connect(String baseUrl) async {
-    _lastBaseUrl = baseUrl;
     // If already connected, no need to create a new socket — but caller may
     // still call trackTrip() after this, which will work because _isConnected=true.
     if (_socket?.connected == true) return;
@@ -108,13 +93,9 @@ class SocketService {
     _socket!.on('connect', (_) {
       _isConnected = true;
       _connectedController.add(true);
-      _startHeartbeat();
       // Re-join trip room on every connect (first connect + reconnect after restart)
       if (_activeTripId != null) {
         _socket!.emit('customer:track_trip', {'tripId': _activeTripId});
-      }
-      if (_activeParcelId != null) {
-        _socket!.emit('customer:track_parcel', {'orderId': _activeParcelId});
       }
     });
 
@@ -123,28 +104,16 @@ class SocketService {
       if (_activeTripId != null) {
         _socket!.emit('customer:track_trip', {'tripId': _activeTripId});
       }
-      if (_activeParcelId != null) {
-        _socket!.emit('customer:track_parcel', {'orderId': _activeParcelId});
-      }
     });
 
     _socket!.on('disconnect', (_) {
       _isConnected = false;
       _connectedController.add(false);
-      _heartbeatTimer?.cancel();
     });
 
-    _socket!.on('connect_error', (err) async {
+    _socket!.on('connect_error', (err) {
       _isConnected = false;
       _connectedController.add(false);
-      final text = err?.toString().toLowerCase() ?? '';
-      if (text.contains('unauthor')) {
-        final refreshed = await AuthService.tryRefreshSession();
-        if (refreshed && _lastBaseUrl != null) {
-          disconnect();
-          await connect(_lastBaseUrl!);
-        }
-      }
     });
 
     _socket!.on('error', (err) {
@@ -153,17 +122,12 @@ class SocketService {
       print('[SOCKET] Error: $err');
     });
 
-    _socket!.on('auth:error', (data) async {
+    _socket!.on('auth:error', (data) {
       print('[SOCKET] Auth error: $data');
+      // If we get an auth error, we might need to refresh the token or re-login.
+      // For now, let's just push a disconnected state.
       _isConnected = false;
       _connectedController.add(false);
-      final refreshed = await AuthService.tryRefreshSession();
-      if (refreshed && _lastBaseUrl != null) {
-        disconnect();
-        await connect(_lastBaseUrl!);
-        return;
-      }
-      await AuthService.handle401(source: 'customer_socket');
     });
 
     // Driver assigned to my trip (socket acceptance path)
@@ -217,6 +181,7 @@ class SocketService {
     _socket!.on('trip:completed', (data) {
       if (data == null) return;
       try {
+        _activeTripId = null;
         final payload = Map<String, dynamic>.from(data);
         _tripStatusController.add({
           'tripId': payload['tripId'],
@@ -235,6 +200,7 @@ class SocketService {
 
     // Trip cancelled by driver
     _socket!.on('trip:cancelled', (data) {
+      _activeTripId = null;
       _tripCancelledController.add(Map<String, dynamic>.from(data));
     });
 
@@ -250,17 +216,11 @@ class SocketService {
 
     // No drivers found — trip auto-cancelled
     _socket!.on('trip:no_drivers', (data) {
+      _activeTripId = null;
       _noDriversController.add(Map<String, dynamic>.from(data));
       // Also push as cancelled so tracking screen updates
       _tripCancelledController.add({...Map<String, dynamic>.from(data), 'reason': 'no_drivers'});
     });
-
-    _socket!.on('config:updated', (data) {
-      if (data == null) return;
-      _configUpdatedController.add(Map<String, dynamic>.from(data));
-    });
-
-    _socket!.on('client:heartbeat_ack', (_) {});
 
     // Trip re-searching after driver rejected
     _socket!.on('trip:searching', (data) {
@@ -269,6 +229,7 @@ class SocketService {
 
     // Trip timeout — server gave up finding driver
     _socket!.on('trip:timeout', (data) {
+      _activeTripId = null;
       _noDriversController.add(Map<String, dynamic>.from(data));
       _tripCancelledController.add({...Map<String, dynamic>.from(data), 'reason': 'timeout'});
     });
@@ -276,81 +237,6 @@ class SocketService {
     // Payment not yet verified — trip held at payment_pending
     _socket!.on('trip:payment_pending', (data) {
       _paymentPendingController.add(Map<String, dynamic>.from(data));
-    });
-
-    _socket!.on('parcel:driver_assigned', (data) {
-      final payload = Map<String, dynamic>.from(data);
-      payload['status'] = 'driver_assigned';
-      _parcelStatusController.add(payload);
-    });
-
-    _socket!.on('parcel:in_transit', (data) {
-      final payload = Map<String, dynamic>.from(data);
-      payload['status'] = 'in_transit';
-      _parcelStatusController.add(payload);
-    });
-
-    _socket!.on('parcel:completed', (data) {
-      final payload = Map<String, dynamic>.from(data);
-      payload['status'] = 'completed';
-      _parcelStatusController.add(payload);
-    });
-
-    _socket!.on('parcel:cancelled', (data) {
-      final payload = Map<String, dynamic>.from(data);
-      payload['status'] = 'cancelled';
-      _parcelStatusController.add(payload);
-    });
-
-    _socket!.on('parcel:driver_location', (data) {
-      _parcelLocationController.add(Map<String, dynamic>.from(data));
-    });
-
-    _socket!.on('pool:matched', (data) {
-      _poolMatchedController.add(Map<String, dynamic>.from(data));
-      _poolStatusController.add({
-        ...Map<String, dynamic>.from(data),
-        'status': 'matched',
-      });
-    });
-
-    _socket!.on('pool:seat_update', (data) {
-      _poolSeatUpdateController.add(Map<String, dynamic>.from(data));
-    });
-
-    _socket!.on('pool:driver_location', (data) {
-      _poolStatusController.add({
-        ...Map<String, dynamic>.from(data),
-        'status': 'driver_location',
-      });
-    });
-
-    _socket!.on('pool:picked_up', (data) {
-      _poolStatusController.add({
-        ...Map<String, dynamic>.from(data),
-        'status': 'picked_up',
-      });
-    });
-
-    _socket!.on('pool:dropped', (data) {
-      _poolStatusController.add({
-        ...Map<String, dynamic>.from(data),
-        'status': 'dropped',
-      });
-    });
-
-    _socket!.on('pool:cancelled', (data) {
-      _poolStatusController.add({
-        ...Map<String, dynamic>.from(data),
-        'status': 'cancelled',
-      });
-    });
-
-    _socket!.on('pool:search_timeout', (data) {
-      _poolStatusController.add({
-        ...Map<String, dynamic>.from(data),
-        'status': 'search_timeout',
-      });
     });
 
     // ── WebRTC Call Signaling ──────────────────────────────────
@@ -372,6 +258,9 @@ class SocketService {
     _socket!.on('call:rejected', (data) {
       _callRejectedController.add(Map<String, dynamic>.from(data));
     });
+    _socket!.on('call:error', (data) {
+      _callErrorController.add(Map<String, dynamic>.from(data));
+    });
 
     _socket!.connect();
   }
@@ -392,35 +281,6 @@ class SocketService {
       _socket!.emit('customer:leave_trip', {'tripId': tripId});
     }
     _activeTripId = null;
-  }
-
-  void trackParcel(String orderId) {
-    _activeParcelId = orderId;
-    if (_socket != null && (_isConnected || _socket!.connected)) {
-      _socket!.emit('customer:track_parcel', {'orderId': orderId});
-    }
-  }
-
-  void _startHeartbeat() {
-    _heartbeatTimer?.cancel();
-    _heartbeatTimer = Timer.periodic(const Duration(seconds: 20), (_) {
-      if (_socket == null || !_socket!.connected) return;
-      _socket!.emit('client:heartbeat', {
-        'userType': 'customer',
-        if (_activeTripId != null) 'tripId': _activeTripId,
-        if (_activeParcelId != null) 'orderId': _activeParcelId,
-        'ts': DateTime.now().millisecondsSinceEpoch,
-      });
-    });
-  }
-
-  void stopTrackingParcel(String orderId) {
-    if (_socket != null && _socket!.connected) {
-      _socket!.emit('customer:leave_parcel', {'orderId': orderId});
-    }
-    if (_activeParcelId == orderId) {
-      _activeParcelId = null;
-    }
   }
 
   // Cancel a trip
@@ -478,8 +338,6 @@ class SocketService {
   }
 
   void disconnect() {
-    _heartbeatTimer?.cancel();
-    _heartbeatTimer = null;
     _socket?.disconnect();
     _socket = null;
     _isConnected = false;
@@ -497,17 +355,12 @@ class SocketService {
     _noDriversController.close();
     _tripSearchingController.close();
     _paymentPendingController.close();
-    _parcelStatusController.close();
-    _parcelLocationController.close();
-    _poolMatchedController.close();
-    _poolSeatUpdateController.close();
-    _poolStatusController.close();
-    _configUpdatedController.close();
     _callIncomingController.close();
     _callOfferController.close();
     _callAnswerController.close();
     _callIceController.close();
     _callEndedController.close();
     _callRejectedController.close();
+    _callErrorController.close();
   }
 }

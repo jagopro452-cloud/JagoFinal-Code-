@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import '../../config/api_config.dart';
 import '../../services/auth_service.dart';
+import '../call/call_screen.dart';
 
 class DriverSupportChatScreen extends StatefulWidget {
   const DriverSupportChatScreen({super.key});
@@ -14,6 +15,7 @@ class _DriverSupportChatScreenState extends State<DriverSupportChatScreen> {
   static const _bg = Color(0xFF0d1b2e);
   static const _card = Color(0xFF112240);
   static const _blue = Color(0xFF2563EB);
+  static const _supportTargetUserId = '__admin_support__';
 
   List<dynamic> _messages = [];
   bool _loading = true;
@@ -92,6 +94,17 @@ class _DriverSupportChatScreenState extends State<DriverSupportChatScreen> {
     return '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
   }
 
+  void _startSupportCall() {
+    final sessionId = 'support-driver-${DateTime.now().millisecondsSinceEpoch}';
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => CallScreen(
+        contactName: 'JAGO Pro Support',
+        tripId: sessionId,
+        targetUserId: _supportTargetUserId,
+      ),
+    ));
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -109,6 +122,7 @@ class _DriverSupportChatScreenState extends State<DriverSupportChatScreen> {
         ]),
         elevation: 0,
         actions: [
+          IconButton(icon: const Icon(Icons.call_outlined, color: Colors.white), onPressed: _startSupportCall),
           IconButton(icon: const Icon(Icons.refresh_outlined, color: Colors.grey), onPressed: _load),
         ],
       ),

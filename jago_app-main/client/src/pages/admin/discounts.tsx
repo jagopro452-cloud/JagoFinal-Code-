@@ -3,14 +3,95 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 
+const EMPTY_FORM = {
+  name: "",
+  discountAmount: "",
+  discountType: "percentage",
+  minOrderAmount: "",
+  maxDiscountAmount: "",
+  serviceType: "all",
+  vehicleCategoryId: "",
+  isActive: true,
+};
+
+const getDiscountTargetLabel = (discount: any) => {
+  if (discount.vehicleCategoryName) {
+    return discount.vehicleCategoryName;
+  }
+  if (discount.serviceType === "ride") return "Ride";
+  if (discount.serviceType === "parcel") return "Parcel";
+  if (discount.serviceType === "pool") return "Pool";
+  return "All Services";
+};
+
+const getDiscountValueLabel = (discount: any) => {
+  const amount = Number(discount.discountAmount || 0);
+  if ((discount.discountType || "").toLowerCase() === "amount") {
+    return `Rs. ${amount.toFixed(0)}`;
+  }
+  return `${amount}%`;
+};
+
+const getTargetBadgeStyle = (discount: any) => {
+  if (discount.vehicleCategoryName) {
+    return {
+      background: "linear-gradient(135deg, rgba(59,130,246,.12), rgba(37,99,235,.18))",
+      color: "#1d4ed8",
+      border: "1px solid rgba(37,99,235,.18)",
+    };
+  }
+  if (discount.serviceType === "parcel") {
+    return {
+      background: "linear-gradient(135deg, rgba(245,158,11,.12), rgba(217,119,6,.18))",
+      color: "#b45309",
+      border: "1px solid rgba(217,119,6,.18)",
+    };
+  }
+  if (discount.serviceType === "pool") {
+    return {
+      background: "linear-gradient(135deg, rgba(139,92,246,.12), rgba(124,58,237,.18))",
+      color: "#6d28d9",
+      border: "1px solid rgba(124,58,237,.18)",
+    };
+  }
+  if (discount.serviceType === "ride") {
+    return {
+      background: "linear-gradient(135deg, rgba(16,185,129,.12), rgba(5,150,105,.18))",
+      color: "#047857",
+      border: "1px solid rgba(5,150,105,.18)",
+    };
+  }
+  return {
+    background: "linear-gradient(135deg, rgba(15,23,42,.05), rgba(148,163,184,.12))",
+    color: "#475569",
+    border: "1px solid rgba(148,163,184,.18)",
+  };
+};
+
 export default function DiscountsPage() {
   const { toast } = useToast();
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState<any>(null);
-  const [form, setForm] = useState({ name: "", discountAmount: "", discountType: "percentage", minOrderAmount: "", maxDiscountAmount: "", isActive: true });
+  const [form, setForm] = useState({ ...EMPTY_FORM });
 
   const { data, isLoading } = useQuery<any[]>({ queryKey: ["/api/discounts"] });
+  const { data: vehicleCategories } = useQuery<any[]>({
+    queryKey: ["/api/vehicle-categories"],
+  });
   const discounts = Array.isArray(data) ? data : [];
+  const categories = Array.isArray(vehicleCategories) ? vehicleCategories : [];
+  const filteredCategories =
+    form.serviceType === "all"
+      ? categories
+      : categories.filter((category: any) => {
+          const serviceType = String(
+            category.serviceType ?? category.type ?? "",
+          ).toLowerCase();
+          if (form.serviceType === "pool") {
+            return serviceType === "pool" || serviceType === "carpool";
+          }
+          return serviceType === form.serviceType;
+        });
 
   const saveMutation = useMutation({
     mutationFn: (payload: any) =>
@@ -46,13 +127,22 @@ export default function DiscountsPage() {
 
   const openAdd = () => {
     setEditing(null);
-    setForm({ name: "", discountAmount: "", discountType: "percentage", minOrderAmount: "", maxDiscountAmount: "", isActive: true });
+    setForm({ ...EMPTY_FORM });
     setShowModal(true);
   };
 
   const openEdit = (d: any) => {
     setEditing(d);
-    setForm({ name: d.name, discountAmount: d.discountAmount, discountType: d.discountType, minOrderAmount: d.minOrderAmount || "", maxDiscountAmount: d.maxDiscountAmount || "", isActive: d.isActive });
+    setForm({
+      name: d.name,
+      discountAmount: d.discountAmount,
+      discountType: d.discountType,
+      minOrderAmount: d.minOrderAmount || "",
+      maxDiscountAmount: d.maxDiscountAmount || "",
+      serviceType: d.serviceType || "all",
+      vehicleCategoryId: d.vehicleCategoryId || "",
+      isActive: d.isActive,
+    });
     setShowModal(true);
   };
 
@@ -71,7 +161,14 @@ export default function DiscountsPage() {
       </div>
       <div className="container-fluid">
         <div className="card">
-          <div className="card-body">
+          <div
+            className="card-body"
+            style={{
+              borderRadius: 18,
+              background: "linear-gradient(180deg, rgba(255,255,255,.98), rgba(248,250,252,.96))",
+              boxShadow: "0 18px 40px rgba(15,23,42,.06)",
+            }}
+          >
             <div className="table-responsive">
               <table className="table table-borderless align-middle table-hover">
                 <thead className="table-light">
@@ -81,29 +178,79 @@ export default function DiscountsPage() {
                     <th>Discount</th>
                     <th>Type</th>
                     <th>Min Order</th>
+                    <th>Target</th>
                     <th>Status</th>
                     <th>Action</th>
                   </tr>
                 </thead>
                 <tbody>
                   {isLoading ? (
-                    <tr><td colSpan={7} className="text-center py-4"><div className="spinner-border spinner-border-sm" role="status" /></td></tr>
+                    <tr><td colSpan={8} className="text-center py-4"><div className="spinner-border spinner-border-sm" role="status" /></td></tr>
                   ) : discounts.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="text-center py-5 text-muted">
+                      <td colSpan={8} className="text-center py-5 text-muted">
                         <i className="bi bi-percent fs-2 d-block mb-2 opacity-25"></i>
                         No discounts found. Click Add Discount to create one.
                       </td>
                     </tr>
                   ) : discounts.map((d: any, idx: number) => (
-                    <tr key={d.id} data-testid={`row-discount-${d.id}`}>
+                    <tr
+                      key={d.id}
+                      data-testid={`row-discount-${d.id}`}
+                      style={{ borderBottom: "1px solid rgba(226,232,240,.7)" }}
+                    >
                       <td>{idx + 1}</td>
-                      <td className="fw-semibold">{d.name}</td>
-                      <td>{d.discountAmount}</td>
-                      <td className="text-capitalize">{d.discountType}</td>
-                      <td>{d.minOrderAmount || "—"}</td>
                       <td>
-                        <span className={`badge ${d.isActive ? "bg-success" : "bg-secondary"}`}>
+                        <div className="fw-semibold text-dark">{d.name}</div>
+                        <div style={{ fontSize: "0.74rem", color: "#64748b" }}>
+                          {d.maxDiscountAmount ? `Cap: Rs. ${Number(d.maxDiscountAmount).toFixed(0)}` : "No cap"}
+                        </div>
+                      </td>
+                      <td>
+                        <span
+                          className="fw-semibold"
+                          style={{ color: "#0f172a", fontSize: "0.95rem" }}
+                        >
+                          {getDiscountValueLabel(d)}
+                        </span>
+                      </td>
+                      <td>
+                        <span
+                          className="badge rounded-pill text-capitalize"
+                          style={{
+                            background: "rgba(37,99,235,.08)",
+                            color: "#1d4ed8",
+                            border: "1px solid rgba(37,99,235,.12)",
+                            padding: "0.45rem 0.7rem",
+                            fontWeight: 600,
+                          }}
+                        >
+                          {d.discountType}
+                        </span>
+                      </td>
+                      <td>{d.minOrderAmount ? `Rs. ${Number(d.minOrderAmount).toFixed(0)}` : "—"}</td>
+                      <td>
+                        <span
+                          className="badge rounded-pill"
+                          style={{
+                            ...getTargetBadgeStyle(d),
+                            padding: "0.48rem 0.75rem",
+                            fontWeight: 600,
+                          }}
+                        >
+                          {getDiscountTargetLabel(d)}
+                        </span>
+                      </td>
+                      <td>
+                        <span
+                          className={`badge rounded-pill ${d.isActive ? "bg-success-subtle text-success" : "bg-secondary-subtle text-secondary"}`}
+                          style={{
+                            border: d.isActive
+                              ? "1px solid rgba(22,163,74,.18)"
+                              : "1px solid rgba(100,116,139,.18)",
+                            padding: "0.48rem 0.75rem",
+                          }}
+                        >
                           {d.isActive ? "Active" : "Inactive"}
                         </span>
                       </td>
@@ -170,6 +317,38 @@ export default function DiscountsPage() {
                   <div className="col-6">
                     <label className="form-label fw-semibold">Max Discount</label>
                     <input className="form-control" type="number" min="0" value={form.maxDiscountAmount} onChange={e => setForm({ ...form, maxDiscountAmount: e.target.value })} data-testid="input-max-discount" />
+                  </div>
+                </div>
+                <div className="row g-3 mb-3">
+                  <div className="col-6">
+                    <label className="form-label fw-semibold">Service Target</label>
+                    <select
+                      className="form-select"
+                      value={form.serviceType}
+                      onChange={e => setForm({ ...form, serviceType: e.target.value, vehicleCategoryId: "" })}
+                      data-testid="select-discount-service-type"
+                    >
+                      <option value="all">All Services</option>
+                      <option value="ride">Ride</option>
+                      <option value="pool">Pool</option>
+                      <option value="parcel">Parcel</option>
+                    </select>
+                  </div>
+                  <div className="col-6">
+                    <label className="form-label fw-semibold">Vehicle Category</label>
+                    <select
+                      className="form-select"
+                      value={form.vehicleCategoryId}
+                      onChange={e => setForm({ ...form, vehicleCategoryId: e.target.value })}
+                      data-testid="select-discount-vehicle-category"
+                    >
+                      <option value="">All in selected service</option>
+                      {filteredCategories.map((category: any) => (
+                        <option key={category.id} value={category.id}>
+                          {category.name}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 </div>
               </div>

@@ -5,8 +5,6 @@ plugins {
     id "com.google.gms.google-services"
 }
 
-import groovy.json.JsonSlurper
-
 def keystoreProperties = new Properties()
 def keystorePropertiesFile = rootProject.file('key.properties')
 if (keystorePropertiesFile.exists()) {
@@ -19,30 +17,10 @@ if (localPropertiesFile.exists()) {
     localPropertiesFile.withReader('UTF-8') { reader -> localProperties.load(reader) }
 }
 
-def readFirebaseApiKey = {
-    def googleServicesFile = project.file('google-services.json')
-    if (!googleServicesFile.exists()) return ''
-    try {
-        def json = new JsonSlurper().parse(googleServicesFile)
-        return json?.client?.getAt(0)?.api_key?.getAt(0)?.current_key ?: ''
-    } catch (ignored) {
-        return ''
-    }
-}
-
-def googleMapsKey = (localProperties.getProperty('GOOGLE_MAPS_KEY')
-    ?: localProperties.getProperty('GOOGLE_MAPS_API_KEY')
-    ?: System.getenv('GOOGLE_MAPS_KEY')
-    ?: System.getenv('GOOGLE_MAPS_API_KEY')
-    ?: readFirebaseApiKey()
-    ?: '')
-
-if (!googleMapsKey?.trim()) {
-    throw new GradleException("GOOGLE_MAPS_KEY / GOOGLE_MAPS_API_KEY is required for Android Maps SDK. Refusing to build a grey-map APK.")
-}
-
-def flutterVersionCode = (localProperties.getProperty('flutter.versionCode') ?: '75').toInteger()
-def flutterVersionName = (localProperties.getProperty('flutter.versionName') ?: '1.0.75')
+def mapsApiKey =
+        (localProperties.getProperty('googleMapsApiKey')
+        ?: System.getenv('GOOGLE_MAPS_API_KEY')
+        ?: 'AIzaSyAiMVYA_ppxeT344tkcoSsjeGGMaPU26eI').trim()
 
 android {
     namespace "com.mindwhile.jago_pilot"
@@ -81,17 +59,18 @@ android {
         applicationId "com.mindwhile.jago_pilot"
         minSdkVersion 24
         targetSdkVersion 34
-        versionCode flutterVersionCode
-        versionName flutterVersionName
+        versionCode 60
+        versionName "1.0.60"
         multiDexEnabled true
-        manifestPlaceholders = [googleMapsApiKey: googleMapsKey]
+        manifestPlaceholders = [googleMapsApiKey: mapsApiKey]
     }
 
     buildTypes {
         release {
             signingConfig keystorePropertiesFile.exists() ? signingConfigs.release : signingConfigs.debug
-            minifyEnabled true
-            shrinkResources true
+            // Keep release builds stable on this workstation; R8/resource shrink is crashing the JVM.
+            minifyEnabled false
+            shrinkResources false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
         debug {

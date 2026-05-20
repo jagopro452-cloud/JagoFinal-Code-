@@ -3,7 +3,13 @@ import type { Server as HttpServer } from "http";
 import { db as rawDb } from "./db";
 import { sql as rawSql } from "drizzle-orm";
 import { notifyDriverNewRide, notifyCustomerDriverAccepted, notifyCustomerTripCompleted, notifyTripCancelled, sendFcmNotification } from "./fcm";
-import { onDriverAccepted as dispatchOnDriverAccepted, cancelDispatch as dispatchCancelTrip } from "./dispatch";
+import {
+  onDriverAccepted as dispatchOnDriverAccepted,
+  cancelDispatch as dispatchCancelTrip,
+  getCurrentOfferedTripForDriver,
+  hasActiveDispatch,
+  isDriverCurrentlyOfferedTrip,
+} from "./dispatch";
 import { getRebalancingSuggestion } from "./intelligence";
 import { emitParcelLifecycle, notifyAllReceivers, notifyReceiver } from "./parcel-advanced";
 import {
@@ -15,17 +21,34 @@ import {
   checkSpeedAnomaly,
 } from "./ai";
 import { parseEnv } from "./config/env";
-import { getMatchingDriverCategoryIds, uuidArraySql } from "./vehicle-matching";
-import { addSocketPresence, hasSocketPresence, removeSocketPresence } from "./socket-presence";
-import { enforceDriverRevenuePolicy, revenueModuleFromTripRow } from "./revenue-policy";
+import {
+  findEligibleDriversForDispatch,
+  isDriverEligibleForDispatch,
+  resolveDispatchRequirementsFromTrip,
+} from "./dispatch-eligibility";
+import {
+  appendTripStatus,
+  emitRealtimeOpsSnapshot,
+  logRideLifecycleEvent,
+  noteDriverLocation,
+  noteRecoveryAudit,
+  noteSocketActivity,
+  noteSocketBecameInactive,
+  noteSocketConnected,
+  noteSocketDisconnected,
+  registerRealtimeOpsIO,
+} from "./realtime-ops";
 
 export let io: SocketIOServer;
 
 // Track connected sockets: userId → socketId
 // NOTE: These maps are local to this process. With Redis adapter, socket routing works across processes but these maps still need Redis-backed storage for full HA. TODO: migrate to Redis hashes.
-const driverSockets = new Map<string, Set<string>>();
-const customerSockets = new Map<string, Set<string>>();
-const activeCallSessions = new Map<string, { callerId: string; targetId: string; startedAt: number }>();
+const driverSockets = new Map<string, string>();
+const customerSockets = new Map<string, string>();
+
+export function hasActiveDriverSocket(driverId: string): boolean {
+  return driverSockets.has(driverId);
+}
 
 // Grace-period timers: when a driver socket disconnects we wait before marking them offline.
 // If they reconnect within the grace window the timer is cancelled and they stay online.
@@ -33,23 +56,60 @@ const activeCallSessions = new Map<string, { callerId: string; targetId: string;
 const pendingOfflineTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const DRIVER_OFFLINE_GRACE_MS = 90_000; // 90 seconds
 
-export function hasActiveDriverSocket(driverId: string): boolean {
-  return (driverSockets.get(driverId)?.size || 0) > 0;
+type ActiveCallSession = {
+  sessionId: string;
+  tripId: string;
+  callerId: string;
+  targetId: string;
+  startedAt: number;
+  connectedAt?: number;
+  mode: "ride" | "support";
+};
+
+const activeCallSessions = new Map<string, ActiveCallSession>();
+const RIDE_SAFETY_CALL_STATUSES = new Set(["accepted", "arrived", "on_the_way", "in_progress"]);
+const SUPPORT_CALL_TARGET = "__admin_support__";
+
+function isRideSafetyCallStatus(status: unknown): boolean {
+  return RIDE_SAFETY_CALL_STATUSES.has(String(status || "").toLowerCase());
 }
 
-function trackSocketConnection(store: Map<string, Set<string>>, userId: string, socketId: string) {
-  const sockets = store.get(userId) ?? new Set<string>();
-  sockets.add(socketId);
-  store.set(userId, sockets);
+function isCallSessionParticipant(session: ActiveCallSession, userA: string, userB: string): boolean {
+  const pair = new Set([session.callerId, session.targetId]);
+  return pair.has(userA) && pair.has(userB);
 }
 
-function trackSocketDisconnection(store: Map<string, Set<string>>, userId: string, socketId: string) {
-  const sockets = store.get(userId);
-  if (!sockets) return;
-  sockets.delete(socketId);
-  if (sockets.size === 0) {
-    store.delete(userId);
+async function getRideSafetyCallTrip(tripId: string, userA: string, userB: string) {
+  const tripR = await rawDb.execute(rawSql`
+    SELECT id, current_status, customer_id::text AS customer_id, driver_id::text AS driver_id
+    FROM trip_requests
+    WHERE id=${tripId}::uuid
+    LIMIT 1
+  `);
+  const tripRow = tripR.rows[0] as any;
+  if (!tripRow) {
+    return { ok: false, message: "Trip not found." };
   }
+  if (!isRideSafetyCallStatus(tripRow.current_status)) {
+    return { ok: false, message: "Calling is only available during an active ride." };
+  }
+  const customerId = String(tripRow.customer_id || "");
+  const driverId = String(tripRow.driver_id || "");
+  const expectedPair = new Set([customerId, driverId]);
+  if (!expectedPair.has(userA) || !expectedPair.has(userB)) {
+    return { ok: false, message: "Calling is only allowed between the active customer and driver." };
+  }
+  return { ok: true, tripRow };
+}
+
+function findCallSessionForUser(userId: string): ActiveCallSession[] {
+  return Array.from(activeCallSessions.values()).filter(
+    (session) => session.callerId === userId || session.targetId === userId,
+  );
+}
+
+function isSupportCallTarget(targetUserId: unknown): boolean {
+  return String(targetUserId || "") === SUPPORT_CALL_TARGET;
 }
 
 function camelize(obj: any): any {
@@ -83,11 +143,27 @@ async function persistSafetyAlert(alert: any, driverId: string) {
 
 // Verify socket handshake token — prevents room spoofing (connecting as another user).
 // Returns verified user identity + role from DB, or null if invalid.
-async function verifySocketToken(token: string | undefined, claimedUserId: string | undefined): Promise<{ userId: string; userType: string; role: string } | null> {
+async function verifySocketToken(
+  token: string | undefined,
+  claimedUserId: string | undefined,
+  claimedUserType?: string,
+): Promise<{ userId: string; userType: string } | null> {
   if (!token || !claimedUserId) return null;
   try {
+    if (String(claimedUserType || "").toLowerCase() === "admin") {
+      const adminR = await rawDb.execute(rawSql`
+        SELECT id FROM admins
+        WHERE id = ${claimedUserId}::uuid
+          AND auth_token = ${token}
+          AND is_active = true
+          AND (auth_token_expires_at IS NULL OR auth_token_expires_at > NOW())
+        LIMIT 1
+      `);
+      if (!adminR.rows.length) return null;
+      return { userId: claimedUserId, userType: "admin" };
+    }
     const r = await rawDb.execute(rawSql`
-      SELECT id, user_type, role FROM users
+      SELECT id, user_type FROM users
       WHERE id = ${claimedUserId}::uuid
         AND auth_token = ${token}
         AND is_active = true
@@ -98,22 +174,10 @@ async function verifySocketToken(token: string | undefined, claimedUserId: strin
     return {
       userId: (r.rows[0] as any).id as string,
       userType: String((r.rows[0] as any).user_type || "").toLowerCase(),
-      role: String((r.rows[0] as any).role || "").toLowerCase(),
     };
   } catch {
     return null;
   }
-}
-
-function canUseSocketAs(verified: { userType: string; role: string }, claimedUserType: string): boolean {
-  if (!claimedUserType || claimedUserType === verified.userType) return true;
-  if (claimedUserType === "customer") {
-    return verified.role === "customer" || verified.role === "user";
-  }
-  if (claimedUserType === "driver") {
-    return verified.role === "driver" || verified.role === "pilot";
-  }
-  return false;
 }
 
 export function setupSocket(httpServer: HttpServer) {
@@ -130,6 +194,7 @@ export function setupSocket(httpServer: HttpServer) {
     },
     transports: ["websocket", "polling"],
   });
+  registerRealtimeOpsIO(io);
 
   io.on("connection", async (socket: Socket) => {
     const claimedUserId = socket.handshake.query.userId as string;
@@ -142,7 +207,7 @@ export function setupSocket(httpServer: HttpServer) {
     }
 
     // Verify the token matches the claimed userId (prevents room spoofing)
-    const verified = await verifySocketToken(token, claimedUserId);
+    const verified = await verifySocketToken(token, claimedUserId, claimedUserType);
     if (!verified) {
       console.warn(`[SOCKET] Auth failed for userId=${claimedUserId} — disconnecting`);
       socket.emit("auth:error", { message: "Invalid or expired token. Please reconnect with a valid token." });
@@ -150,41 +215,20 @@ export function setupSocket(httpServer: HttpServer) {
       return;
     }
     const userId = verified.userId;
-    let userType = verified.userType;
-    if (claimedUserType && claimedUserType !== verified.userType) {
-      if (!canUseSocketAs(verified, claimedUserType)) {
-        console.warn(`[SOCKET] Role mismatch for ${userId}: claimed=${claimedUserType}, actual=${verified.userType}, role=${verified.role}`);
-        socket.emit("auth:error", { message: "App role is not allowed for this account." });
-        socket.disconnect();
-        return;
-      }
-      userType = claimedUserType;
+    const userType = verified.userType;
+    if (claimedUserType && claimedUserType !== userType) {
+      console.warn(`[SOCKET] Role mismatch for ${userId}: claimed=${claimedUserType}, actual=${userType}`);
     }
 
     // Join personal room
     socket.join(`user:${userId}`);
 
-    socket.on("client:heartbeat", (
-      data: { tripId?: string; orderId?: string },
-      ack?: (payload: Record<string, unknown>) => void
-    ) => {
-      const payload = {
-        ok: true,
-        serverTs: Date.now(),
-        tripId: data?.tripId,
-        orderId: data?.orderId,
-      };
-      if (typeof ack === "function") {
-        ack(payload);
-      } else {
-        socket.emit("client:heartbeat_ack", payload);
-      }
-    });
-
-    if (userType === "driver") {
-      socket.join(`driver:${userId}`);
-      trackSocketConnection(driverSockets, userId, socket.id);
-      addSocketPresence("driver", userId, socket.id).catch(() => { });
+    if (userType === "admin") {
+      socket.join("admin:ops");
+      emitRealtimeOpsSnapshot("admin_connected").catch(() => {});
+      console.log(`[SOCKET] Admin ${userId} connected to admin:ops`);
+    } else if (userType === "driver") {
+      driverSockets.set(userId, socket.id);
       socket.join(`drivers`);
 
       // Cancel any pending offline timer (driver reconnected within grace window)
@@ -206,26 +250,24 @@ export function setupSocket(httpServer: HttpServer) {
           AND is_online = false
       `).catch(() => { });
 
+      const currentTripR = await rawDb.execute(rawSql`
+        SELECT current_trip_id FROM users WHERE id=${userId}::uuid LIMIT 1
+      `).catch(() => ({ rows: [] as any[] }));
+      const currentTripId = (currentTripR.rows[0] as any)?.current_trip_id as string | undefined;
+      noteSocketConnected({
+        userId,
+        userType: "driver",
+        socketId: socket.id,
+        tripId: currentTripId || undefined,
+        reconnectSource: pendingTimer ? "grace_window_reconnect" : "fresh_connect",
+      });
+
       console.log(`[SOCKET] Driver ${userId} connected`);
 
       // ── Driver: send location update ───────────────────────────────────────
-      socket.on("driver:location", async (data: {
-        lat: number;
-        lng: number;
-        heading?: number;
-        speed?: number;
-        remainingDistanceMeters?: number;
-        etaSeconds?: number;
-      }) => {
+      socket.on("driver:location", async (data: { lat: number; lng: number; heading?: number; speed?: number }) => {
         try {
-          const {
-            lat,
-            lng,
-            heading = 0,
-            speed = 0,
-            remainingDistanceMeters,
-            etaSeconds,
-          } = data;
+          const { lat, lng, heading = 0, speed = 0 } = data;
           if (!lat || !lng || !isFinite(lat) || !isFinite(lng)) return; // ignore invalid GPS
           // Update location; also set is_online=true — active location streaming means driver IS online
           await rawDb.execute(rawSql`
@@ -238,16 +280,10 @@ export function setupSocket(httpServer: HttpServer) {
             SELECT current_trip_id FROM users WHERE id=${userId}::uuid
           `);
           const tripId = (tripR.rows[0] as any)?.current_trip_id;
+          noteSocketActivity({ userId, userType: "driver", tripId });
+          noteDriverLocation({ driverId: userId, tripId, lat, lng });
           if (tripId) {
-            io.to(`trip:${tripId}`).emit("driver:location_update", {
-              lat,
-              lng,
-              heading,
-              speed,
-              tripId,
-              remainingDistanceMeters,
-              etaSeconds,
-            });
+            io.to(`trip:${tripId}`).emit("driver:location_update", { lat, lng, heading, speed, tripId });
 
             recordWaypoint(tripId, lat, lng, speed);
 
@@ -307,6 +343,16 @@ export function setupSocket(httpServer: HttpServer) {
           `);
           if (r.rows.length) {
             socket.join(`trip:${tripId}`);
+            noteSocketActivity({ userId, userType: "driver", tripId });
+            await noteRecoveryAudit({
+              tripId,
+              eventType: "socket_trip_rejoined",
+              actorId: userId,
+              actorType: "driver",
+              meta: { source: "driver_rejoin_trip" },
+              dedupeKey: `${tripId}:${userId}:socket_trip_rejoined`,
+              dedupeWindowMs: 60_000,
+            });
             console.log(`[SOCKET] Driver ${userId} rejoined trip room trip:${tripId} after reconnect`);
           }
         } catch (_) { }
@@ -316,6 +362,7 @@ export function setupSocket(httpServer: HttpServer) {
       socket.on("driver:online", async (data: { isOnline: boolean; lat?: number; lng?: number }) => {
         try {
           const { isOnline, lat, lng } = data;
+          noteSocketActivity({ userId, userType: "driver" });
           const hasValidCoords = lat != null && lng != null && isFinite(lat) && isFinite(lng) && (lat !== 0 || lng !== 0);
 
           // UPSERT — creates the row if it doesn't exist (new drivers have no row yet)
@@ -342,11 +389,6 @@ export function setupSocket(httpServer: HttpServer) {
                 current_lng=COALESCE(${lng ?? null}, current_lng)
             WHERE id=${userId}::uuid
           `);
-          await rawDb.execute(rawSql`
-            UPDATE driver_details
-            SET availability_status=${isOnline ? "online" : "offline"}
-            WHERE user_id=${userId}::uuid
-          `).catch(() => { });
           socket.emit("driver:online_ack", { isOnline });
           // If driver explicitly went offline, cancel any pending grace-period timer
           if (!isOnline) {
@@ -408,16 +450,20 @@ export function setupSocket(httpServer: HttpServer) {
             socket.emit("driver:accept_trip_error", { message: "You already have an active trip" });
             return;
           }
+          if (hasActiveDispatch(tripId) && !isDriverCurrentlyOfferedTrip(tripId, userId)) {
+            socket.emit("driver:accept_trip_error", {
+              message: "This ride request is no longer assigned to you.",
+              code: "TRIP_NOT_ASSIGNED",
+            });
+            return;
+          }
 
           // Verify trip is still in searching/driver_assigned state
           const tripR = await rawDb.execute(rawSql`
-            SELECT t.*, u.full_name as customer_name,
-              (SELECT ud.fcm_token FROM user_devices ud WHERE ud.user_id = u.id AND ud.fcm_token IS NOT NULL LIMIT 1) as customer_fcm,
-              dd.vehicle_category_id, dl.lat as driver_lat, dl.lng as driver_lng,
-              vc.type as vc_type, vc.service_type, vc.vehicle_type, vc.slug, vc.name as vehicle_name, vc.is_carpool
+            SELECT t.*, u.full_name as customer_name, u.fcm_token as customer_fcm,
+              dd.vehicle_category_id, dl.lat as driver_lat, dl.lng as driver_lng
             FROM trip_requests t
             JOIN users u ON u.id = t.customer_id
-            LEFT JOIN vehicle_categories vc ON vc.id = t.vehicle_category_id
             LEFT JOIN driver_details dd ON dd.user_id=${userId}::uuid
             LEFT JOIN driver_locations dl ON dl.driver_id=${userId}::uuid
             WHERE t.id=${tripId}::uuid AND t.current_status IN ('searching','driver_assigned')
@@ -427,14 +473,25 @@ export function setupSocket(httpServer: HttpServer) {
             return;
           }
           const trip = camelize(tripR.rows[0]) as any;
-          const revenueModule = revenueModuleFromTripRow(tripR.rows[0] as any);
-          try {
-            await enforceDriverRevenuePolicy(userId, revenueModule);
-          } catch (policyErr: any) {
+          const dispatchRequirements = await resolveDispatchRequirementsFromTrip(tripId);
+          if (!dispatchRequirements) {
+            socket.emit("driver:accept_trip_error", { message: "Trip no longer available", code: "TRIP_NOT_FOUND" });
+            return;
+          }
+          const driverEligibility = await isDriverEligibleForDispatch(userId, dispatchRequirements);
+          if (!driverEligibility.eligible) {
+            console.warn("[SOCKET_ACCEPT] dispatch mismatch", {
+              tripId,
+              driverId: userId,
+              reason: driverEligibility.reason || "dispatch_mismatch",
+              tripType: dispatchRequirements.tripType,
+              platformServiceKey: dispatchRequirements.platformServiceKey,
+              vehicleCategoryId: dispatchRequirements.vehicleCategoryId,
+            });
             socket.emit("driver:accept_trip_error", {
-              message: policyErr.message || "Subscription required for this service",
-              code: policyErr.code || "SUBSCRIPTION_REQUIRED",
-              moduleName: revenueModule,
+              message: `Driver not eligible for this booking: ${driverEligibility.reason || "dispatch_mismatch"}`,
+              code: "DISPATCH_MISMATCH",
+              reason: driverEligibility.reason || "dispatch_mismatch",
             });
             return;
           }
@@ -444,9 +501,6 @@ export function setupSocket(httpServer: HttpServer) {
             UPDATE trip_requests
             SET driver_id=${userId}::uuid,
                 current_status='accepted',
-                status='ACCEPTED',
-                assigned_at=COALESCE(assigned_at, NOW()),
-                accepted_at=COALESCE(accepted_at, NOW()),
                 driver_accepted_at=NOW(),
                 driver_arriving_at=NOW(),
                 pickup_otp=${pickupOtp},
@@ -460,9 +514,36 @@ export function setupSocket(httpServer: HttpServer) {
             socket.emit("driver:accept_trip_error", { message: "Trip was already accepted by another pilot" });
             return;
           }
-          await rawDb.execute(rawSql`
-            UPDATE users SET current_trip_id=${tripId}::uuid WHERE id=${userId}::uuid
+          const driverClaim = await rawDb.execute(rawSql`
+            UPDATE users
+            SET current_trip_id=${tripId}::uuid
+            WHERE id=${userId}::uuid
+              AND (current_trip_id IS NULL OR current_trip_id=${tripId}::uuid)
+            RETURNING current_trip_id
           `);
+          if (!driverClaim.rows.length) {
+            await rawDb.execute(rawSql`
+              UPDATE trip_requests
+              SET current_status='searching',
+                  driver_id=NULL,
+                  pickup_otp=NULL,
+                  driver_accepted_at=NULL,
+                  driver_arriving_at=NULL,
+                  rejected_driver_ids = array_append(COALESCE(rejected_driver_ids,'{}'), ${userId}::uuid),
+                  updated_at=NOW()
+              WHERE id=${tripId}::uuid
+                AND driver_id=${userId}::uuid
+                AND current_status='accepted'
+            `).catch(() => {});
+            socket.emit("driver:accept_trip_error", { message: "Driver already has another active trip" });
+            return;
+          }
+          await appendTripStatus(tripId, "accepted", "driver", "Driver accepted trip via socket");
+          await logRideLifecycleEvent(tripId, "trip_accepted", userId, "driver", {
+            via: "socket",
+            pickupOtp,
+          });
+          noteSocketActivity({ userId, userType: "driver", tripId });
 
           // Notify dispatch engine — clears timers and notifies other drivers
           dispatchOnDriverAccepted(tripId, userId);
@@ -578,6 +659,7 @@ export function setupSocket(httpServer: HttpServer) {
 
           // Driver joins the trip room so they receive real-time events (cancellation, status changes)
           socket.join(`trip:${tripId}`);
+          emitRealtimeOpsSnapshot("trip_accepted").catch(() => {});
           socket.emit("driver:accept_trip_ok", { tripId, trip });
           console.log(`[SOCKET] Driver ${userId} accepted trip ${tripId}`);
         } catch (e: any) {
@@ -587,9 +669,10 @@ export function setupSocket(httpServer: HttpServer) {
       });
 
       // ── Driver: respond to ping (FIX #1: Driver verification) ─────────────────
-      socket.on("system:ping_response", async (data: { tripId: string }) => {
+      const handlePingResponse = async (data: { tripId: string }) => {
         try {
           if (!userId) return;
+          noteSocketActivity({ userId, userType: "driver", tripId: data?.tripId });
           const { handleDriverPingResponse } = await import("./hardening");
           const success = handleDriverPingResponse(userId);
           if (success) {
@@ -598,12 +681,15 @@ export function setupSocket(httpServer: HttpServer) {
         } catch (e: any) {
           console.error("[SOCKET] ping_response error:", e.message);
         }
-      });
+      };
+      socket.on("system:ping_response", handlePingResponse);
+      socket.on("ping_response", handlePingResponse);
 
       // ── Driver: update trip status ─────────────────────────────────────────
       socket.on("driver:trip_status", async (data: { tripId: string; status: string; otp?: string }) => {
         try {
           const { tripId, status, otp } = data;
+          noteSocketActivity({ userId, userType: "driver", tripId });
           const allowed = ["accepted", "arrived", "on_the_way", "completed", "cancelled"];
           if (!allowed.includes(status)) {
             socket.emit("error", { message: "Invalid status" });
@@ -676,6 +762,12 @@ export function setupSocket(httpServer: HttpServer) {
           if (status === "completed" || status === "cancelled") {
             await rawDb.execute(rawSql`UPDATE users SET current_trip_id=NULL WHERE id=${userId}::uuid`);
           }
+          await appendTripStatus(tripId, status, "driver", `Driver moved trip to ${status} via socket`);
+          await logRideLifecycleEvent(tripId, status === "arrived" ? "driver_arrived" : status === "on_the_way" ? "trip_started" : status === "completed" ? "trip_completed" : status === "cancelled" ? "trip_cancelled" : "trip_status_updated", userId, "driver", {
+            via: "socket",
+            status,
+            otp,
+          });
 
           // Get customer id + fare for FCM
           const tripR = await rawDb.execute(rawSql`SELECT customer_id, estimated_fare, actual_fare FROM trip_requests WHERE id=${tripId}::uuid`);
@@ -741,17 +833,6 @@ export function setupSocket(httpServer: HttpServer) {
         try {
           const { orderId } = data;
           if (!orderId) return;
-          try {
-            await enforceDriverRevenuePolicy(userId, "parcel");
-          } catch (policyErr: any) {
-            socket.emit("parcel:accept_error", {
-              orderId,
-              message: policyErr.message || "Subscription required for parcel service",
-              code: policyErr.code || "SUBSCRIPTION_REQUIRED",
-              moduleName: "parcel",
-            });
-            return;
-          }
 
           // Atomically claim the parcel order
           const r = await rawDb.execute(rawSql`
@@ -855,9 +936,7 @@ export function setupSocket(httpServer: HttpServer) {
       });
 
     } else if (userType === "customer") {
-      socket.join(`customer:${userId}`);
-      trackSocketConnection(customerSockets, userId, socket.id);
-      addSocketPresence("customer", userId, socket.id).catch(() => { });
+      customerSockets.set(userId, socket.id);
       console.log(`[SOCKET] Customer ${userId} connected`);
 
       // ── Customer: join trip room for tracking ──────────────────────────────
@@ -873,6 +952,15 @@ export function setupSocket(httpServer: HttpServer) {
             return;
           }
           socket.join(`trip:${tripId}`);
+          await noteRecoveryAudit({
+            tripId,
+            eventType: "customer_trip_tracking_restored",
+            actorId: userId,
+            actorType: "customer",
+            meta: { source: "customer_track_trip" },
+            dedupeKey: `${tripId}:${userId}:customer_track_trip`,
+            dedupeWindowMs: 60_000,
+          });
           console.log(`[SOCKET] Customer ${userId} tracking trip ${tripId}`);
         } catch (e: any) {
           console.error("[SOCKET] customer:track_trip error:", e.message);
@@ -895,6 +983,10 @@ export function setupSocket(httpServer: HttpServer) {
           await rawDb.execute(rawSql`
             UPDATE trip_requests SET current_status='cancelled', updated_at=NOW() WHERE id=${tripId}::uuid
           `);
+          await appendTripStatus(tripId, "cancelled", "customer", "Customer cancelled via socket");
+          await logRideLifecycleEvent(tripId, "trip_cancelled", userId, "customer", {
+            via: "socket",
+          });
           // Cancel active dispatch session
           dispatchCancelTrip(tripId);
           if (driverId) {
@@ -1013,42 +1105,91 @@ export function setupSocket(httpServer: HttpServer) {
     // Only allowed during active trip: accepted → arrived → on_the_way
     // Phone numbers are MASKED — real numbers never exposed over socket
 
-    // Active call sessions are process-wide so caller/receiver sockets share the same state.
+    // Track active call sessions: tripId → { callerId, targetId, startedAt }
     socket.on("call:initiate", async (data: { targetUserId: string; tripId: string; callerName: string }) => {
       try {
         const { targetUserId, tripId, callerName } = data;
-        // Verify active trip between the two users — ONLY during booking window
-        const tripR = await rawDb.execute(rawSql`
-          SELECT id, customer_id, driver_id FROM trip_requests
-          WHERE id=${tripId}::uuid
-            AND current_status IN ('accepted','arrived','on_the_way')
-            AND (customer_id=${userId}::uuid OR driver_id=${userId}::uuid)
-            AND (customer_id=${targetUserId}::uuid OR driver_id=${targetUserId}::uuid)
-          LIMIT 1
-        `);
-        if (!tripR.rows.length) {
-          socket.emit("call:error", { message: "Calling is only available during an active booking." });
+        if (!targetUserId || !tripId) {
+          socket.emit("call:error", { message: "Call session details are missing." });
           return;
         }
 
-        // Log call initiation in call_logs table (best-effort)
+        if (userType === "admin") {
+          activeCallSessions.set(tripId, {
+            sessionId: tripId,
+            tripId,
+            callerId: userId,
+            targetId: targetUserId,
+            startedAt: Date.now(),
+            mode: "support",
+          });
+          io.to(`user:${targetUserId}`).emit("call:incoming", {
+            callerId: userId,
+            callerName,
+            tripId,
+            callMode: "support",
+            maskedPhone: null,
+          });
+          console.log(`[CALL] admin ${userId} -> ${targetUserId} support session ${tripId}`);
+          return;
+        }
+
+        if (isSupportCallTarget(targetUserId)) {
+          activeCallSessions.set(tripId, {
+            sessionId: tripId,
+            tripId,
+            callerId: userId,
+            targetId: SUPPORT_CALL_TARGET,
+            startedAt: Date.now(),
+            mode: "support",
+          });
+          io.to("admin:ops").emit("call:incoming", {
+            callerId: userId,
+            callerName,
+            callerType: userType,
+            tripId,
+            callMode: "support",
+            maskedPhone: null,
+          });
+          console.log(`[CALL] ${userType} ${userId} -> admin support session ${tripId}`);
+          return;
+        }
+
+        const tripCheck = await getRideSafetyCallTrip(tripId, userId, targetUserId);
+        if (!tripCheck.ok) {
+          socket.emit("call:error", { message: tripCheck.message });
+          return;
+        }
+
+        const existingSession = activeCallSessions.get(tripId);
+        if (existingSession && !isCallSessionParticipant(existingSession, userId, targetUserId)) {
+          socket.emit("call:error", { message: "Another call is already active for this trip." });
+          return;
+        }
+
         await rawDb.execute(rawSql`
           INSERT INTO call_logs (caller_id, receiver_id, trip_id, status, initiated_at)
           VALUES (${userId}::uuid, ${targetUserId}::uuid, ${tripId}::uuid, 'initiated', NOW())
           ON CONFLICT DO NOTHING
-        `).catch(() => { });
+        `).catch(() => {});
 
-        activeCallSessions.set(tripId, { callerId: userId, targetId: targetUserId, startedAt: Date.now() });
+        activeCallSessions.set(tripId, {
+          sessionId: tripId,
+          tripId,
+          callerId: userId,
+          targetId: targetUserId,
+          startedAt: Date.now(),
+          mode: "ride",
+        });
 
         io.to(`user:${targetUserId}`).emit("call:incoming", {
           callerId: userId,
           callerName,
           tripId,
-          // Phone masking: never expose real phone numbers
+          callMode: "ride",
           maskedPhone: null,
         });
 
-        // Send FCM push for incoming call (works when app is backgrounded)
         try {
           const fcmRow = await rawDb.execute(rawSql`
             SELECT fcm_token FROM users WHERE id=${targetUserId}::uuid AND fcm_token IS NOT NULL LIMIT 1
@@ -1057,7 +1198,7 @@ export function setupSocket(httpServer: HttpServer) {
           if (fcmToken) {
             await sendFcmNotification({
               fcmToken,
-              title: "📞 Incoming Call",
+              title: "Incoming Call",
               body: `${callerName} is calling you`,
               sound: "trip_alert",
               channelId: "call_alerts",
@@ -1069,132 +1210,259 @@ export function setupSocket(httpServer: HttpServer) {
               },
             });
           }
-        } catch (_) { }
+        } catch (_) {}
 
-        console.log(`[CALL] ${userId} → ${targetUserId} for trip ${tripId}`);
+        console.log(`[CALL] ${userId} -> ${targetUserId} ride session ${tripId}`);
       } catch (e: any) {
         socket.emit("call:error", { message: "Call initiation failed" });
       }
     });
 
-    const isCallSignalAllowed = async (targetUserId: string, tripId?: string): Promise<boolean> => {
-      if (!targetUserId) return false;
-      if (tripId && activeCallSessions.has(tripId)) {
-        const session = activeCallSessions.get(tripId)!;
-        return [session.callerId, session.targetId].includes(userId) &&
-          [session.callerId, session.targetId].includes(targetUserId);
-      }
-      const tripR = await rawDb.execute(rawSql`
-        SELECT id FROM trip_requests
-        WHERE current_status IN ('accepted','arrived','on_the_way')
-          AND (customer_id=${userId}::uuid OR driver_id=${userId}::uuid)
-          AND (customer_id=${targetUserId}::uuid OR driver_id=${targetUserId}::uuid)
-          ${tripId ? rawSql`AND id=${tripId}::uuid` : rawSql``}
-        LIMIT 1
-      `);
-      return tripR.rows.length > 0;
-    };
-
-    socket.on("call:offer", async (data: { targetUserId: string; tripId?: string; sdp: any }) => {
-      if (!await isCallSignalAllowed(data.targetUserId, data.tripId)) {
-        socket.emit("call:error", { message: "Call session is not active." });
+    socket.on("call:offer", async (data: { targetUserId: string; tripId: string; sdp: any }) => {
+      const session = activeCallSessions.get(data.tripId);
+      if (!session) {
+        socket.emit("call:error", { message: "Call session is no longer active." });
         return;
       }
-      io.to(`user:${data.targetUserId}`).emit("call:offer", { callerId: userId, sdp: data.sdp });
+      if (session.mode === "ride") {
+        const tripCheck = await getRideSafetyCallTrip(data.tripId, userId, data.targetUserId);
+        if (!tripCheck.ok || !isCallSessionParticipant(session, userId, data.targetUserId)) {
+          activeCallSessions.delete(data.tripId);
+          socket.emit("call:ended", { by: "system", reason: tripCheck.message || "Call session ended." });
+          return;
+        }
+        io.to(`user:${data.targetUserId}`).emit("call:offer", {
+          callerId: userId,
+          tripId: data.tripId,
+          callMode: "ride",
+          sdp: data.sdp,
+        });
+        return;
+      }
+
+      if (userId === session.callerId) {
+        const supportTarget = session.targetId === SUPPORT_CALL_TARGET ? "admin:ops" : `user:${session.targetId}`;
+        io.to(supportTarget).emit("call:offer", {
+          callerId: userId,
+          tripId: data.tripId,
+          callMode: "support",
+          sdp: data.sdp,
+        });
+        return;
+      }
+
+      if (session.targetId === userId || session.callerId === data.targetUserId) {
+        io.to(`user:${session.callerId}`).emit("call:offer", {
+          callerId: userId,
+          tripId: data.tripId,
+          callMode: "support",
+          sdp: data.sdp,
+        });
+        return;
+      }
+
+      socket.emit("call:error", { message: "You are not allowed to use this support call session." });
     });
 
-    socket.on("call:answer", async (data: { targetUserId: string; tripId?: string; sdp: any }) => {
-      if (!await isCallSignalAllowed(data.targetUserId, data.tripId)) {
-        socket.emit("call:error", { message: "Call session is not active." });
+    socket.on("call:answer", async (data: { targetUserId: string; tripId: string; sdp: any }) => {
+      const session = activeCallSessions.get(data.tripId);
+      if (!session) {
+        socket.emit("call:error", { message: "Call session is no longer active." });
         return;
       }
-      await rawDb.execute(rawSql`
-        UPDATE call_logs SET status='answered'
-        WHERE receiver_id=${userId}::uuid AND caller_id=${data.targetUserId}::uuid
-          AND status='initiated'
-          ${data.tripId ? rawSql`AND trip_id=${data.tripId}::uuid` : rawSql``}
-      `).catch(async () => {
-        await rawDb.execute(rawSql`
-          UPDATE call_logs SET status='answered'
-          WHERE callee_id=${userId}::uuid AND caller_id=${data.targetUserId}::uuid
-            AND status='initiated'
-            ${data.tripId ? rawSql`AND trip_id=${data.tripId}::uuid` : rawSql``}
-        `).catch(() => { });
+      if (session.mode === "ride") {
+        const tripCheck = await getRideSafetyCallTrip(data.tripId, userId, data.targetUserId);
+        if (!tripCheck.ok || !isCallSessionParticipant(session, userId, data.targetUserId)) {
+          activeCallSessions.delete(data.tripId);
+          socket.emit("call:ended", { by: "system", reason: tripCheck.message || "Call session ended." });
+          return;
+        }
+        session.connectedAt = Date.now();
+        io.to(`user:${data.targetUserId}`).emit("call:answer", {
+          callerId: userId,
+          tripId: data.tripId,
+          callMode: "ride",
+          sdp: data.sdp,
+        });
+        return;
+      }
+
+      if (userType === "admin" && userId !== session.callerId) {
+        if (session.targetId !== SUPPORT_CALL_TARGET && session.targetId !== userId) {
+          socket.emit("call:error", { message: "Another admin already joined this support call." });
+          return;
+        }
+        session.targetId = userId;
+      } else if (session.targetId !== userId && session.callerId !== userId) {
+        socket.emit("call:error", { message: "You are not allowed to answer this support call." });
+        return;
+      }
+
+      session.connectedAt = Date.now();
+      const answerTarget = userId === session.callerId ? session.targetId : session.callerId;
+      io.to(`user:${answerTarget}`).emit("call:answer", {
+        callerId: userId,
+        tripId: data.tripId,
+        callMode: "support",
+        sdp: data.sdp,
       });
-      io.to(`user:${data.targetUserId}`).emit("call:answer", { callerId: userId, sdp: data.sdp });
     });
 
-    socket.on("call:ice", async (data: { targetUserId: string; tripId?: string; candidate: any }) => {
-      if (!await isCallSignalAllowed(data.targetUserId, data.tripId)) return;
-      io.to(`user:${data.targetUserId}`).emit("call:ice", { from: userId, candidate: data.candidate });
+    socket.on("call:ice", async (data: { targetUserId: string; tripId: string; candidate: any }) => {
+      const session = activeCallSessions.get(data.tripId);
+      if (!session) {
+        socket.emit("call:error", { message: "Call session is no longer active." });
+        return;
+      }
+      if (session.mode === "ride") {
+        const tripCheck = await getRideSafetyCallTrip(data.tripId, userId, data.targetUserId);
+        if (!tripCheck.ok || !isCallSessionParticipant(session, userId, data.targetUserId)) {
+          activeCallSessions.delete(data.tripId);
+          socket.emit("call:ended", { by: "system", reason: tripCheck.message || "Call session ended." });
+          return;
+        }
+        io.to(`user:${data.targetUserId}`).emit("call:ice", {
+          from: userId,
+          tripId: data.tripId,
+          callMode: "ride",
+          candidate: data.candidate,
+        });
+        return;
+      }
+
+      if (userId === session.callerId) {
+        const supportTarget = session.targetId === SUPPORT_CALL_TARGET ? "admin:ops" : `user:${session.targetId}`;
+        io.to(supportTarget).emit("call:ice", {
+          from: userId,
+          tripId: data.tripId,
+          callMode: "support",
+          candidate: data.candidate,
+        });
+        return;
+      }
+
+      const targetUserId = session.callerId;
+      io.to(`user:${targetUserId}`).emit("call:ice", {
+        from: userId,
+        tripId: data.tripId,
+        callMode: "support",
+        candidate: data.candidate,
+      });
     });
 
     socket.on("call:end", async (data: { targetUserId: string; tripId?: string; durationSec?: number }) => {
       const { targetUserId, tripId, durationSec } = data;
-      io.to(`user:${targetUserId}`).emit("call:ended", { by: userId });
-      // Update call log with duration
+      const session = tripId ? activeCallSessions.get(tripId) : null;
+      if (session) {
+        if (session.mode === "support") {
+          const supportTarget =
+            session.targetId === SUPPORT_CALL_TARGET
+              ? "admin:ops"
+              : userId === session.callerId
+                ? `user:${session.targetId}`
+                : `user:${session.callerId}`;
+          io.to(supportTarget).emit("call:ended", { by: userId, tripId, callMode: "support" });
+        } else {
+          io.to(`user:${targetUserId}`).emit("call:ended", { by: userId, tripId, callMode: "ride" });
+        }
+      } else {
+        io.to(`user:${targetUserId}`).emit("call:ended", { by: userId, tripId });
+      }
       if (tripId) {
         activeCallSessions.delete(tripId);
-        await rawDb.execute(rawSql`
-          UPDATE call_logs SET status='completed', ended_at=NOW(), duration_sec=${durationSec || 0}
-          WHERE trip_id=${tripId}::uuid AND status IN ('initiated','answered')
-            AND (caller_id=${userId}::uuid OR receiver_id=${userId}::uuid)
-        `).catch(async () => {
+        if (session?.mode === "ride") {
           await rawDb.execute(rawSql`
-            UPDATE call_logs SET status='completed', duration_seconds=${durationSec || 0}
-            WHERE trip_id=${tripId}::uuid AND status IN ('initiated','answered')
-              AND (caller_id=${userId}::uuid OR callee_id=${userId}::uuid)
-          `).catch(() => { });
-        });
+            UPDATE call_logs
+            SET status='completed', ended_at=NOW(), duration_sec=${durationSec || 0}
+            WHERE trip_id=${tripId}::uuid
+              AND status='initiated'
+              AND (
+                (caller_id=${userId}::uuid AND receiver_id=${targetUserId}::uuid)
+                OR
+                (caller_id=${targetUserId}::uuid AND receiver_id=${userId}::uuid)
+              )
+          `).catch(() => {});
+        }
       }
-      console.log(`[CALL] Call ended by ${userId}${durationSec ? ` (${durationSec}s)` : ''}`);
+      console.log(`[CALL] Call ended by ${userId}${durationSec ? ` (${durationSec}s)` : ""}`);
     });
 
     socket.on("call:reject", async (data: { targetUserId: string; tripId?: string }) => {
       const { targetUserId, tripId } = data;
-      io.to(`user:${targetUserId}`).emit("call:rejected", { by: userId });
+      const session = tripId ? activeCallSessions.get(tripId) : null;
+      if (session?.mode === "support") {
+        const rejectTarget =
+          session.targetId === SUPPORT_CALL_TARGET
+            ? `user:${session.callerId}`
+            : userId === session.callerId
+              ? `user:${session.targetId}`
+              : `user:${session.callerId}`;
+        io.to(rejectTarget).emit("call:rejected", { by: userId, tripId, callMode: "support" });
+      } else {
+        io.to(`user:${targetUserId}`).emit("call:rejected", { by: userId, tripId, callMode: "ride" });
+      }
       if (tripId) {
         activeCallSessions.delete(tripId);
-        await rawDb.execute(rawSql`
-          UPDATE call_logs SET status='rejected', ended_at=NOW()
-          WHERE caller_id=${userId}::uuid AND trip_id=${tripId}::uuid AND status='initiated'
-        `).catch(() => { });
+        if (session?.mode === "ride") {
+          await rawDb.execute(rawSql`
+            UPDATE call_logs
+            SET status='rejected', ended_at=NOW()
+            WHERE trip_id=${tripId}::uuid
+              AND status='initiated'
+              AND (
+                (caller_id=${userId}::uuid AND receiver_id=${targetUserId}::uuid)
+                OR
+                (caller_id=${targetUserId}::uuid AND receiver_id=${userId}::uuid)
+              )
+          `).catch(() => {});
+        }
       }
     });
 
     socket.on("disconnect", (reason) => {
-      if (userType === "driver") {
-        trackSocketDisconnection(driverSockets, userId, socket.id);
-        removeSocketPresence("driver", userId, socket.id).catch(() => { });
-      } else if (userType === "customer") {
-        trackSocketDisconnection(customerSockets, userId, socket.id);
-        removeSocketPresence("customer", userId, socket.id).catch(() => { });
+      for (const session of findCallSessionForUser(userId)) {
+        activeCallSessions.delete(session.sessionId);
+        const peerRoom =
+          session.mode === "support"
+            ? session.targetId === SUPPORT_CALL_TARGET
+              ? "admin:ops"
+              : userId === session.callerId
+                ? `user:${session.targetId}`
+                : `user:${session.callerId}`
+            : `user:${session.callerId === userId ? session.targetId : session.callerId}`;
+        io.to(peerRoom).emit("call:ended", {
+          by: userId,
+          tripId: session.sessionId,
+          callMode: session.mode,
+          reason: "disconnect",
+        });
       }
+      driverSockets.delete(userId);
+      customerSockets.delete(userId);
       if (userType === "driver") {
+        noteSocketDisconnected({ userId, userType: "driver", reason });
         // Grace period: don't mark offline immediately — reconnect within 90s keeps driver visible.
         // This prevents momentary network blips from removing driver from active dispatch.
         // If driver explicitly called driver:online with isOnline=false, that already updated DB directly.
-        const timer = setTimeout(async () => {
+        const timer = setTimeout(() => {
           pendingOfflineTimers.delete(userId);
-          const hasRedisSocket = await hasSocketPresence("driver", userId);
-          // Only mark offline if still not reconnected anywhere.
-          if (!driverSockets.has(userId) && !hasRedisSocket) {
-            await rawDb.execute(rawSql`
+          // Only mark offline if still not reconnected (no entry in driverSockets)
+          if (!driverSockets.has(userId)) {
+            noteSocketBecameInactive(userId);
+            rawDb.execute(rawSql`
               UPDATE driver_locations SET is_online=false, updated_at=NOW()
               WHERE driver_id=${userId}::uuid
             `).catch(() => { });
-            await rawDb.execute(rawSql`
+            rawDb.execute(rawSql`
               UPDATE users SET is_online=false WHERE id=${userId}::uuid
-            `).catch(() => { });
-            await rawDb.execute(rawSql`
-              UPDATE driver_details SET availability_status='offline'
-              WHERE user_id=${userId}::uuid
             `).catch(() => { });
             console.log(`[SOCKET] Driver ${userId} offline (grace period expired, reason=${reason})`);
           }
         }, DRIVER_OFFLINE_GRACE_MS);
         pendingOfflineTimers.set(userId, timer);
         console.log(`[SOCKET] Driver ${userId} socket disconnected (reason=${reason}) — grace period started, not offline yet`);
+      } else if (userType === "admin") {
+        console.log(`[SOCKET] Admin ${userId} disconnected`);
       } else {
         console.log(`[SOCKET] ${userType} ${userId} disconnected`);
       }
@@ -1224,35 +1492,8 @@ export async function notifyNearbyDriversNewTrip(
 ) {
   if (!io) return;
   try {
-    if (!vehicleCategoryId) {
-      console.error(`[SOCKET] Refusing unfiltered trip broadcast for trip=${tripId}: missing vehicleCategoryId`);
-      return;
-    }
     const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const safeIds = excludeDriverIds.filter((id) => uuidRe.test(id));
-    const excludeClause = safeIds.length > 0
-      ? rawSql`AND NOT (u.id = ANY(${safeIds}::uuid[]))`
-      : rawSql``;
-    const matchingCategoryIds = await getMatchingDriverCategoryIds(vehicleCategoryId);
-
-    const drivers = await rawDb.execute(rawSql`
-      SELECT u.id, dl.lat, dl.lng
-      FROM users u
-      JOIN driver_locations dl ON dl.driver_id = u.id
-      JOIN driver_details dd ON dd.user_id = u.id
-      WHERE u.user_type='driver' AND u.is_active=true AND u.is_locked=false
-        AND dl.is_online=true AND u.current_trip_id IS NULL
-        AND u.verification_status IN ('approved', 'verified', 'pending')
-        ${matchingCategoryIds?.length
-        ? rawSql`AND dd.vehicle_category_id = ANY(${matchingCategoryIds}::uuid[])`
-        : vehicleCategoryId
-          ? rawSql`AND dd.vehicle_category_id = ${vehicleCategoryId}::uuid`
-          : rawSql``}
-        ${excludeClause}
-        AND ((dl.lat - ${Number(pickupLat)})*(dl.lat - ${Number(pickupLat)}) + (dl.lng - ${Number(pickupLng)})*(dl.lng - ${Number(pickupLng)})) < 0.06
-      ORDER BY ((dl.lat - ${Number(pickupLat)})*(dl.lat - ${Number(pickupLat)}) + (dl.lng - ${Number(pickupLng)})*(dl.lng - ${Number(pickupLng)})) ASC
-      LIMIT 10
-    `);
 
     const tripR = await rawDb.execute(rawSql`
       SELECT
@@ -1268,9 +1509,19 @@ export async function notifyNearbyDriversNewTrip(
     `);
     if (!tripR.rows.length) return;
     const trip = camelize(tripR.rows[0]) as any;
+    const requirements = await resolveDispatchRequirementsFromTrip(tripId);
+    if (!requirements) return;
+    const strictDrivers = await findEligibleDriversForDispatch({
+      pickupLat,
+      pickupLng,
+      radiusKm: 8,
+      excludeDriverIds: safeIds,
+      limit: 10,
+      requirements,
+    });
 
     // Get driver FCM tokens for background push
-    const driverIds = drivers.rows.map((r: any) => r.id);
+    const driverIds = strictDrivers.map((r: any) => r.driverId);
     let fcmMap: Record<string, string> = {};
     if (driverIds.length > 0) {
       const devRes = await rawDb.execute(rawSql`
@@ -1282,8 +1533,8 @@ export async function notifyNearbyDriversNewTrip(
       }
     }
 
-    for (const row of drivers.rows) {
-      const driverId = (row as any).id;
+    for (const row of strictDrivers) {
+      const driverId = (row as any).driverId;
       const payload = {
         tripId,
         refId: trip.refId,
@@ -1314,7 +1565,7 @@ export async function notifyNearbyDriversNewTrip(
         }).catch(() => { });
       }
     }
-    console.log(`[SOCKET] New trip ${tripId} notified to ${drivers.rows.length} nearby drivers`);
+    console.log(`[SOCKET] New trip ${tripId} notified to ${strictDrivers.length} nearby drivers`);
   } catch (e: any) {
     console.error("[SOCKET] notifyNearbyDriversNewTrip error:", e.message);
   }
@@ -1324,15 +1575,11 @@ export async function notifyNearbyDriversNewTrip(
 async function notifyDriverNearbyTrips(driverId: string, lat: number, lng: number) {
   if (!io) return;
   try {
-    const driverProfile = await rawDb.execute(rawSql`
-      SELECT dd.vehicle_category_id
-      FROM driver_details dd
-      WHERE dd.user_id=${driverId}::uuid
-      LIMIT 1
-    `);
-    const driverVehicleCategoryId = (driverProfile.rows[0] as any)?.vehicle_category_id || null;
-    const matchingCategoryIds = await getMatchingDriverCategoryIds(driverVehicleCategoryId);
-
+    const activelyOffered = getCurrentOfferedTripForDriver(driverId);
+    if (activelyOffered) {
+      io.to(`user:${driverId}`).emit("trip:new_request", activelyOffered.trip);
+      return;
+    }
     const trips = await rawDb.execute(rawSql`
       SELECT
         t.*,
@@ -1346,16 +1593,17 @@ async function notifyDriverNearbyTrips(driverId: string, lat: number, lng: numbe
       WHERE t.current_status='searching'
         AND t.driver_id IS NULL
         AND NOT (${driverId}::uuid = ANY(COALESCE(t.rejected_driver_ids, '{}'::uuid[])))
-        ${matchingCategoryIds?.length
-        ? rawSql`AND t.vehicle_category_id = ANY(${uuidArraySql(matchingCategoryIds)})`
-        : driverVehicleCategoryId
-          ? rawSql`AND t.vehicle_category_id = ${driverVehicleCategoryId}::uuid`
-          : rawSql``}
         AND ((t.pickup_lat - ${lat})*(t.pickup_lat - ${lat}) + (t.pickup_lng - ${lng})*(t.pickup_lng - ${lng})) < 0.06
-      LIMIT 3
+      ORDER BY t.created_at DESC
+      LIMIT 8
     `);
     for (const row of trips.rows) {
       const trip = camelize(row) as any;
+      if (hasActiveDispatch(trip.id)) continue;
+      const requirements = await resolveDispatchRequirementsFromTrip(trip.id);
+      if (!requirements) continue;
+      const eligibility = await isDriverEligibleForDispatch(driverId, requirements);
+      if (!eligibility.eligible) continue;
       io.to(`user:${driverId}`).emit("trip:new_request", {
         tripId: trip.id,
         refId: trip.refId,
@@ -1376,4 +1624,3 @@ async function notifyDriverNearbyTrips(driverId: string, lat: number, lng: numbe
     console.error("[SOCKET] notifyDriverNearbyTrips error:", e.message);
   }
 }
-
