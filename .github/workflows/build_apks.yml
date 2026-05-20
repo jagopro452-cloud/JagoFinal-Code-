@@ -17,10 +17,10 @@ jobs:
       matrix:
         include:
           - app_name: customer
-            app_dir: jago_app-main/flutter_apps/customer_app
+            app_dir: app/flutter_apps/customer_app
             artifact_name: jago-customer-release-apk
           - app_name: driver
-            app_dir: jago_app-main/flutter_apps/driver_app
+            app_dir: app/flutter_apps/driver_app
             artifact_name: jago-driver-release-apk
 
     steps:

@@ -27,7 +27,7 @@ jobs:
             npm ci --prefer-offline
             npm run build
             set -a && source /var/www/jago/.env && set +a
-            pm2 restart jago --update-env || pm2 start jago_app-main/dist/index.js --name jago --max-memory-restart 512M
+            pm2 restart jago --update-env || pm2 start app/dist/index.js --name jago --max-memory-restart 512M
             pm2 save
             sleep 5
             curl -sf http://localhost:5000/api/health && echo "Deploy OK" || echo "WARNING: health check failed"

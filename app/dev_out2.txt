@@ -1,0 +1,95 @@
+﻿
+> rest-express@1.0.0 dev
+> cross-env NODE_ENV=development tsx --env-file=.env server/index.ts
+
+11:57:33 AM [express] [db] Running migrations from: D:\Jago_app\jago-master\migrations
+[DB] New connection established, pool size: 1
+11:57:33 AM [express] [db] Migrations applied OK ΓÇö all tables ready
+11:57:33 AM [express] [server] Registering API routes...
+[seed] Parcel vehicle categories seeded/updated
+[seed] Vehicle categories seeded/updated
+[seed] vehicle_categories.is_active synced with platform_services
+[seed] pending drivers promoted to verified, model_selected_at backfilled
+node.exe : [db:db] column 
+"razorpay_payment_id" 
+does not exist
+At C:\Program 
+Files\nodejs\npm.ps1:29 
+char:3
++   & $NODE_EXE 
+$NPM_CLI_JS $args
++   ~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~
+    + CategoryInfo        
+      : NotSpecified: ([  
+  db:db] column ... doe   
+ s not exist:String) [    
+], RemoteException
+    + FullyQualifiedError 
+   Id : NativeCommandErr  
+  or
+ 
+[DB] New connection established, pool size: 1
+[schema] Operational schema verified OK
+[admin] Admin bootstrap complete
+[SECURITY] ADMIN_EMAIL 
+env var not set ∩┐╜ 
+skipping admin sync.
+[DISPATCH] Scheduled ride dispatcher started (30s interval)
+[DISPATCH] Stale session cleanup started (60s interval)
+[DISPATCH] Smart dispatch engine initialized
+[AI-BRAIN] Starting AI Mobility Brain (10s interval)
+[AI-BRAIN] Mobility brain started (10s tick)
+[PARCEL-ADV] Advanced parcel tables initialized
+[PARCEL-ADV] Advanced parcel system ready (dimensions, insurance, SLA, POD, B2B webhooks)
+[DB] New connection established, pool size: 16
+[revenue-engine] Tables and settings initialized
+[REVENUE] Unified revenue engine ready (commission + GST + insurance ? admin)
+[DB] New connection established, pool size: 16
+[DB] New connection established, pool size: 16
+[DB] New connection established, pool size: 16
+[DYNAMIC-SVC] Tables and seeds initialized
+[DYNAMIC-SERVICES] City-based services + parcel vehicle types ready
+[DB] New connection established, pool size: 16
+[DB] New connection established, pool size: 15
+[DB] New connection established, pool size: 15
+[DB] New connection established, pool size: 15
+[DB] New connection established, pool size: 15
+[DB] New connection established, pool size: 15
+11:57:33 AM [express] [server] API routes registered successfully
+[SOCKET] Socket.IO initialized
+node:events:496
+      throw er; // 
+Unhandled 'error' event
+      ^
+
+Error: listen EADDRINUSE: 
+address already in use 
+0.0.0.0:5000
+    at 
+Server.setupListenHandle 
+[as _listen2] 
+(node:net:1937:16)
+    at listenInCluster 
+(node:net:1994:12)
+    at node:net:2203:7
+    at process.processTick
+sAndRejections (node:inter
+nal/process/task_queues:90
+:21)
+Emitted 'error' event on 
+Server instance at:
+    at emitErrorNT 
+(node:net:1973:8)
+    at process.processTick
+sAndRejections (node:inter
+nal/process/task_queues:90
+:21) {
+  code: 'EADDRINUSE',
+  errno: -4091,
+  syscall: 'listen',
+  address: '0.0.0.0',
+  port: 5000
+}
+
+Node.js v22.14.0

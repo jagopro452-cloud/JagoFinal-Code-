@@ -1,0 +1,184 @@
+﻿
+> rest-express@1.0.0 test
+> vitest run
+
+
+[1m[46m RUN [49m[22m [36mv4.1.0 [39m[90mD:/Jago_app/jago-master[39m
+
+ [32mΓ£ô[39m tests/unit/route-hardening-contracts.test.ts[2m > [22mroute hardening contracts[2m > [22mkeeps critical admin endpoints behind admin auth[32m 6[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/route-hardening-contracts.test.ts[2m > [22mroute hardening contracts[2m > [22mguards customer cancel flow with pre-cancel state and safe refunds[32m 2[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/route-hardening-contracts.test.ts[2m > [22mroute hardening contracts[2m > [22mkeeps outstation pool booking atomic and bounded[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/route-hardening-contracts.test.ts[2m > [22mroute hardening contracts[2m > [22mprevents duplicate outstation completion settlement[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/route-hardening-contracts.test.ts[2m > [22mroute hardening contracts[2m > [22mkeeps cancellation penalties and notifications non-destructive[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/route-hardening-contracts.test.ts[2m > [22mroute hardening contracts[2m > [22memits trip completion events to both direct user and trip room listeners[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mFare Calculation[2m > [22mshort trip returns at least minimum fare[32m 3[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mFare Calculation[2m > [22mcorrect fare for 5km trip[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mFare Calculation[2m > [22mnight multiplier applied correctly[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mFare Calculation[2m > [22msurge multiplier applied on top of base fare[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mFare Calculation[2m > [22mnight + surge stack multiplicatively[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mFare Calculation[2m > [22mzero distance returns minimum fare[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mFare Calculation[2m > [22mlong trip calculated accurately[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mPickup OTP Expiry[2m > [22mOTP valid 1 minute after acceptance[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mPickup OTP Expiry[2m > [22mOTP valid at exactly 39 minutes[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mPickup OTP Expiry[2m > [22mOTP expired at 41 minutes[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mPickup OTP Expiry[2m > [22mOTP expired at 2 hours[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mPickup OTP Expiry[2m > [22mOTP invalid if acceptedAt is in the future (clock skew)[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mWallet Balance Guard[2m > [22mallows deduction when balance is exactly the amount[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mWallet Balance Guard[2m > [22mprevents deduction when balance is insufficient[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mWallet Balance Guard[2m > [22mbalance never goes negative[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mWallet Balance Guard[2m > [22mcorrectly deducts partial amount[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mWallet Balance Guard[2m > [22mzero-amount deduction is always allowed[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mWallet Balance Guard[2m > [22mfloating point: Γé╣100.10 - Γé╣0.10 = Γé╣100.00 exactly[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mDriver Cancel Penalty[2m > [22mno penalty at 1 cancel[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mDriver Cancel Penalty[2m > [22mno penalty at 2 cancels[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mDriver Cancel Penalty[2m > [22mpenalty at exactly 3 cancels[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mDriver Cancel Penalty[2m > [22mpenalty at 4+ cancels[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mDriver Cancel Penalty[2m > [22mcustom threshold: penalty at 5[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mDriver Cancel Penalty[2m > [22mcustom threshold: no penalty at 4 when threshold is 5[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mHaversine Distance[2m > [22msame point = 0 distance[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mHaversine Distance[2m > [22mHyderabad to Secunderabad (~8km)[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mHaversine Distance[2m > [22mdistance is symmetric (AΓåÆB == BΓåÆA)[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mHaversine Distance[2m > [22m1 degree latitude Γëê 111km[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mPayment Idempotency[2m > [22mfirst payment processes successfully[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mPayment Idempotency[2m > [22mduplicate payment ID is rejected[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mPayment Idempotency[2m > [22mdifferent payment ID processes successfully[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mSurge Zone Detection (Ray-Cast)[2m > [22mpoint inside zone returns true[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mSurge Zone Detection (Ray-Cast)[2m > [22mpoint outside zone returns false[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/critical-logic.test.ts[2m > [22mSurge Zone Detection (Ray-Cast)[2m > [22mpoint at zone corner handled without crash[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/stability-guards.test.ts[2m > [22mstability guards[2m > [22mcanWalletCoverCharge[2m > [22mallows exact wallet deductions[32m 4[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/stability-guards.test.ts[2m > [22mstability guards[2m > [22mcanWalletCoverCharge[2m > [22mrejects insufficient balance[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/stability-guards.test.ts[2m > [22mstability guards[2m > [22mcanWalletCoverCharge[2m > [22mrejects invalid inputs[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/stability-guards.test.ts[2m > [22mstability guards[2m > [22mshouldApplyCustomerLateCancelFee[2m > [22mapplies when a driver was already assigned[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/stability-guards.test.ts[2m > [22mstability guards[2m > [22mshouldApplyCustomerLateCancelFee[2m > [22mdoes not apply when no driver was assigned[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/stability-guards.test.ts[2m > [22mstability guards[2m > [22mshouldApplyCustomerLateCancelFee[2m > [22mdoes not apply for early or unrelated states[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/stability-guards.test.ts[2m > [22mstability guards[2m > [22mclampSeatRequest[2m > [22mkeeps valid requests[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/stability-guards.test.ts[2m > [22mstability guards[2m > [22mclampSeatRequest[2m > [22mclamps low and high seat counts[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/stability-guards.test.ts[2m > [22mstability guards[2m > [22mclampSeatRequest[2m > [22mfalls back safely for invalid values[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mPhone Number Validation[2m > [22maccepts valid 10-digit mobile: 9876543210[32m 4[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mPhone Number Validation[2m > [22maccepts 6xxxxxxxxx[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mPhone Number Validation[2m > [22maccepts 7xxxxxxxxx[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mPhone Number Validation[2m > [22maccepts 8xxxxxxxxx[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mPhone Number Validation[2m > [22mrejects 5xxxxxxxxx (starts with 5)[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mPhone Number Validation[2m > [22mrejects 11-digit number[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mPhone Number Validation[2m > [22mrejects 9-digit number[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mPhone Number Validation[2m > [22mrejects empty string[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mPhone Number Validation[2m > [22mrejects null[32m 2[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mPhone Number Validation[2m > [22mrejects +91 prefix (raw: 12 digits)[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mPhone Number Validation[2m > [22mrejects letters[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mOTP Validation[2m > [22mgenerated OTP is always 6 digits[32m 9[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mOTP Validation[2m > [22mgenerated OTP is always >= 100000[32m 2[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mOTP Validation[2m > [22maccepts valid 6-digit OTP[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mOTP Validation[2m > [22mrejects 5-digit OTP[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mOTP Validation[2m > [22mrejects 7-digit OTP[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mOTP Validation[2m > [22mrejects non-numeric OTP[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mOTP Validation[2m > [22mrejects empty string[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mOTP Validation[2m > [22mrejects '000000' ΓÇö still valid format[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mJWT Token Structure[2m > [22maccepts a properly structured JWT (3 parts)[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mJWT Token Structure[2m > [22mrejects 2-part token[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mJWT Token Structure[2m > [22mrejects 4-part token[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mJWT Token Structure[2m > [22mrejects empty string[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mJWT Token Structure[2m > [22mrejects null[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mFare Estimation Logic[2m > [22m1km at Γé╣30 base + Γé╣12/km = Γé╣42[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mFare Estimation Logic[2m > [22m0km returns 0[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mFare Estimation Logic[2m > [22mnegative distance returns 0[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mFare Estimation Logic[2m > [22m5km at Γé╣30 base + Γé╣10/km = Γé╣80[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mFare Estimation Logic[2m > [22mshort distance below base rate returns base rate[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mUUID Validation[2m > [22maccepts valid UUID v4[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mUUID Validation[2m > [22maccepts UUID with uppercase[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mUUID Validation[2m > [22mrejects plain string[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mUUID Validation[2m > [22mrejects number[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mUUID Validation[2m > [22mrejects empty string[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mUUID Validation[2m > [22mgenerates valid UUID using crypto.randomUUID[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mUUID Validation[2m > [22m100 generated UUIDs are all valid[32m 4[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mTrip Status State Machine[2m > [22msearching ΓåÆ accepted is valid[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mTrip Status State Machine[2m > [22msearching ΓåÆ cancelled is valid[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mTrip Status State Machine[2m > [22maccepted ΓåÆ driver_arriving is valid[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mTrip Status State Machine[2m > [22min_progress ΓåÆ completed is valid[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mTrip Status State Machine[2m > [22mcompleted ΓåÆ anything is INVALID (terminal)[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mTrip Status State Machine[2m > [22mcancelled ΓåÆ anything is INVALID (terminal)[32m 2[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mTrip Status State Machine[2m > [22msearching ΓåÆ completed is INVALID (skip states)[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mTrip Status State Machine[2m > [22min_progress ΓåÆ searching is INVALID (backwards)[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mRazorpay ID Format Validation[2m > [22maccepts valid order ID format[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mRazorpay ID Format Validation[2m > [22maccepts valid payment ID format[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mRazorpay ID Format Validation[2m > [22mrejects order ID without prefix[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mRazorpay ID Format Validation[2m > [22mrejects payment ID with wrong prefix[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mRazorpay ID Format Validation[2m > [22mrejects empty string[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mRate Limiting (token bucket simulation)[2m > [22mallows requests within limit[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mRate Limiting (token bucket simulation)[2m > [22mblocks request over limit[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/api-validation.test.ts[2m > [22mRate Limiting (token bucket simulation)[2m > [22mdifferent IPs have independent limits[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook HMAC-SHA256 Signature Verification[2m > [22maccepts a valid signature[32m 4[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook HMAC-SHA256 Signature Verification[2m > [22mrejects a tampered body[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook HMAC-SHA256 Signature Verification[2m > [22mrejects a wrong signature[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook HMAC-SHA256 Signature Verification[2m > [22mrejects a missing signature (undefined)[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook HMAC-SHA256 Signature Verification[2m > [22mrejects an empty signature string[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook HMAC-SHA256 Signature Verification[2m > [22mrejects a signature for a different secret[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook HMAC-SHA256 Signature Verification[2m > [22mrejects a truncated signature (length mismatch)[32m 4[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook HMAC-SHA256 Signature Verification[2m > [22mrejects an empty body with valid sig for non-empty body[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook HMAC-SHA256 Signature Verification[2m > [22maccepts empty body if signature matches empty body hash[32m 2[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook HMAC-SHA256 Signature Verification[2m > [22mis deterministic ΓÇö same input always gives same result[32m 4[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mPayment Signature Verification (verify-payment routes)[2m > [22maccepts a valid payment signature[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mPayment Signature Verification (verify-payment routes)[2m > [22mrejects if razorpaySignature is not sent (CRITICAL ΓÇö old bug was optional check)[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mPayment Signature Verification (verify-payment routes)[2m > [22mrejects if orderId is swapped[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mPayment Signature Verification (verify-payment routes)[2m > [22mrejects if paymentId is different[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mPayment Signature Verification (verify-payment routes)[2m > [22mrejects all-zeros signature of correct length[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mPayment Signature Verification (verify-payment routes)[2m > [22mrejects SQL injection attempt in orderId[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mPayment Amount Validation[2m > [22maccepts valid amount Γé╣100[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mPayment Amount Validation[2m > [22maccepts minimum Γé╣10[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mPayment Amount Validation[2m > [22maccepts maximum Γé╣50000[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mPayment Amount Validation[2m > [22mrejects Γé╣0[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mPayment Amount Validation[2m > [22mrejects negative amount[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mPayment Amount Validation[2m > [22mrejects amount below minimum Γé╣9[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mPayment Amount Validation[2m > [22mrejects amount above maximum Γé╣50001[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mPayment Amount Validation[2m > [22mrejects string 'abc'[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mPayment Amount Validation[2m > [22mrejects undefined[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mPayment Amount Validation[2m > [22mrejects null[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mPayment Amount Validation[2m > [22mrejects empty string[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mPayment Amount Validation[2m > [22mparses '500.50' as valid[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mPayment Amount Validation[2m > [22mrejects Infinity[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mPaise to Rupees conversion (webhook payload parsing)[2m > [22mconverts 50000 paise to Γé╣500.00[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mPaise to Rupees conversion (webhook payload parsing)[2m > [22mconverts 100 paise to Γé╣1.00[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mPaise to Rupees conversion (webhook payload parsing)[2m > [22mconverts 1 paise to Γé╣0.01[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mPaise to Rupees conversion (webhook payload parsing)[2m > [22mconverts 999 paise to Γé╣9.99[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mPaise to Rupees conversion (webhook payload parsing)[2m > [22mamount mismatch detection: |fetched - event| > 0.5 rupee fails[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook Idempotency (event deduplication)[2m > [22mfirst event is processed[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook Idempotency (event deduplication)[2m > [22mduplicate event is skipped[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook Idempotency (event deduplication)[2m > [22mdifferent events are both processed[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook Idempotency (event deduplication)[2m > [22m100 rapid duplicates ΓÇö all skipped after first[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mSubscription Expiry / Days-Left Calculation[2m > [22mreturns 0 for yesterday[32m 3[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mSubscription Expiry / Days-Left Calculation[2m > [22mreturns > 0 for tomorrow[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mSubscription Expiry / Days-Left Calculation[2m > [22mreturns 0 for today (expired at start of day)[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mSubscription Expiry / Days-Left Calculation[2m > [22mreturns ~30 for a month from now[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mSubscription Expiry / Days-Left Calculation[2m > [22mhasActiveSubscription requires daysLeft > 0[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mCommission & GST Calculation[2m > [22m15% commission + 18% GST on Γé╣100 fare[32m 2[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mCommission & GST Calculation[2m > [22mcommission on Γé╣0 is Γé╣0[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mCommission & GST Calculation[2m > [22m20% commission on Γé╣500 = Γé╣100 + GST[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook Event Type Recognition[2m > [22mrecognizes all 12 handled event types[32m 3[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook Event Type Recognition[2m > [22mhandles event: payment.authorized[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook Event Type Recognition[2m > [22mhandles event: payment.captured[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook Event Type Recognition[2m > [22mhandles event: payment.failed[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook Event Type Recognition[2m > [22mhandles event: subscription.authenticated[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook Event Type Recognition[2m > [22mhandles event: subscription.pending[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook Event Type Recognition[2m > [22mhandles event: subscription.activated[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook Event Type Recognition[2m > [22mhandles event: subscription.charged[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook Event Type Recognition[2m > [22mhandles event: subscription.halted[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook Event Type Recognition[2m > [22mhandles event: subscription.resumed[32m 2[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook Event Type Recognition[2m > [22mhandles event: subscription.cancelled[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook Event Type Recognition[2m > [22mhandles event: refund.created[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook Event Type Recognition[2m > [22mhandles event: refund.processed[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWebhook Event Type Recognition[2m > [22mreturns false for unknown event type[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWallet Balance Operations[2m > [22mcredit increases balance[32m 4[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWallet Balance Operations[2m > [22mdebit decreases balance[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWallet Balance Operations[2m > [22mGREATEST(0, balance - debit) never goes negative[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWallet Balance Operations[2m > [22mauto-unlock threshold: balance >= threshold unlocks driver[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mWallet Balance Operations[2m > [22mdriver stays locked if balance below threshold[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mError Message Sanitization[2m > [22mreturns message from Error object[32m 1[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mError Message Sanitization[2m > [22mtruncates long messages at 200 chars[32m 2[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mError Message Sanitization[2m > [22mstrips stack trace (newlines)[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mError Message Sanitization[2m > [22mhandles null gracefully[32m 0[2mms[22m[39m
+ [32mΓ£ô[39m tests/unit/webhook-security.test.ts[2m > [22mError Message Sanitization[2m > [22mhandles undefined gracefully[32m 0[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m5 passed[39m[22m[90m (5)[39m
+[2m      Tests [22m [1m[32m171 passed[39m[22m[90m (171)[39m
+[2m   Start at [22m 11:12:56
+[2m   Duration [22m 1.29s[2m (transform 797ms, setup 0ms, import 1.07s, tests 157ms, environment 2ms)[22m
+

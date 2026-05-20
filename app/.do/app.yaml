@@ -1,0 +1,87 @@
+name: jago-platform
+region: blr
+databases:
+  - name: jago-redis
+    engine: REDIS
+    version: "7"
+    production: true
+    size: db-s-1vcpu-1gb
+services:
+  - name: jago-server
+    source_dir: /
+    github:
+      repo: jagopro452-cloud/jago
+      branch: main
+      deploy_on_push: true
+    build_command: npm ci && npm run build
+    run_command: npm start
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: basic-s
+    health_check:
+      http_path: /api/health
+      initial_delay_seconds: 30
+      period_seconds: 30
+      timeout_seconds: 10
+      success_threshold: 1
+      failure_threshold: 3
+    envs:
+      - key: NODE_ENV
+        value: "production"
+      - key: PORT
+        value: "8080"
+      # --- Secrets: set these ONLY in DigitalOcean dashboard, NOT here ---
+      # DATABASE_URL          → Neon PostgreSQL connection string
+      # FIREBASE_SERVICE_ACCOUNT_KEY → Firebase service account JSON
+      # FIREBASE_WEB_API_KEY  → Firebase web API key
+      # GOOGLE_MAPS_API_KEY   → Google Maps server key
+      # RAZORPAY_KEY_ID       → Razorpay live key
+      # RAZORPAY_KEY_SECRET   → Razorpay live secret
+      # RAZORPAY_WEBHOOK_SECRET → Razorpay webhook verification secret
+      # ANTHROPIC_API_KEY     → Claude API key
+      # OPS_API_KEY           → Internal ops endpoint auth
+      # ADMIN_PASSWORD        → Admin login password
+      # ADMIN_RESET_KEY       → Admin password reset key
+      - key: DATABASE_URL
+        type: SECRET
+      - key: FIREBASE_SERVICE_ACCOUNT_KEY
+        type: SECRET
+      - key: FIREBASE_WEB_API_KEY
+        type: SECRET
+      - key: GOOGLE_MAPS_API_KEY
+        type: SECRET
+      - key: RAZORPAY_KEY_ID
+        type: SECRET
+      - key: RAZORPAY_KEY_SECRET
+        type: SECRET
+      - key: RAZORPAY_WEBHOOK_SECRET
+        type: SECRET
+      - key: ANTHROPIC_API_KEY
+        type: SECRET
+      - key: OPS_API_KEY
+        type: SECRET
+      - key: TWO_FACTOR_API_KEY
+        type: SECRET
+      - key: ADMIN_PASSWORD
+        type: SECRET
+      - key: ADMIN_RESET_KEY
+        type: SECRET
+      # --- Non-secret config ---
+      - key: ADMIN_EMAIL
+        value: "kiranatmakuri518@gmail.com"
+      - key: ADMIN_NAME
+        value: "Jago Admin"
+      - key: ADMIN_PASSWORD_SYNC_ON_RESTART
+        value: "true"
+      - key: ADMIN_SESSION_TTL_HOURS
+        value: "24"
+      - key: ADMIN_2FA_REQUIRED
+        value: "false"
+      # To enable 2FA: set ADMIN_2FA_REQUIRED=true and ADMIN_PHONE=+91XXXXXXXXXX in DO dashboard
+      - key: ENABLE_DEV_OTP_RESPONSES
+        value: "false"
+      - key: SOCKET_ALLOWED_ORIGINS
+        value: "https://jagopro.org"
+      - key: REDIS_URL
+        value: ${jago-redis.REDIS_URL}
+        type: SECRET

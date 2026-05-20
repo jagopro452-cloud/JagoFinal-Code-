@@ -13,8 +13,8 @@ services:
       repo: jagopro452-cloud/jago
       branch: main
       deploy_on_push: true
-    build_command: cd jago_app-main && npm ci && npm run build
-    run_command: node jago_app-main/dist/index.js
+    build_command: cd app && npm ci && npm run build
+    run_command: node app/dist/index.js
     http_port: 8080
     instance_count: 1
     instance_size_slug: basic-s

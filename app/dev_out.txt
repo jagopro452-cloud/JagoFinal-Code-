@@ -1,0 +1,90 @@
+
+> rest-express@1.0.0 dev
+> cross-env NODE_ENV=development tsx --env-file=.env server/index.ts
+
+11:56:00 AM [express] [db] Running migrations from: D:\Jago_app\jago-master\migrations
+[DB] New connection established, pool size: 1
+11:56:00 AM [express] [db] Migrations applied OK — all tables ready
+11:56:00 AM [express] [server] Registering API routes...
+[seed] Parcel vehicle categories seeded/updated
+[seed] Vehicle categories seeded/updated
+[db:db] relation "platform_services" does not exist
+[DB] New connection established, pool size: 1
+[db:db] relation "platform_services" does not exist
+[seed] vehicle_categories.is_active synced with platform_services
+[DB] New connection established, pool size: 1
+[seed] pending drivers promoted to verified, model_selected_at backfilled
+[db:db] column "razorpay_payment_id" does not exist
+[DB] New connection established, pool size: 1
+[schema] Operational schema verified OK
+[SECURITY] ADMIN_EMAIL env var not set � skipping admin sync.
+[admin] Admin bootstrap complete
+[DISPATCH] Scheduled ride dispatcher started (30s interval)
+[DISPATCH] Stale session cleanup started (60s interval)
+[DISPATCH] Smart dispatch engine initialized
+[AI-BRAIN] Starting AI Mobility Brain (10s interval)
+[AI-BRAIN] Mobility brain started (10s tick)
+[PARCEL-ADV] Advanced parcel tables initialized
+[PARCEL-ADV] Advanced parcel system ready (dimensions, insurance, SLA, POD, B2B webhooks)
+[DB] New connection established, pool size: 16
+[DB] New connection established, pool size: 16
+[revenue-engine] Tables and settings initialized
+[REVENUE] Unified revenue engine ready (commission + GST + insurance ? admin)
+[DB] New connection established, pool size: 16
+[DB] New connection established, pool size: 16
+[DB] New connection established, pool size: 15
+[DB] New connection established, pool size: 15
+[DB] New connection established, pool size: 15
+[DYNAMIC-SVC] Tables and seeds initialized
+[DYNAMIC-SERVICES] City-based services + parcel vehicle types ready
+[DB] New connection established, pool size: 15
+[DB] New connection established, pool size: 15
+[DB] New connection established, pool size: 15
+[DB] New connection established, pool size: 15
+[DB] New connection established, pool size: 15
+[DB] New connection established, pool size: 15
+[DB] New connection established, pool size: 15
+[RETENTION] Tables initialized
+[RETENTION] Campaign job started (6 hour interval)
+[RETENTION] Customer retention system ready
+[DB] New connection established, pool size: 15
+[AI] Tables initialized
+[AI] Intelligence layer ready
+11:56:01 AM [express] [server] API routes registered successfully
+[SOCKET] Socket.IO initialized
+11:56:01 AM [express] serving on port 5000
+[MAPS-CACHE] Tables initialized
+[MAPS-CACHE] Cleanup job started (30 min interval)
+[MAPS-CACHE] Google Maps cache layer ready
+[AI] Refreshed stats for 0 drivers
+11:56:01 AM [express] [config] Could not load DB settings (non-fatal): bind message supplies 10 parameters, but prepared statement "" requires 9
+[32m[INFO][0m {"timestamp":"2026-04-01T06:26:01.692Z","level":"INFO","tag":"HARDENING-INIT","message":"Starting all hardening scheduled jobs","data":{}}
+[32m[INFO][0m {"timestamp":"2026-04-01T06:26:01.692Z","level":"INFO","tag":"HARDENING-INIT","message":"All hardening jobs initialized","data":{}}
+[32m[INFO][0m {"timestamp":"2026-04-01T06:26:01.692Z","level":"INFO","tag":"HARDENING-STARTUP","message":"Production hardening system initialized","data":{}}
+[INTELLIGENCE] Tables initialized
+[INTELLIGENCE] Rebalancing job started (5 min interval)
+[INTELLIGENCE] Fraud scan job started (30 min interval)
+[INTELLIGENCE] Behavior scoring job started (15 min interval)
+[INTELLIGENCE] Heatmap + Surge + Behavior + Fraud + Rebalancing ready
+[RETENTION] Campaign: 0 notifications sent, 0 promos created
+[DB] New connection established, pool size: 6
+[DB] New connection established, pool size: 6
+[DB] New connection established, pool size: 6
+[DB] New connection established, pool size: 6
+[DB] New connection established, pool size: 6
+[DB] New connection established, pool size: 6
+[DB] New connection established, pool size: 6
+[DB] New connection established, pool size: 6
+[DB] New connection established, pool size: 6
+[DB] New connection established, pool size: 6
+[DB] New connection established, pool size: 6
+[DB] New connection established, pool size: 6
+[DB] New connection established, pool size: 6
+[ARRIVAL-TIMEOUT] Error: relation "trip_status_log" does not exist
+[DB] New connection established, pool size: 6
+[DB] New connection established, pool size: 6
+[DB] New connection established, pool size: 6
+[DB] New connection established, pool size: 6
+[DB] New connection established, pool size: 6
+[DB] New connection established, pool size: 6
+[DB] New connection established, pool size: 6

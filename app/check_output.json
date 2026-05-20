@@ -1,0 +1,56 @@
+{
+  "drivers": [
+    {
+      "id": "1db484c2-8c6f-4edc-8dbf-beb3d1b6068a",
+      "full_name": "Padala Vamsi",
+      "phone": "6304497226",
+      "is_online": true,
+      "user_type": "driver",
+      "is_active": true,
+      "is_locked": false,
+      "verification_status": "approved",
+      "current_trip_id": null,
+      "lat": 16.4141106,
+      "lng": 80.5639916,
+      "dl_online": true,
+      "dl_updated": "2026-04-07T05:47:37.765Z",
+      "vehicle_category_id": "ef7b588e-3f84-4c83-96be-b7c561937753"
+    }
+  ],
+  "trips": [
+    {
+      "id": "a177b8b8-9989-4e6c-b45e-1e8dbcf7fd0d",
+      "ref_id": "TRP40605552",
+      "customer_id": "d6297aa5-ac7a-42c2-94b9-158b48a0f5d4",
+      "driver_id": null,
+      "vehicle_category_id": "ef7b588e-3f84-4c83-96be-b7c561937753",
+      "pickup_lat": 16.4140581,
+      "pickup_lng": 80.5639405,
+      "current_status": "cancelled",
+      "created_at": "2026-04-07T05:43:25.562Z"
+    },
+    {
+      "id": "b9224ce0-7efa-4e98-a752-63ee1847ce28",
+      "ref_id": "TRP40145361",
+      "customer_id": "d6297aa5-ac7a-42c2-94b9-158b48a0f5d4",
+      "driver_id": null,
+      "vehicle_category_id": "ef7b588e-3f84-4c83-96be-b7c561937753",
+      "pickup_lat": 16.4140774,
+      "pickup_lng": 80.5639543,
+      "current_status": "cancelled",
+      "created_at": "2026-04-07T05:35:45.371Z"
+    },
+    {
+      "id": "425ec615-7c2a-4697-bc09-d7799d6dbdd8",
+      "ref_id": "TRP39665765",
+      "customer_id": "d6297aa5-ac7a-42c2-94b9-158b48a0f5d4",
+      "driver_id": null,
+      "vehicle_category_id": "ef7b588e-3f84-4c83-96be-b7c561937753",
+      "pickup_lat": 16.4140803,
+      "pickup_lng": 80.5639119,
+      "current_status": "cancelled",
+      "created_at": "2026-04-07T05:27:45.775Z"
+    }
+  ],
+  "fcm": []
+}

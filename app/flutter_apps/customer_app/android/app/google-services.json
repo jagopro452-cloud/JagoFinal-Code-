@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "918055085885",
+    "project_id": "jagopro-9aa9b",
+    "storage_bucket": "jagopro-9aa9b.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:918055085885:android:4820e883dc57d38ec88754",
+        "android_client_info": {
+          "package_name": "com.mindwhile.jago_customer"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAiMVYA_ppxeT344tkcoSsjeGGMaPU26eI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:918055085885:android:13beaf074f82590bc88754",
+        "android_client_info": {
+          "package_name": "com.mindwhile.jago_pilot"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAiMVYA_ppxeT344tkcoSsjeGGMaPU26eI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
