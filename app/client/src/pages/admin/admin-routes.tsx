@@ -63,7 +63,6 @@ const OutstationPool = lazy(() => import("@/pages/admin/outstation-pool"));
 const ParcelOrders = lazy(() => import("@/pages/admin/parcel-orders"));
 const SystemHealth = lazy(() => import("@/pages/admin/system-health"));
 const VoiceCommandsPage = lazy(() => import("@/pages/admin/voice-commands"));
-const PopularLocationsAdmin = lazy(() => import("@/pages/admin/popular-locations"));
 const CityServices = lazy(() => import("@/pages/admin/city-services"));
 const ParcelVehiclesAdmin = lazy(() => import("@/pages/admin/parcel-vehicles"));
 const AIBrainDashboard = lazy(() => import("@/pages/admin/ai-brain-dashboard"));
@@ -99,7 +98,9 @@ export default function AdminRoutes() {
           <Route path="/admin/heat-map" component={HeatMap} />
           <Route path="/admin/fleet-view" component={FleetView} />
           <Route path="/admin/zones" component={Zones} />
-          <Route path="/admin/popular-locations" component={PopularLocationsAdmin} />
+          <Route path="/admin/popular-locations">
+            <Redirect to="/admin/zones" />
+          </Route>
           <Route path="/admin/trips" component={Trips} />
           <Route path="/admin/intercity-pool" component={CarSharing} />
           <Route path="/admin/local-pool" component={LocalPool} />

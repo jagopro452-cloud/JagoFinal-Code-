@@ -105,7 +105,6 @@ const navSections: NavSection[] = [
     category: "Zone Management",
     items: [
       { label: "Zone Setup", icon: "bi-map", href: "/admin/zones" },
-      { label: "Popular Locations", icon: "bi-geo-alt-fill", href: "/admin/popular-locations" },
     ],
   },
   {
