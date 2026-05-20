@@ -17,6 +17,7 @@ const BlogsPage = lazy(() => import("@/pages/admin/blogs"));
 const Withdrawals = lazy(() => import("@/pages/admin/withdrawals"));
 const CancellationReasonsPage = lazy(() => import("@/pages/admin/cancellation-reasons"));
 const HeatMap = lazy(() => import("@/pages/admin/heat-map"));
+const RealtimeOps = lazy(() => import("@/pages/admin/realtime-ops"));
 const FleetView = lazy(() => import("@/pages/admin/fleet-view"));
 const CarSharing = lazy(() => import("@/pages/admin/car-sharing"));
 const ParcelRefunds = lazy(() => import("@/pages/admin/parcel-refunds"));
@@ -94,6 +95,7 @@ export default function AdminRoutes() {
       <Suspense fallback={<AdminPageFallback />}>
         <Switch>
           <Route path="/admin/dashboard" component={Dashboard} />
+          <Route path="/admin/realtime-ops" component={RealtimeOps} />
           <Route path="/admin/heat-map" component={HeatMap} />
           <Route path="/admin/fleet-view" component={FleetView} />
           <Route path="/admin/zones" component={Zones} />
