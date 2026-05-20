@@ -97,7 +97,7 @@ export default function PopularLocationsAdmin() {
 
   return (
     <div className="container-fluid py-3">
-      <div className="d-flex justify-content-between align-items-center mb-3">
+      <div className="d-flex flex-wrap justify-content-between align-items-center gap-3">
         <div>
           <h4 className="mb-0 fw-bold">Popular Locations</h4>
           <div className="text-muted small">City-wise landmark shortcuts for booking flow</div>
@@ -106,13 +106,13 @@ export default function PopularLocationsAdmin() {
 
       <div className="card border-0 shadow-sm mb-3">
         <div className="card-body">
-          <div className="row g-2 align-items-end">
+          <div className="row g-3 align-items-end">
             <div className="col-md-3">
-              <label className="form-label">City</label>
+              <label className="form-label fw-semibold small">City</label>
               <input className="form-control" value={city} onChange={(e) => setCity(e.target.value)} />
             </div>
             <div className="col-md-2">
-              <button className="btn btn-outline-secondary w-100" onClick={clearForm}>New</button>
+              <button className="btn btn-outline-secondary w-100" onClick={clearForm}>New Location</button>
             </div>
           </div>
         </div>
@@ -121,17 +121,17 @@ export default function PopularLocationsAdmin() {
       <div className="card border-0 shadow-sm mb-3">
         <div className="card-header bg-white fw-semibold">{editing ? "Edit Location" : "Add Location"}</div>
         <div className="card-body">
-          <div className="row g-2">
-            <div className="col-md-3"><input className="form-control" placeholder="Location Name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} /></div>
-            <div className="col-md-2"><input className="form-control" placeholder="City" value={form.cityName} onChange={(e) => setForm((f) => ({ ...f, cityName: e.target.value }))} /></div>
-            <div className="col-md-2"><input className="form-control" placeholder="Latitude" value={form.latitude} onChange={(e) => setForm((f) => ({ ...f, latitude: e.target.value }))} /></div>
-            <div className="col-md-2"><input className="form-control" placeholder="Longitude" value={form.longitude} onChange={(e) => setForm((f) => ({ ...f, longitude: e.target.value }))} /></div>
-            <div className="col-md-3"><input className="form-control" placeholder="Full Address (optional)" value={form.fullAddress} onChange={(e) => setForm((f) => ({ ...f, fullAddress: e.target.value }))} /></div>
-            <div className="col-md-2 form-check mt-2 ms-2">
+          <div className="row g-3">
+            <div className="col-lg-3 col-md-6"><input className="form-control" placeholder="Location Name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} /></div>
+            <div className="col-lg-2 col-md-6"><input className="form-control" placeholder="City" value={form.cityName} onChange={(e) => setForm((f) => ({ ...f, cityName: e.target.value }))} /></div>
+            <div className="col-lg-2 col-md-6"><input className="form-control" placeholder="Latitude" value={form.latitude} onChange={(e) => setForm((f) => ({ ...f, latitude: e.target.value }))} /></div>
+            <div className="col-lg-2 col-md-6"><input className="form-control" placeholder="Longitude" value={form.longitude} onChange={(e) => setForm((f) => ({ ...f, longitude: e.target.value }))} /></div>
+            <div className="col-lg-3 col-md-12"><input className="form-control" placeholder="Full Address (optional)" value={form.fullAddress} onChange={(e) => setForm((f) => ({ ...f, fullAddress: e.target.value }))} /></div>
+            <div className="col-lg-2 col-md-6 form-check mt-md-2 ms-md-2">
               <input className="form-check-input" type="checkbox" checked={form.isActive} onChange={(e) => setForm((f) => ({ ...f, isActive: e.target.checked }))} id="popular-active" />
               <label className="form-check-label" htmlFor="popular-active">Active</label>
             </div>
-            <div className="col-md-2">
+            <div className="col-lg-2 col-md-6">
               <button className="btn btn-primary w-100" onClick={() => save.mutate()} disabled={save.isPending}>{save.isPending ? "Saving..." : "Save"}</button>
             </div>
           </div>

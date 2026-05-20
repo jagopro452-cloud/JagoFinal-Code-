@@ -4382,7 +4382,183 @@ html[data-theme="dark"] .jd-view-all-btn:hover {
   --bs-gutter-y: 0.9rem;
 }
 
+/* ============================================================
+   Admin Shared Layout System
+   Safe alignment + responsive rules for common page patterns
+   ============================================================ */
+.admin-shell .admin-main-inner {
+  min-width: 0;
+}
+
+.admin-shell .container-fluid {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.admin-shell .container-fluid.py-3,
+.admin-shell .container-fluid.py-4 {
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+
+.admin-shell .container-fluid > * {
+  min-width: 0;
+}
+
+.admin-shell .container-fluid > .d-flex.align-items-center.justify-content-between,
+.admin-shell .container-fluid > .d-flex.justify-content-between.align-items-center,
+.admin-shell .container-fluid > .d-flex.flex-wrap.align-items-center.justify-content-between {
+  margin-bottom: 0 !important;
+}
+
+.admin-shell .container-fluid > .d-flex > *,
+.admin-shell .card-header > *,
+.admin-shell .card-body > * {
+  min-width: 0;
+}
+
+.admin-shell .search-form,
+.admin-shell .search-form.search-form_style-two,
+.admin-shell .search-form__input_group,
+.admin-shell .input-group,
+.admin-shell .btn-group,
+.admin-shell .form-control,
+.admin-shell .form-select,
+.admin-shell textarea,
+.admin-shell .nav--tabs {
+  max-width: 100%;
+}
+
+.admin-shell .search-form.search-form_style-two {
+  width: auto;
+}
+
+.admin-shell .search-form.search-form_style-two .search-form__input_group {
+  flex: 1 1 260px;
+}
+
+.admin-shell .search-form.search-form_style-two .btn {
+  flex: 0 0 auto;
+}
+
+.admin-shell .btn-group {
+  flex-wrap: wrap;
+}
+
+.admin-shell .btn-group > .btn {
+  flex: 0 0 auto;
+}
+
+.admin-shell .card {
+  overflow: hidden;
+}
+
+.admin-shell .card-body .row.g-2,
+.admin-shell .card-body .row.g-3,
+.admin-shell .card-body .row.g-4 {
+  align-items: flex-start;
+}
+
+.admin-shell .card-body .form-check {
+  padding-left: 1.8rem;
+}
+
+.admin-shell .card-body .form-check .form-check-input {
+  margin-left: -1.8rem;
+}
+
+.admin-shell .table-responsive {
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
+.admin-shell .table-responsive > .table {
+  min-width: 100%;
+}
+
+.admin-shell .table td,
+.admin-shell .table th {
+  word-break: normal;
+}
+
+.admin-shell .table td > .d-flex,
+.admin-shell .table th > .d-flex {
+  min-width: 0;
+}
+
 @media (max-width: 992px) {
+  .admin-shell .header-inner {
+    gap: 10px;
+    align-items: flex-start !important;
+    flex-wrap: wrap;
+  }
+
+  .admin-shell .header-left-col,
+  .admin-shell .header-right-col {
+    min-width: 0;
+  }
+
+  .admin-shell .header-right-col {
+    width: 100%;
+    margin-left: 0 !important;
+  }
+
+  .admin-shell .header-right,
+  .admin-shell .header-nav-list {
+    width: 100%;
+    justify-content: flex-start !important;
+    flex-wrap: wrap;
+  }
+
+  .admin-shell .container-fluid {
+    gap: 14px;
+  }
+
+  .admin-shell .container-fluid > .d-flex.align-items-center.justify-content-between,
+  .admin-shell .container-fluid > .d-flex.justify-content-between.align-items-center,
+  .admin-shell .container-fluid > .d-flex.flex-wrap.align-items-center.justify-content-between,
+  .admin-shell .card-header.bg-white {
+    flex-direction: column;
+    align-items: stretch !important;
+  }
+
+  .admin-shell .container-fluid > .d-flex.align-items-center.justify-content-between > *,
+  .admin-shell .container-fluid > .d-flex.justify-content-between.align-items-center > *,
+  .admin-shell .container-fluid > .d-flex.flex-wrap.align-items-center.justify-content-between > *,
+  .admin-shell .card-header.bg-white > * {
+    width: 100%;
+  }
+
+  .admin-shell .container-fluid > .d-flex .d-flex,
+  .admin-shell .card-header.bg-white .d-flex {
+    flex-wrap: wrap;
+  }
+
+  .admin-shell .search-form.search-form_style-two,
+  .admin-shell .nav--tabs,
+  .admin-shell .btn-group,
+  .admin-shell .card-header.bg-white .btn-group {
+    width: 100%;
+  }
+
+  .admin-shell .search-form.search-form_style-two .search-form__input_group,
+  .admin-shell .search-form.search-form_style-two .btn,
+  .admin-shell .container-fluid > .d-flex .btn,
+  .admin-shell .card-header.bg-white .btn {
+    width: 100%;
+  }
+
+  .admin-shell .btn-group > .btn {
+    flex: 1 1 0;
+  }
+
+  .admin-shell .table-responsive > .table {
+    min-width: 720px;
+  }
+
   .admin-shell .card-header.bg-white {
     align-items: flex-start;
   }
@@ -4402,6 +4578,10 @@ html[data-theme="dark"] .jd-view-all-btn:hover {
     padding: 12px !important;
   }
 
+  .admin-shell .container-fluid {
+    gap: 12px;
+  }
+
   .admin-shell .card-header,
   .admin-shell .card-body,
   .admin-shell .card-footer {
@@ -4416,10 +4596,20 @@ html[data-theme="dark"] .jd-view-all-btn:hover {
     align-items: flex-start !important;
   }
 
+  .admin-shell .container-fluid > .d-flex.align-items-center.justify-content-between > *,
+  .admin-shell .container-fluid > .d-flex.justify-content-between.align-items-center > *,
+  .admin-shell .container-fluid > .d-flex.flex-wrap.align-items-center.justify-content-between > * {
+    width: 100%;
+  }
+
   .admin-shell .table td,
   .admin-shell .table th {
     padding-left: 10px !important;
     padding-right: 10px !important;
+  }
+
+  .admin-shell .table-responsive > .table {
+    min-width: 640px;
   }
 }
 
