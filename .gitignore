@@ -1,0 +1,8 @@
+node_modules
+.env
+_safe_archive_2026-05-20/
+public/apks/
+public/uploads/
+
+# Local nested worktree used for production recovery history.
+jago-Updates-23-04-jago/

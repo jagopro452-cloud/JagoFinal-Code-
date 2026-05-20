@@ -5133,3 +5133,257 @@ body.admin-route .admin-shell .jd-stat-card:hover {
     margin-left: 0 !important;
   }
 }
+
+/* ============================================================
+   Admin Responsive Guard
+   Normalize shared layout/table/card behavior across all pages
+   without changing page-specific UX.
+   ============================================================ */
+body.admin-route .admin-shell .container-fluid,
+body.admin-route .admin-shell .container,
+body.admin-route .admin-shell .row,
+body.admin-route .admin-shell [class*="col-"] {
+  min-width: 0;
+}
+
+body.admin-route .admin-shell .table-responsive {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
+body.admin-route .admin-shell .table-responsive > .table,
+body.admin-route .admin-shell .table-responsive > table {
+  min-width: 100%;
+}
+
+body.admin-route .admin-shell .header-inner,
+body.admin-route .admin-shell .header-left-col,
+body.admin-route .admin-shell .header-right-col,
+body.admin-route .admin-shell .header-nav-list,
+body.admin-route .admin-shell .card-header,
+body.admin-route .admin-shell .card-header.bg-white,
+body.admin-route .admin-shell .card-header .d-flex,
+body.admin-route .admin-shell .container-fluid > .d-flex,
+body.admin-route .admin-shell .container-fluid .card-header > .d-flex,
+body.admin-route .admin-shell .modal-footer {
+  min-width: 0;
+}
+
+@media (max-width: 1199px) {
+  body.admin-route .admin-shell .header-inner {
+    padding: 0 1rem !important;
+  }
+
+  body.admin-route .admin-shell .main-area-inner,
+  body.admin-route .admin-shell .admin-main-inner {
+    padding: 1.125rem !important;
+  }
+
+  body.admin-route .admin-shell .container-fluid,
+  body.admin-route .admin-shell .container {
+    padding-left: 12px !important;
+    padding-right: 12px !important;
+  }
+
+  body.admin-route .admin-shell .card-header,
+  body.admin-route .admin-shell .card-header.bg-white,
+  body.admin-route .admin-shell .container-fluid > .d-flex,
+  body.admin-route .admin-shell .container-fluid .card-header > .d-flex,
+  body.admin-route .admin-shell .modal-footer {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: stretch !important;
+  }
+
+  body.admin-route .admin-shell .card-header > *,
+  body.admin-route .admin-shell .card-header.bg-white > *,
+  body.admin-route .admin-shell .container-fluid > .d-flex > *,
+  body.admin-route .admin-shell .container-fluid .card-header > .d-flex > *,
+  body.admin-route .admin-shell .modal-footer > * {
+    min-width: 0;
+  }
+
+  body.admin-route .admin-shell .card-header .search-form__input_group,
+  body.admin-route .admin-shell .card-header .input-group,
+  body.admin-route .admin-shell .card-header .form-control,
+  body.admin-route .admin-shell .card-header .form-select,
+  body.admin-route .admin-shell .card-header .btn,
+  body.admin-route .admin-shell .container-fluid > .d-flex .search-form__input_group,
+  body.admin-route .admin-shell .container-fluid > .d-flex .input-group,
+  body.admin-route .admin-shell .container-fluid > .d-flex .form-control,
+  body.admin-route .admin-shell .container-fluid > .d-flex .form-select {
+    max-width: 100% !important;
+  }
+
+  body.admin-route .admin-shell [style*="display: grid"][style*="grid-template-columns: 1fr 1fr"],
+  body.admin-route .admin-shell [style*="display: grid"][style*="grid-template-columns: 1.1fr 0.9fr"],
+  body.admin-route .admin-shell [style*="display: grid"][style*="grid-template-columns: minmax(0, 1.55fr) minmax(340px, 0.95fr)"],
+  body.admin-route .admin-shell [style*="display: grid"][style*="grid-template-columns: 1fr 1fr 1fr 1fr"],
+  body.admin-route .admin-shell [style*="display: grid"][style*="grid-template-columns: repeat(3,1fr)"],
+  body.admin-route .admin-shell [style*="display:grid"][style*="grid-template-columns:1fr 1fr"],
+  body.admin-route .admin-shell [style*="display:grid"][style*="grid-template-columns:1.1fr 0.9fr"],
+  body.admin-route .admin-shell [style*="display:grid"][style*="grid-template-columns:minmax(0, 1.55fr) minmax(340px, 0.95fr)"],
+  body.admin-route .admin-shell [style*="display:grid"][style*="grid-template-columns:1fr 1fr 1fr 1fr"],
+  body.admin-route .admin-shell [style*="display:grid"][style*="grid-template-columns:repeat(3,1fr)"] {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
+@media (max-width: 991px) {
+  body.admin-route .admin-shell .header {
+    height: auto !important;
+    min-height: 64px;
+  }
+
+  body.admin-route .admin-shell .header-inner {
+    padding: 10px 0.875rem !important;
+    align-items: flex-start !important;
+    gap: 10px;
+  }
+
+  body.admin-route .admin-shell .header-left-col,
+  body.admin-route .admin-shell .header-right-col,
+  body.admin-route .admin-shell .header-nav-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  body.admin-route .admin-shell .header-right-col {
+    width: 100%;
+    margin-left: 0 !important;
+  }
+
+  body.admin-route .admin-shell .header-right,
+  body.admin-route .admin-shell .header-right .nav {
+    width: 100%;
+    justify-content: flex-start !important;
+  }
+
+  body.admin-route .admin-shell .main-area,
+  body.admin-route .admin-shell .admin-main-area {
+    padding-top: 92px !important;
+  }
+
+  body.admin-route .admin-shell .main-area-inner,
+  body.admin-route .admin-shell .admin-main-inner {
+    padding: 1rem !important;
+  }
+
+  body.admin-route .admin-shell .card-header,
+  body.admin-route .admin-shell .card-header.bg-white,
+  body.admin-route .admin-shell .container-fluid > .d-flex,
+  body.admin-route .admin-shell .container-fluid .card-header > .d-flex {
+    justify-content: flex-start !important;
+  }
+
+  body.admin-route .admin-shell .card-header .btn,
+  body.admin-route .admin-shell .card-header .input-group,
+  body.admin-route .admin-shell .card-header .search-form__input_group,
+  body.admin-route .admin-shell .card-header .form-control,
+  body.admin-route .admin-shell .card-header .form-select,
+  body.admin-route .admin-shell .container-fluid > .d-flex .btn,
+  body.admin-route .admin-shell .container-fluid > .d-flex .input-group,
+  body.admin-route .admin-shell .container-fluid > .d-flex .search-form__input_group,
+  body.admin-route .admin-shell .container-fluid > .d-flex .form-control,
+  body.admin-route .admin-shell .container-fluid > .d-flex .form-select {
+    width: 100% !important;
+  }
+
+  body.admin-route .admin-shell .table-responsive {
+    border-radius: 14px;
+  }
+
+  body.admin-route .admin-shell .table-responsive .table,
+  body.admin-route .admin-shell .table-responsive table {
+    min-width: 720px;
+  }
+
+  body.admin-route .admin-shell [style*="display: grid"][style*="grid-template-columns"],
+  body.admin-route .admin-shell [style*="display:grid"][style*="grid-template-columns"] {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 767px) {
+  body.admin-route .admin-shell .aside {
+    width: min(86vw, 280px) !important;
+    min-width: min(86vw, 280px) !important;
+    max-width: min(86vw, 280px) !important;
+  }
+
+  body.admin-route .admin-shell .header-inner {
+    padding: 10px 0.75rem !important;
+  }
+
+  body.admin-route .admin-shell .main-area,
+  body.admin-route .admin-shell .admin-main-area {
+    padding-top: 104px !important;
+  }
+
+  body.admin-route .admin-shell .main-area-inner,
+  body.admin-route .admin-shell .admin-main-inner {
+    padding: 0.875rem !important;
+  }
+
+  body.admin-route .admin-shell .container-fluid,
+  body.admin-route .admin-shell .container {
+    padding-left: 8px !important;
+    padding-right: 8px !important;
+  }
+
+  body.admin-route .admin-shell .card,
+  body.admin-route .admin-shell .jago-stat-card,
+  body.admin-route .admin-shell .jd-stat-card {
+    border-radius: 16px !important;
+  }
+
+  body.admin-route .admin-shell .card-header,
+  body.admin-route .admin-shell .card-header.bg-white,
+  body.admin-route .admin-shell .card-body,
+  body.admin-route .admin-shell .modal-footer {
+    padding-left: 12px !important;
+    padding-right: 12px !important;
+  }
+
+  body.admin-route .admin-shell .table-responsive .table,
+  body.admin-route .admin-shell .table-responsive table {
+    min-width: 640px;
+  }
+
+  body.admin-route .admin-shell [style*="display: flex"][style*="justify-content: space-between"],
+  body.admin-route .admin-shell [style*="display:flex"][style*="justify-content:space-between"] {
+    flex-wrap: wrap !important;
+    gap: 10px !important;
+  }
+}
+
+@media (max-width: 575px) {
+  body.admin-route .admin-shell .header-inner {
+    padding: 8px 0.625rem !important;
+  }
+
+  body.admin-route .admin-shell .main-area,
+  body.admin-route .admin-shell .admin-main-area {
+    padding-top: 110px !important;
+  }
+
+  body.admin-route .admin-shell .main-area-inner,
+  body.admin-route .admin-shell .admin-main-inner {
+    padding: 0.75rem !important;
+  }
+
+  body.admin-route .admin-shell .header-icon-btn,
+  body.admin-route .admin-shell .header-avatar-btn {
+    width: 36px !important;
+    height: 36px !important;
+  }
+
+  body.admin-route .admin-shell .table-responsive .table,
+  body.admin-route .admin-shell .table-responsive table {
+    min-width: 560px;
+  }
+}
