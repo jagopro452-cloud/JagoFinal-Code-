@@ -5497,32 +5497,6 @@ body.admin-route .admin-shell .jd-stat-card:hover {
   row-gap: 8px;
 }
 
-.admin-shell .header-logout-btn {
-  min-height: 42px;
-  padding: 0 14px;
-  border-radius: 999px;
-  border: 1px solid rgba(191, 219, 254, 0.95);
-  background: linear-gradient(135deg, #eff6ff, #dbeafe);
-  color: #1d4ed8;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  font-weight: 700;
-  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.14);
-  transition: transform .18s ease, box-shadow .18s ease, background .18s ease;
-}
-
-.admin-shell .header-logout-btn:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 14px 28px rgba(37, 99, 235, 0.18);
-  background: linear-gradient(135deg, #dbeafe, #bfdbfe);
-}
-
-.admin-shell .header-logout-btn i {
-  font-size: 13px;
-}
-
 .admin-shell .admin-user-menu {
   position: relative;
 }

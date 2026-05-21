@@ -543,17 +543,6 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                     }}></span>
                   </div>
                 </li>
-                <li className="d-none d-lg-block">
-                  <button
-                    className="header-logout-btn"
-                    onClick={handleLogout}
-                    data-testid="btn-header-logout"
-                    title="Sign Out"
-                  >
-                    <i className="bi bi-box-arrow-right"></i>
-                    <span>Sign Out</span>
-                  </button>
-                </li>
                 <li>
                   <div className="user admin-user-menu" ref={userMenuRef}>
                     <button
