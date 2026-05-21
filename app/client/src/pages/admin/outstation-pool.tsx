@@ -59,8 +59,29 @@ export default function OutstationPool() {
 
   return (
     <div className="container-fluid">
+      <style>{`
+        .jago-outstation-page .table-responsive {
+          max-height: none !important;
+        }
+        .jago-outstation-page .table thead th {
+          position: static !important;
+          top: auto !important;
+          white-space: nowrap;
+        }
+        .jago-outstation-page .table tbody td {
+          vertical-align: top;
+          padding-top: 18px;
+          padding-bottom: 18px;
+        }
+        .jago-outstation-page .route-inline {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
+      `}</style>
       {/* Header */}
-      <div className="d-flex align-items-center justify-content-between mb-4 flex-wrap gap-3">
+      <div className="jago-outstation-page d-flex align-items-center justify-content-between mb-4 flex-wrap gap-3">
         <div>
           <h4 className="fw-bold mb-1" style={{ color: "#0f172a" }}>
             <i className="bi bi-signpost-2-fill me-2" style={{ color: "#2F7BFF" }}></i>
@@ -74,7 +95,7 @@ export default function OutstationPool() {
           <div className="d-flex align-items-center gap-2 bg-white rounded-3 px-3 py-2 border">
             <span style={{ fontSize: 13, fontWeight: 600, color: "#334155" }}>Pool Mode:</span>
             <span className={`badge ${isPoolOn ? "bg-success" : "bg-secondary"} fs-6 px-3`}>
-              {isPoolOn ? "🟢 Active" : "⚪ Inactive"}
+              {isPoolOn ? "Active" : "Inactive"}
             </span>
             <button
               onClick={() => toggleMode.mutate(isPoolOn ? "off" : "on")}
@@ -93,7 +114,7 @@ export default function OutstationPool() {
           { label: "Total Rides Posted",  val: rideStats.total,        icon: "bi-car-front-fill",     color: "#1a73e8", bg: "#e8f0fe" },
           { label: "Active / Scheduled",  val: rideStats.active,       icon: "bi-broadcast-pin",      color: "#16a34a", bg: "#f0fdf4" },
           { label: "Total Bookings",      val: rideStats.totalBookings, icon: "bi-ticket-fill",        color: "#7c3aed", bg: "#f5f3ff" },
-          { label: "Total Revenue",       val: `₹${rideStats.totalRevenue.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`, icon: "bi-currency-rupee", color: "#b45309", bg: "#fefce8" },
+          { label: "Total Revenue",       val: `Rs. ${rideStats.totalRevenue.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`, icon: "bi-currency-rupee", color: "#b45309", bg: "#fefce8" },
         ].map((s, i) => (
           <div key={i} className="col-xl-3 col-md-6 col-6">
             <div className="card border-0 shadow-sm h-100" style={{ borderRadius: 14 }}>
@@ -112,7 +133,7 @@ export default function OutstationPool() {
       </div>
 
       {/* Tabs */}
-      <div className="card border-0 shadow-sm" style={{ borderRadius: 16 }}>
+      <div className="card border-0 shadow-sm jago-outstation-page" style={{ borderRadius: 16 }}>
         <div className="card-header bg-white border-0 px-4 pt-4 pb-0" style={{ borderRadius: "16px 16px 0 0" }}>
           <ul className="nav nav-tabs border-0" style={{ gap: 4 }}>
             {(["rides", "bookings"] as const).map(t => (
@@ -170,12 +191,12 @@ export default function OutstationPool() {
                         <tr key={r.id}>
                           <td className="ps-4">
                             <div>
-                              <div style={{ fontSize: 13, fontWeight: 600 }}>{r.driverName || "—"}</div>
+                              <div style={{ fontSize: 13, fontWeight: 600 }}>{r.driverName || "-"}</div>
                               <div style={{ fontSize: 11, color: "#64748b" }}>{r.driverPhone || ""}</div>
                             </div>
                           </td>
                           <td>
-                            <div className="d-flex align-items-center gap-2">
+                            <div className="route-inline">
                               <span style={{ fontSize: 12, fontWeight: 700, color: "#1a73e8" }}>{r.fromCity}</span>
                               <i className="bi bi-arrow-right" style={{ fontSize: 10, color: "#94a3b8" }}></i>
                               <span style={{ fontSize: 12, fontWeight: 700, color: "#16a34a" }}>{r.toCity}</span>
@@ -186,7 +207,7 @@ export default function OutstationPool() {
                           </td>
                           <td>
                             <div style={{ fontSize: 12, fontWeight: 600 }}>{fmtDate(r.departureDate)}</div>
-                            <div style={{ fontSize: 11, color: "#64748b" }}>{r.departureTime || "—"}</div>
+                            <div style={{ fontSize: 11, color: "#64748b" }}>{r.departureTime || "-"}</div>
                           </td>
                           <td>
                             <div className="d-flex align-items-center gap-1">
@@ -195,13 +216,13 @@ export default function OutstationPool() {
                             </div>
                             <div style={{ fontSize: 10, color: "#94a3b8" }}>available</div>
                           </td>
-                          <td style={{ fontSize: 14, fontWeight: 700, color: "#16a34a" }}>₹{parseFloat(r.farePerSeat || 0).toFixed(0)}</td>
+                          <td style={{ fontSize: 14, fontWeight: 700, color: "#16a34a" }}>Rs. {parseFloat(r.farePerSeat || 0).toFixed(0)}</td>
                           <td>
                             <span className="badge bg-primary bg-opacity-10 text-primary" style={{ fontSize: 12 }}>
                               {r.totalBookings || 0}
                             </span>
                           </td>
-                          <td style={{ fontSize: 13, fontWeight: 600 }}>₹{parseFloat(r.totalRevenue || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })}</td>
+                          <td style={{ fontSize: 13, fontWeight: 600 }}>Rs. {parseFloat(r.totalRevenue || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })}</td>
                           <td><span className={badge.cls} style={{ fontSize: 10 }}>{badge.label}</span></td>
                         </tr>
                       );
@@ -245,23 +266,23 @@ export default function OutstationPool() {
                     bookings.map((b: any) => {
                       const badge = STATUS_BADGE[b.status] || { cls: "badge bg-secondary", label: b.status };
                       const pmBadge = b.paymentStatus === "paid"
-                        ? <span className="badge bg-success" style={{ fontSize: 10 }}>✓ Paid</span>
+                        ? <span className="badge bg-success" style={{ fontSize: 10 }}>Paid</span>
                         : <span className="badge bg-warning text-dark" style={{ fontSize: 10 }}>Unpaid</span>;
                       return (
                         <tr key={b.id}>
                           <td className="ps-4">
-                            <div style={{ fontSize: 13, fontWeight: 600 }}>{b.customerName || "—"}</div>
+                            <div style={{ fontSize: 13, fontWeight: 600 }}>{b.customerName || "-"}</div>
                             <div style={{ fontSize: 11, color: "#64748b" }}>{b.customerPhone || ""}</div>
                           </td>
                           <td>
-                            <div className="d-flex align-items-center gap-2">
+                            <div className="route-inline">
                               <span style={{ fontSize: 12, fontWeight: 700, color: "#1a73e8" }}>{b.fromCity}</span>
                               <i className="bi bi-arrow-right" style={{ fontSize: 10, color: "#94a3b8" }}></i>
                               <span style={{ fontSize: 12, fontWeight: 700, color: "#16a34a" }}>{b.toCity}</span>
                             </div>
                           </td>
                           <td style={{ fontSize: 14, fontWeight: 700, color: "#1a73e8" }}>{b.seatsBooked}</td>
-                          <td style={{ fontSize: 14, fontWeight: 700, color: "#16a34a" }}>₹{parseFloat(b.totalFare || 0).toFixed(0)}</td>
+                          <td style={{ fontSize: 14, fontWeight: 700, color: "#16a34a" }}>Rs. {parseFloat(b.totalFare || 0).toFixed(0)}</td>
                           <td>{pmBadge}</td>
                           <td><span className={badge.cls} style={{ fontSize: 10 }}>{badge.label}</span></td>
                           <td style={{ fontSize: 12, color: "#64748b" }}>{fmtDate(b.createdAt)}</td>
