@@ -5728,6 +5728,20 @@ body.admin-route .admin-shell .jd-stat-card:hover {
   -webkit-backdrop-filter: blur(8px);
 }
 
+.zones-page .zones-search-shell {
+  min-height: 44px;
+  min-width: min(100%, 280px);
+}
+
+.zones-page .zones-search-shell input {
+  min-width: 0;
+  width: 100% !important;
+}
+
+.zones-page .zones-map-toolbar {
+  flex-wrap: wrap;
+}
+
 @keyframes admin-loading-bar {
   0% {
     background-position: 200% 0;
@@ -5825,5 +5839,14 @@ body.admin-route .admin-shell .jd-stat-card:hover {
   .heatmap-page__loading-card {
     min-width: 0;
     width: 100%;
+  }
+
+  .zones-page .zones-search-shell {
+    width: 100%;
+  }
+
+  .zones-page .zones-map-toolbar > *:last-child {
+    width: 100%;
+    margin-left: 0 !important;
   }
 }

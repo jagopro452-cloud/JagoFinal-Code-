@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -27,7 +27,7 @@ function loadLeafletCss() {
   document.head.appendChild(l);
 }
 
-// Calculate polygon area in km² using equirectangular projection + Shoelace
+// Calculate polygon area in km2 using equirectangular projection + Shoelace
 function polygonAreaKm2(coords: [number, number][]): number {
   if (coords.length < 3) return 0;
   const latC = coords.reduce((s, c) => s + c[0], 0) / coords.length * Math.PI / 180;
@@ -339,7 +339,7 @@ function ZoneMapModal({ open, onClose, editing, initialForm, onSave, saving }: {
                 value={form.surgeFactor}
                 onChange={e => setForm((f: any) => ({ ...f, surgeFactor: parseFloat(e.target.value) || 1.0 }))}
                 placeholder="1.0" data-testid="input-surge-factor" style={{ width: "100%" }} />
-              <div style={{ fontSize: 10.5, color: "#94a3b8", marginTop: 4 }}>× base fare (1.0 = normal)</div>
+              <div style={{ fontSize: 10.5, color: "#94a3b8", marginTop: 4 }}>x base fare multiplier (1.0 = normal)</div>
             </div>
 
             {/* Status */}
@@ -360,14 +360,14 @@ function ZoneMapModal({ open, onClose, editing, initialForm, onSave, saving }: {
               <div style={{ background: closed ? "#f0fdf4" : "#fefce8", border: `1px solid ${closed ? "#86efac" : "#fde047"}`, borderRadius: 10, padding: 12 }}>
                 <div style={{ fontSize: 11, fontWeight: 600, color: closed ? "#16a34a" : "#ca8a04", marginBottom: 8 }}>
                   <i className={`bi ${closed ? "bi-check-circle-fill" : "bi-exclamation-triangle-fill"} me-1`}></i>
-                  {closed ? "Polygon Complete" : `${points.length} points — click first point to close`}
+                  {closed ? "Polygon Complete" : `${points.length} points - click first point to close`}
                 </div>
                 {closed && (
                   <>
                     <div style={{ display: "flex", gap: 12 }}>
                       <div style={{ flex: 1, textAlign: "center" }}>
                         <div style={{ fontSize: 18, fontWeight: 700, color: "#16a34a" }}>{area.toFixed(2)}</div>
-                        <div style={{ fontSize: 10, color: "#64748b" }}>km² Area</div>
+                        <div style={{ fontSize: 10, color: "#64748b" }}>km2 Area</div>
                       </div>
                       <div style={{ flex: 1, textAlign: "center" }}>
                         <div style={{ fontSize: 18, fontWeight: 700, color: "#1a73e8" }}>{perim.toFixed(2)}</div>
@@ -383,7 +383,7 @@ function ZoneMapModal({ open, onClose, editing, initialForm, onSave, saving }: {
             {form.surgeFactor > 1 && (
               <div style={{ background: "#fefce8", border: "1px solid #fde047", borderRadius: 10, padding: "10px 12px", fontSize: 12, color: "#92400e" }}>
                 <i className="bi bi-lightning-fill me-1" style={{ color: "#d97706" }}></i>
-                <b>Surge ×{Number(form.surgeFactor).toFixed(1)}</b> — rides starting inside this zone will be charged {Math.round((form.surgeFactor - 1) * 100)}% extra
+                <b>Surge x{Number(form.surgeFactor).toFixed(1)}</b> - rides starting inside this zone will be charged {Math.round((form.surgeFactor - 1) * 100)}% extra
               </div>
             )}
 
@@ -391,7 +391,7 @@ function ZoneMapModal({ open, onClose, editing, initialForm, onSave, saving }: {
             {!closed && points.length === 0 && (
               <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 10, padding: "10px 12px", fontSize: 11.5, color: "#64748b" }}>
                 <i className="bi bi-info-circle me-1"></i>
-                No polygon drawn — zone detection will use center point + radius below.
+                No polygon drawn - zone detection will use center point and radius below.
               </div>
             )}
 
@@ -437,7 +437,7 @@ function ZoneMapModal({ open, onClose, editing, initialForm, onSave, saving }: {
             <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: 8 }}>
               <button className="btn btn-primary w-100" disabled={!form.name || saving} onClick={handleSave}
                 data-testid="btn-save-zone">
-                {saving ? <><span className="spinner-border spinner-border-sm me-2"></span>Saving…</> :
+                {saving ? <><span className="spinner-border spinner-border-sm me-2"></span>Saving...</> :
                   editing ? "Update Zone" : "Create Zone"}
               </button>
               <button className="btn btn-outline-secondary w-100" onClick={onClose}>Cancel</button>
@@ -447,7 +447,7 @@ function ZoneMapModal({ open, onClose, editing, initialForm, onSave, saving }: {
           {/* Right: map */}
           <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
             {/* Toolbar */}
-            <div style={{ padding: "10px 14px", borderBottom: "1px solid #f1f5f9", display: "flex", alignItems: "center", gap: 8 }}>
+            <div className="zones-map-toolbar" style={{ padding: "10px 14px", borderBottom: "1px solid #f1f5f9", display: "flex", alignItems: "center", gap: 8 }}>
               <div style={{ fontWeight: 600, fontSize: 12, color: "#64748b", marginRight: 4 }}>Mode:</div>
               <button
                 onClick={() => setDrawMode("pan")}
@@ -498,7 +498,7 @@ function ZoneMapModal({ open, onClose, editing, initialForm, onSave, saving }: {
               {drawMode === "draw" && (
                 <div style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)", zIndex: 1000, background: "rgba(26,115,232,0.92)", color: "white", borderRadius: 20, padding: "5px 14px", fontSize: 11, fontWeight: 600, pointerEvents: "none", whiteSpace: "nowrap" }}>
                   <i className="bi bi-plus-circle me-1"></i>
-                  {closed ? "Polygon drawn — clear to redraw" : points.length < 2 ? "Click map to place first point" : "Click near 🔴 red dot to close polygon"}
+                  {closed ? "Polygon drawn - clear to redraw" : points.length < 2 ? "Click map to place first point" : "Click near red point to close polygon"}
                 </div>
               )}
               <div ref={mapRef} data-testid="zone-map" style={{ width: "100%", height: "100%", minHeight: 400 }} />
@@ -588,8 +588,8 @@ export default function Zones() {
   };
 
   return (
-    <div className="container-fluid">
-      <div className="d-flex align-items-center justify-content-between mb-4">
+    <div className="container-fluid zones-page">
+      <div className="d-flex align-items-center justify-content-between flex-wrap gap-3 mb-4">
         <div>
           <h4 className="fw-bold mb-0" data-testid="page-title">Zone Setup</h4>
           <div className="text-muted small">Draw service zones on map with area calculations</div>
@@ -617,7 +617,7 @@ export default function Zones() {
                 </div>
                 <div>
                   <div className="fw-bold lh-1 mb-1" style={{ fontSize: 22, color: s.color }}>
-                    {isLoading ? "—" : s.val}
+                    {isLoading ? "-" : s.val}
                   </div>
                   <div className="text-muted small">{s.label}</div>
                 </div>
@@ -628,9 +628,9 @@ export default function Zones() {
       </div>
 
       <div className="card border-0 shadow-sm" style={{ borderRadius: 14 }}>
-        <div className="card-header bg-white py-3 px-4 d-flex align-items-center justify-content-between flex-wrap gap-2"
+        <div className="card-header bg-white py-3 px-4 d-flex align-items-center justify-content-between flex-wrap gap-3"
           style={{ borderBottom: "1px solid #f1f5f9" }}>
-          <ul className="nav nav--tabs p-1 rounded bg-light">
+          <ul className="nav nav--tabs p-1 rounded bg-light flex-grow-1">
             {[["all","All"],["active","Active"],["inactive","Inactive"]].map(([val, label]) => (
               <li key={val} className="nav-item">
                 <button className={`nav-link${filterStatus === val ? " active" : ""}`}
@@ -638,10 +638,10 @@ export default function Zones() {
               </li>
             ))}
           </ul>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#f8fafc", border: "1.5px solid #e2e8f0", borderRadius: 10, padding: "6px 12px" }}>
+          <div className="zones-search-shell" style={{ display: "flex", alignItems: "center", gap: 6, background: "#f8fafc", border: "1.5px solid #e2e8f0", borderRadius: 10, padding: "6px 12px" }}>
             <i className="bi bi-search" style={{ fontSize: 12, color: "#94a3b8" }}></i>
-            <input style={{ border: "none", background: "transparent", outline: "none", fontSize: 13, width: 180 }}
-              placeholder="Search zones…" value={search} onChange={e => setSearch(e.target.value)}
+            <input style={{ border: "none", background: "transparent", outline: "none", fontSize: 13, width: 220 }}
+              placeholder="Search zones..." value={search} onChange={e => setSearch(e.target.value)}
               data-testid="input-search" />
           </div>
         </div>
@@ -651,7 +651,7 @@ export default function Zones() {
             <table className="table table-borderless align-middle table-hover mb-0">
               <thead style={{ background: "#f8fafc" }}>
                 <tr>
-                  {["#","Zone Name","Service Type","Area (km²)","Surge","Status","Active","Actions"].map((h, i) => (
+                  {["#","Zone Name","Service Type","Area (km2)","Surge","Status","Active","Actions"].map((h, i) => (
                     <th key={i} className={i === 0 ? "ps-4" : i === 7 ? "text-center pe-4" : ""}
                       style={{ fontSize: 11, color: "#94a3b8", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".5px", paddingTop: 12, paddingBottom: 12 }}>
                       {h}
@@ -681,8 +681,8 @@ export default function Zones() {
                             <div>
                               <div className="fw-semibold" style={{ fontSize: 13 }}>{zone.name}</div>
                               <div style={{ fontSize: 10.5, color: "#94a3b8", display: "flex", alignItems: "center", gap: 4 }}>
-                                {zone.coordinates ? "📍 Boundary set" : "⚠️ No boundary"}
-                                {surge > 1 && <span style={{ background: "#fef08a", color: "#92400e", borderRadius: 4, padding: "1px 5px", fontSize: 9, fontWeight: 700 }}>⚡ SURGE ACTIVE</span>}
+                                {zone.coordinates ? "Boundary set" : "No boundary"}
+                                {surge > 1 && <span style={{ background: "#fef08a", color: "#92400e", borderRadius: 4, padding: "1px 5px", fontSize: 9, fontWeight: 700 }}>SURGE ACTIVE</span>}
                               </div>
                             </div>
                           </div>
@@ -697,13 +697,13 @@ export default function Zones() {
                           {area > 0 ? (
                             <div>
                               <div className="fw-semibold" style={{ fontSize: 13, color: "#0f172a" }}>{area.toFixed(2)}</div>
-                              <div style={{ fontSize: 10, color: "#94a3b8" }}>km²</div>
+                              <div style={{ fontSize: 10, color: "#94a3b8" }}>km2</div>
                             </div>
-                          ) : <span className="text-muted small">—</span>}
+                          ) : <span className="text-muted small">-</span>}
                         </td>
                         <td>
                           <span className={`badge ${surge > 1 ? "bg-warning text-dark" : "bg-secondary"}`} style={{ fontSize: 11 }}>
-                            {surge.toFixed(1)}×{surge > 1 && <i className="bi bi-lightning-fill ms-1"></i>}
+                            {surge.toFixed(1)}x{surge > 1 && <i className="bi bi-lightning-fill ms-1"></i>}
                           </span>
                         </td>
                         <td>
