@@ -89,12 +89,34 @@ export default function Trips() {
         .jago-trips-page {
           gap: 18px;
         }
+        .jago-trips-page .card-body.p-0 > .table-responsive,
+        .jago-trips-page .table-responsive {
+          max-height: none !important;
+          overflow: auto !important;
+        }
+        .jago-trips-page .table thead th {
+          position: static !important;
+          top: auto !important;
+          z-index: auto !important;
+          box-shadow: inset 0 -1px 0 rgba(226, 232, 240, 0.95) !important;
+        }
+        .jago-trips-page .table tbody tr {
+          border-bottom: 1px solid #eef2f7;
+        }
+        .jago-trips-page .table tbody td {
+          vertical-align: top;
+          padding-top: 18px;
+          padding-bottom: 18px;
+        }
         .jago-trips-toolbar {
           display: flex;
           align-items: center;
           justify-content: space-between;
           gap: 12px;
           flex-wrap: wrap;
+        }
+        .jago-trips-toolbar .nav {
+          flex: 1 1 560px;
         }
         .jago-trips-toolbar-right {
           display: flex;
@@ -130,6 +152,9 @@ export default function Trips() {
           table-layout: fixed;
           min-width: 1180px;
         }
+        .jago-trips-table thead th {
+          white-space: nowrap;
+        }
         .jago-trips-table .trip-ref {
           color: #2563eb;
           font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -147,6 +172,7 @@ export default function Trips() {
           flex-direction: column;
           gap: 8px;
           min-width: 0;
+          padding-right: 6px;
         }
         .jago-trips-table .route-line {
           display: grid;
@@ -202,6 +228,9 @@ export default function Trips() {
           font-size: 10px;
         }
         @media (max-width: 991px) {
+          .jago-trips-toolbar .nav {
+            width: 100%;
+          }
           .jago-trips-toolbar-right,
           .jago-trips-search {
             width: 100%;
@@ -211,6 +240,9 @@ export default function Trips() {
           }
           .jago-trips-type-group {
             width: 100%;
+          }
+          .jago-trips-type-group > .btn {
+            flex: 1 1 140px;
           }
         }
       `}</style>
