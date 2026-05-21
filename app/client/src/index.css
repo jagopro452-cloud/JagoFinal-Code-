@@ -5469,7 +5469,109 @@ body.admin-route .admin-shell .jd-stat-card:hover {
   box-shadow: 0 24px 60px rgba(15, 23, 42, 0.15);
 }
 
+.admin-shell .header-inner {
+  gap: 14px;
+  min-width: 0;
+}
+
+.admin-shell .header-left-col,
+.admin-shell .header-right-col,
+.admin-shell .header-right,
+.admin-shell .header-nav-list {
+  min-width: 0;
+}
+
+.admin-shell .header-right-col {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.admin-shell .header-right {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.admin-shell .header-nav-list {
+  flex-wrap: nowrap;
+  row-gap: 8px;
+}
+
+.admin-shell .header-logout-btn {
+  min-height: 42px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(191, 219, 254, 0.95);
+  background: linear-gradient(135deg, #eff6ff, #dbeafe);
+  color: #1d4ed8;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.14);
+  transition: transform .18s ease, box-shadow .18s ease, background .18s ease;
+}
+
+.admin-shell .header-logout-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 14px 28px rgba(37, 99, 235, 0.18);
+  background: linear-gradient(135deg, #dbeafe, #bfdbfe);
+}
+
+.admin-shell .header-logout-btn i {
+  font-size: 13px;
+}
+
+.admin-shell .admin-user-menu {
+  position: relative;
+}
+
+.admin-shell .admin-user-dropdown {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  left: auto;
+  min-width: 220px;
+  padding: 8px;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 24px 50px rgba(15, 23, 42, 0.16);
+  z-index: 1200;
+}
+
+.admin-shell .admin-user-dropdown .dropdown-item,
+.admin-shell .admin-user-dropdown button.dropdown-item {
+  border-radius: 12px;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  width: 100%;
+}
+
+.admin-shell .admin-user-dropdown .dropdown-item:hover,
+.admin-shell .admin-user-dropdown button.dropdown-item:hover {
+  background: #f8fafc;
+}
+
+.admin-shell .admin-user-dropdown .dropdown-item-text {
+  padding: 8px 10px 10px;
+}
+
 @media (max-width: 992px) {
+  .admin-shell .header-inner {
+    align-items: flex-start !important;
+  }
+
+  .admin-shell .header-nav-list {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
   .admin-shell .container-fluid {
     gap: 14px;
   }
@@ -5519,5 +5621,22 @@ body.admin-route .admin-shell .jd-stat-card:hover {
 
   .admin-shell .modal-dialog {
     padding-inline: 8px;
+  }
+
+  .admin-shell .header-inner {
+    gap: 10px;
+  }
+
+  .admin-shell .header-left-col {
+    flex: 1 1 auto;
+  }
+
+  .admin-shell .header-right-col {
+    flex: 0 0 auto;
+  }
+
+  .admin-shell .admin-user-dropdown {
+    right: 0;
+    min-width: min(220px, calc(100vw - 32px));
   }
 }

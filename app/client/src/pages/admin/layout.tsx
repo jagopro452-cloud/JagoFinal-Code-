@@ -543,8 +543,19 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                     }}></span>
                   </div>
                 </li>
+                <li className="d-none d-lg-block">
+                  <button
+                    className="header-logout-btn"
+                    onClick={handleLogout}
+                    data-testid="btn-header-logout"
+                    title="Sign Out"
+                  >
+                    <i className="bi bi-box-arrow-right"></i>
+                    <span>Sign Out</span>
+                  </button>
+                </li>
                 <li>
-                  <div className="user" ref={userMenuRef}>
+                  <div className="user admin-user-menu" ref={userMenuRef}>
                     <button
                       className="avatar avatar-sm rounded-circle header-avatar-btn"
                       onClick={() => setUserMenuOpen(!userMenuOpen)}
@@ -554,7 +565,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                       {adminInitials}
                     </button>
                     {userMenuOpen && (
-                      <div className="dropdown-menu dropdown-menu-right show">
+                      <div className="dropdown-menu dropdown-menu-right show admin-user-dropdown">
                         <div className="dropdown-item-text">
                           <h6 className="mb-0">{admin.name || "Admin"}</h6>
                           <span className="text-muted" style={{ fontSize: "0.8rem" }}>{admin.email}</span>
