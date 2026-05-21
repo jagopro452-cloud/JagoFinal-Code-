@@ -522,7 +522,17 @@ export default function Zones() {
   const defaultForm = { name: "", coordinates: "", serviceType: "both", surgeFactor: 1.0, isActive: true, latitude: null, longitude: null, radiusKm: 5 };
   const [formForModal, setFormForModal] = useState(defaultForm);
 
-  const { data = [], isLoading } = useQuery<any[]>({ queryKey: ["/api/zones"] });
+  const { data, isLoading } = useQuery<any>({
+    queryKey: ["/api/zones"],
+    queryFn: async () => {
+      const response = await fetch("/api/zones");
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body?.message || "Failed to load zones");
+      }
+      return response.json();
+    },
+  });
 
   const save = useMutation({
     mutationFn: (d: any) => editing
@@ -554,13 +564,13 @@ export default function Zones() {
     setOpen(true);
   };
 
-  const filtered = (data as any[]).filter(z => {
+  const zones: any[] = Array.isArray(data) ? data : Array.isArray(data?.data) ? data.data : [];
+
+  const filtered = zones.filter(z => {
     const ok1 = filterStatus === "all" || (filterStatus === "active" ? z.isActive : !z.isActive);
     const ok2 = !search || z.name.toLowerCase().includes(search.toLowerCase());
     return ok1 && ok2;
   });
-
-  const zones = data as any[];
   const activeCount = zones.filter(z => z.isActive).length;
   const getServiceConfig = (type: string) => SERVICE_TYPES.find(s => s.value === type) || SERVICE_TYPES[0];
 
