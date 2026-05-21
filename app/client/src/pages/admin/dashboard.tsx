@@ -1,101 +1,203 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, PieChart, Pie, Cell, Legend,
+  Area,
+  AreaChart,
+  CartesianGrid,
+  Cell,
+  Legend,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
 } from "recharts";
-
-const avatarBg = (name: string) => {
-  const colors = ["#2F7BFF","#16a34a","#d97706","#9333ea","#0891b2","#dc2626"];
-  return colors[(name || "A").charCodeAt(0) % colors.length];
-};
-const initials = (name: string) => (name || "?").split(" ").map(n => n[0]).join("").substring(0, 2).toUpperCase();
 
 const STATUS_BADGE: Record<string, { cls: string; label: string }> = {
   completed: { cls: "badge bg-success", label: "Completed" },
-  ongoing:   { cls: "badge bg-info", label: "Ongoing" },
-  pending:   { cls: "badge bg-warning text-dark", label: "Pending" },
+  ongoing: { cls: "badge bg-info", label: "Ongoing" },
+  pending: { cls: "badge bg-warning text-dark", label: "Pending" },
   cancelled: { cls: "badge bg-danger", label: "Cancelled" },
-  accepted:  { cls: "badge bg-primary", label: "Accepted" },
+  accepted: { cls: "badge bg-primary", label: "Accepted" },
 };
 
 const NOTIF_ICONS: Record<string, { icon: string; color: string; bg: string }> = {
-  trip:     { icon: "bi-car-front-fill",    color: "#2F7BFF", bg: "#EBF4FF" },
-  driver:   { icon: "bi-person-badge-fill", color: "#16a34a", bg: "#f0fdf4" },
-  payment:  { icon: "bi-cash-stack",        color: "#d97706", bg: "#fefce8" },
-  alert:    { icon: "bi-exclamation-triangle-fill", color: "#dc2626", bg: "#fef2f2" },
-  user:     { icon: "bi-person-plus-fill",  color: "#7c3aed", bg: "#f5f3ff" },
-  withdraw: { icon: "bi-wallet2",           color: "#0891b2", bg: "#ecfeff" },
+  trip: { icon: "bi-car-front-fill", color: "#2F7BFF", bg: "#EBF4FF" },
+  driver: { icon: "bi-person-badge-fill", color: "#16a34a", bg: "#f0fdf4" },
+  payment: { icon: "bi-cash-stack", color: "#d97706", bg: "#fefce8" },
+  alert: { icon: "bi-exclamation-triangle-fill", color: "#dc2626", bg: "#fef2f2" },
+  user: { icon: "bi-person-plus-fill", color: "#7c3aed", bg: "#f5f3ff" },
+  withdraw: { icon: "bi-wallet2", color: "#0891b2", bg: "#ecfeff" },
 };
 
-/* ── Live Clock Widget ── */
-function LiveClock() {
-  const [time, setTime] = useState(new Date());
+function avatarBg(name: string) {
+  const colors = ["#2F7BFF", "#16a34a", "#d97706", "#9333ea", "#0891b2", "#dc2626"];
+  return colors[(name || "A").charCodeAt(0) % colors.length];
+}
+
+function initials(name: string) {
+  return (name || "?")
+    .split(" ")
+    .map((part) => part[0])
+    .join("")
+    .substring(0, 2)
+    .toUpperCase();
+}
+
+function formatMoney(value: number | string | null | undefined) {
+  const amount = Number(value || 0);
+  return `Rs. ${amount.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+}
+
+function formatDate(value: Date) {
+  return value.toLocaleDateString("en-IN", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+}
+
+function timeAgo(value?: string) {
+  if (!value) return "";
+  const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
+
+function customLabel({ cx, cy, midAngle, innerRadius, outerRadius, percent }: any) {
+  if (percent < 0.06) return null;
+  const radian = Math.PI / 180;
+  const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
+  const x = cx + radius * Math.cos(-midAngle * radian);
+  const y = cy + radius * Math.sin(-midAngle * radian);
+  return (
+    <text
+      x={x}
+      y={y}
+      fill="#fff"
+      textAnchor="middle"
+      dominantBaseline="central"
+      fontSize={10}
+      fontWeight={700}
+    >
+      {`${(percent * 100).toFixed(0)}%`}
+    </text>
+  );
+}
+
+function LiveClockCard() {
+  const [now, setNow] = useState(new Date());
+
   useEffect(() => {
-    const t = setInterval(() => setTime(new Date()), 1000);
-    return () => clearInterval(t);
+    const timer = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(timer);
   }, []);
-  const h12 = time.getHours() % 12 || 12;
-  const m = time.getMinutes().toString().padStart(2, "0");
-  const s = time.getSeconds().toString().padStart(2, "0");
-  const ampm = time.getHours() >= 12 ? "PM" : "AM";
-  const date = time.toLocaleDateString("en-IN", { weekday: "short", day: "2-digit", month: "short", year: "numeric" });
+
+  const hours = now.getHours() % 12 || 12;
+  const minutes = now.getMinutes().toString().padStart(2, "0");
+  const seconds = now.getSeconds().toString().padStart(2, "0");
+  const ampm = now.getHours() >= 12 ? "PM" : "AM";
 
   return (
     <div className="jd-clock-widget">
-      <div style={{ fontSize: 9.5, letterSpacing: 2.5, color: "rgba(255,255,255,0.45)", textTransform: "uppercase", marginBottom: 8, fontWeight: 600 }}>Local Time</div>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "center", gap: 2 }}>
-        <span style={{ fontSize: 36, fontWeight: 800, letterSpacing: 1, fontFamily: "'Inter', monospace", lineHeight: 1, color: "#fff" }}>
-          {h12}:{m}
-        </span>
-        <span style={{ fontSize: 18, opacity: 0.5, fontWeight: 600, fontFamily: "'Inter', monospace" }}>:{s}</span>
-        <span style={{ fontSize: 12, marginLeft: 6, fontWeight: 700, color: "rgba(147,197,253,0.8)" }}>{ampm}</span>
+      <div
+        style={{
+          fontSize: 9.5,
+          letterSpacing: 2.5,
+          color: "rgba(255,255,255,0.48)",
+          textTransform: "uppercase",
+          marginBottom: 8,
+          fontWeight: 700,
+        }}
+      >
+        Local Time
       </div>
-      <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", marginTop: 8, fontWeight: 500 }}>{date}</div>
-      <div style={{ display: "flex", justifyContent: "center", gap: 3, marginTop: 12 }}>
-        {[0,1,2,3,4,5,6,7,8,9].map(i => (
-          <div key={i} style={{
-            width: 2.5,
-            height: i % 3 === 0 ? 16 : i % 2 === 0 ? 10 : 6,
-            background: `rgba(147,197,253,${0.15 + (i % 4) * 0.08})`,
-            borderRadius: 2,
-            transition: "height 0.3s ease",
-          }} />
-        ))}
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "center", gap: 3 }}>
+        <span
+          style={{
+            fontSize: 36,
+            fontWeight: 800,
+            letterSpacing: 1,
+            fontFamily: "'Inter', monospace",
+            lineHeight: 1,
+            color: "#fff",
+          }}
+        >
+          {hours}:{minutes}
+        </span>
+        <span style={{ fontSize: 18, opacity: 0.5, fontWeight: 600 }}>:{seconds}</span>
+        <span style={{ fontSize: 12, marginLeft: 6, fontWeight: 700, color: "rgba(147,197,253,0.85)" }}>
+          {ampm}
+        </span>
+      </div>
+      <div style={{ fontSize: 11, color: "rgba(255,255,255,0.48)", marginTop: 8, fontWeight: 500 }}>
+        {formatDate(now)}
       </div>
     </div>
   );
 }
 
-/* ── Stat Card ── */
-function StatCard({ label, val, icon, color, bg, link, trend, trendUp, isLoading }: any) {
+function SectionHeader({ title, badge, badgeColor }: { title: string; badge?: string; badgeColor?: string }) {
   return (
-    <Link href={link}>
-      <div className="jd-stat-card" data-testid={`stat-card-${label.toLowerCase().replace(/\s+/g,"-")}`} style={{ color }}>
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+      <span
+        style={{
+          fontSize: 10.5,
+          fontWeight: 700,
+          color: "#94a3b8",
+          textTransform: "uppercase",
+          letterSpacing: 1.2,
+        }}
+      >
+        {title}
+      </span>
+      {badge ? (
+        <span
+          style={{
+            fontSize: 10.5,
+            background: `${badgeColor || "#dc2626"}10`,
+            color: badgeColor || "#dc2626",
+            border: `1px solid ${badgeColor || "#dc2626"}30`,
+            borderRadius: 999,
+            padding: "4px 10px",
+            fontWeight: 700,
+          }}
+        >
+          {badge}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function StatCard({ label, value, icon, color, bg, href, trend }: any) {
+  return (
+    <Link href={href}>
+      <div className="jd-stat-card" style={{ color }} data-testid={`stat-card-${label.toLowerCase().replace(/\s+/g, "-")}`}>
         <div className="jd-stat-icon-wrap" style={{ background: bg }}>
-          <i className={`bi ${icon}`} style={{ color, fontSize: "1.3rem" }}></i>
+          <i className={`bi ${icon}`} style={{ color, fontSize: "1.25rem" }}></i>
         </div>
         <div className="jd-stat-body">
           <div className="jd-stat-label">{label}</div>
           <div className="jd-stat-value" style={{ color }}>
-            {isLoading ? <span className="jd-stat-skeleton"></span> : (val ?? 0).toLocaleString()}
+            {value}
           </div>
         </div>
-        {trend && (
-          <div className={`jd-stat-trend ${trendUp ? "jd-trend-up" : "jd-trend-down"}`}>
-            <i className={`bi ${trendUp ? "bi-arrow-up-short" : "bi-arrow-down-short"}`}></i>
-            {trend}
-          </div>
-        )}
-        <div className="jd-stat-arrow"><i className="bi bi-chevron-right"></i></div>
+        {trend ? <div className="jd-stat-trend jd-trend-up">{trend}</div> : null}
+        <div className="jd-stat-arrow">
+          <i className="bi bi-chevron-right"></i>
+        </div>
       </div>
     </Link>
   );
 }
 
-/* ── Service Card ── */
-function ServiceCard({ label, icon, color, bg, trips, revenue, model, modelColor, href, loaded }: any) {
+function ServiceCard({ label, icon, color, bg, trips, revenue, model, href }: any) {
   return (
     <Link href={href}>
       <div className="jd-svc-card" style={{ "--accent": color, "--accent-bg": bg } as any}>
@@ -105,17 +207,21 @@ function ServiceCard({ label, icon, color, bg, trips, revenue, model, modelColor
           </div>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 12.5, fontWeight: 700, color: "#0f172a", lineHeight: 1.2 }}>{label}</div>
-            <div style={{ fontSize: 10, color: modelColor ?? color, fontWeight: 600, textTransform: "capitalize", marginTop: 1 }}>{model}</div>
+            <div style={{ fontSize: 10, color, fontWeight: 600, textTransform: "capitalize", marginTop: 2 }}>{model}</div>
           </div>
         </div>
         <div className="jd-svc-stats">
           <div>
-            <div style={{ fontSize: 20, fontWeight: 800, color, lineHeight: 1 }}>{loaded ? trips.toLocaleString() : "—"}</div>
-            <div style={{ fontSize: 9.5, color: "#94a3b8", marginTop: 2, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Trips</div>
+            <div style={{ fontSize: 20, fontWeight: 800, color, lineHeight: 1 }}>{Number(trips || 0).toLocaleString()}</div>
+            <div style={{ fontSize: 9.5, color: "#94a3b8", marginTop: 2, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>
+              Trips
+            </div>
           </div>
           <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: "#0f172a", lineHeight: 1 }}>₹{loaded ? revenue.toLocaleString("en-IN", { maximumFractionDigits: 0 }) : "—"}</div>
-            <div style={{ fontSize: 9.5, color: "#94a3b8", marginTop: 2, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Revenue</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#0f172a", lineHeight: 1 }}>{formatMoney(revenue)}</div>
+            <div style={{ fontSize: 9.5, color: "#94a3b8", marginTop: 2, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>
+              Revenue
+            </div>
           </div>
         </div>
       </div>
@@ -123,200 +229,144 @@ function ServiceCard({ label, icon, color, bg, trips, revenue, model, modelColor
   );
 }
 
-/* ── Pie chart custom label ── */
-const CUSTOM_LABEL = ({ cx, cy, midAngle, innerRadius, outerRadius, percent }: any) => {
-  if (percent < 0.06) return null;
-  const RADIAN = Math.PI / 180;
-  const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
-  const x = cx + radius * Math.cos(-midAngle * RADIAN);
-  const y = cy + radius * Math.sin(-midAngle * RADIAN);
-  return (
-    <text x={x} y={y} fill="white" textAnchor="middle" dominantBaseline="central" fontSize={10} fontWeight={700}>
-      {`${(percent * 100).toFixed(0)}%`}
-    </text>
-  );
-};
-
-/* ── Section Header ── */
-function SectionHeader({ title, badge, badgeColor }: { title: string; badge?: string; badgeColor?: string }) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, marginTop: 2 }}>
-      <span style={{ fontSize: 10.5, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 1.2 }}>{title}</span>
-      {badge && (
-        <span style={{
-          fontSize: 10.5, background: `${badgeColor || "#dc2626"}10`, color: badgeColor || "#dc2626",
-          border: `1px solid ${badgeColor || "#dc2626"}30`, borderRadius: 8, padding: "3px 10px", fontWeight: 700,
-        }}>
-          {badge}
-        </span>
-      )}
-    </div>
-  );
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   DASHBOARD COMPONENT
-   ═══════════════════════════════════════════════════════════════ */
 export default function Dashboard() {
   const { data: stats, isLoading } = useQuery<any>({ queryKey: ["/api/dashboard/stats"] });
-  const { data: svcData } = useQuery<any>({ queryKey: ["/api/admin/dashboard"], staleTime: 30_000 });
+  const { data: serviceData } = useQuery<any>({ queryKey: ["/api/admin/dashboard"], staleTime: 30000 });
   const { data: chart = [] } = useQuery<any[]>({ queryKey: ["/api/dashboard/chart"] });
-  const { data: notifs = [] } = useQuery<any[]>({ queryKey: ["/api/notifications"] });
-  const { data: liveKpis } = useQuery<any>({ queryKey: ["/api/admin/live-kpis"], refetchInterval: 15_000 });
+  const { data: notifications = [] } = useQuery<any[]>({ queryKey: ["/api/notifications"] });
+  const { data: liveKpis } = useQuery<any>({ queryKey: ["/api/admin/live-kpis"], refetchInterval: 15000 });
 
-  const today = new Date().toLocaleDateString("en-IN", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
-  const adminName = (() => { try { return JSON.parse(localStorage.getItem("jago-admin") || "{}").name || "Admin"; } catch { return "Admin"; } })();
-  const revenue = Number(stats?.totalRevenue || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 });
-  const hour = new Date().getHours();
-  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  const adminName = useMemo(() => {
+    try {
+      return JSON.parse(localStorage.getItem("jago-admin") || "{}").name || "Admin";
+    } catch {
+      return "Admin";
+    }
+  }, []);
 
-  /* ── Top stat cards ── */
+  const now = new Date();
+  const greeting = now.getHours() < 12 ? "Good morning" : now.getHours() < 17 ? "Good afternoon" : "Good evening";
+  const today = formatDate(now);
+
   const topStats = [
-    { label: "Total Customers", val: stats?.totalCustomers, icon: "bi-people-fill", color: "#2F7BFF", bg: "#EBF4FF", link: "/admin/customers", trend: "+12%", trendUp: true },
-    { label: "Total Drivers", val: stats?.totalDrivers, icon: "bi-person-badge-fill", color: "#16a34a", bg: "#f0fdf4", link: "/admin/drivers", trend: "+5%", trendUp: true },
-    { label: "Total Revenue", val: `₹${revenue}`, icon: "bi-currency-rupee", color: "#b45309", bg: "#fefce8", link: "/admin/reports", trend: "+18%", trendUp: true },
-    { label: "Total Trips", val: stats?.totalTrips, icon: "bi-car-front-fill", color: "#7e22ce", bg: "#f5f3ff", link: "/admin/trips", trend: "+8%", trendUp: true },
+    { label: "Total Customers", value: Number(stats?.totalCustomers || 0).toLocaleString(), icon: "bi-people-fill", color: "#2F7BFF", bg: "#EBF4FF", href: "/admin/customers", trend: "+12%" },
+    { label: "Total Drivers", value: Number(stats?.totalDrivers || 0).toLocaleString(), icon: "bi-person-badge-fill", color: "#16a34a", bg: "#f0fdf4", href: "/admin/drivers", trend: "+5%" },
+    { label: "Total Revenue", value: formatMoney(stats?.totalRevenue), icon: "bi-currency-rupee", color: "#b45309", bg: "#fefce8", href: "/admin/reports", trend: "+18%" },
+    { label: "Total Trips", value: Number(stats?.totalTrips || 0).toLocaleString(), icon: "bi-car-front-fill", color: "#7e22ce", bg: "#f5f3ff", href: "/admin/trips", trend: "+8%" },
   ];
 
-  /* ── Pie data ── */
-  const pieData = [
-    { name: "Completed", value: stats?.completedTrips || 0, color: "#10b981" },
-    { name: "Ongoing",   value: stats?.ongoingTrips || 0,   color: "#2F7BFF" },
-    { name: "Cancelled", value: stats?.cancelledTrips || 0, color: "#ef4444" },
-    { name: "Other",     value: Math.max(0, (stats?.totalTrips || 0) - (stats?.completedTrips || 0) - (stats?.ongoingTrips || 0) - (stats?.cancelledTrips || 0)), color: "#cbd5e1" },
-  ].filter(d => d.value > 0);
-
-  /* ── Service cards ── */
-  const svc = svcData?.services;
-  const drv = svcData?.drivers;
   const services = [
-    { label: "City Rides", icon: "bi-car-front-fill", color: "#2F7BFF", bg: "#eff6ff", trips: svc?.rides?.trips ?? 0, revenue: svc?.rides?.revenue ?? 0, model: svc?.rides?.model ?? "subscription", href: "/admin/trips" },
-    { label: "Parcels", icon: "bi-box-seam-fill", color: "#16a34a", bg: "#f0fdf4", trips: svc?.parcels?.trips ?? 0, revenue: svc?.parcels?.revenue ?? 0, model: svc?.parcels?.model ?? "commission", href: "/admin/parcel-trips" },
-    { label: "Intercity Pool", icon: "bi-people-fill", color: "#7c3aed", bg: "#f5f3ff", trips: svc?.carpool?.trips ?? 0, revenue: svc?.carpool?.revenue ?? 0, model: svc?.carpool?.model ?? "commission", href: "/admin/intercity-carsharing" },
-    { label: "Outstation Pool", icon: "bi-signpost-2-fill", color: "#d97706", bg: "#fefce8", trips: svc?.outstationPool?.bookings ?? 0, revenue: svc?.outstationPool?.revenue ?? 0, model: svc?.outstationPool?.mode === "on" ? "active" : "inactive", modelColor: svc?.outstationPool?.mode === "on" ? "#16a34a" : "#94a3b8", href: "/admin/outstation-pool" },
+    { label: "City Rides", icon: "bi-car-front-fill", color: "#2F7BFF", bg: "#eff6ff", trips: serviceData?.services?.rides?.trips ?? 0, revenue: serviceData?.services?.rides?.revenue ?? 0, model: serviceData?.services?.rides?.model ?? "Commission", href: "/admin/trips" },
+    { label: "Parcels", icon: "bi-box-seam-fill", color: "#16a34a", bg: "#f0fdf4", trips: serviceData?.services?.parcels?.trips ?? 0, revenue: serviceData?.services?.parcels?.revenue ?? 0, model: serviceData?.services?.parcels?.model ?? "Commission", href: "/admin/parcel-orders" },
+    { label: "Intercity Pool", icon: "bi-people-fill", color: "#7c3aed", bg: "#f5f3ff", trips: serviceData?.services?.carpool?.trips ?? 0, revenue: serviceData?.services?.carpool?.revenue ?? 0, model: serviceData?.services?.carpool?.model ?? "Commission", href: "/admin/intercity-carsharing" },
+    { label: "Outstation Pool", icon: "bi-signpost-2-fill", color: "#d97706", bg: "#fefce8", trips: serviceData?.services?.outstationPool?.bookings ?? 0, revenue: serviceData?.services?.outstationPool?.revenue ?? 0, model: serviceData?.services?.outstationPool?.mode === "on" ? "Active" : "Inactive", href: "/admin/outstation-pool" },
   ];
-  const pendingComm = drv?.totalPendingCommission ?? 0;
 
-  /* ── Quick links ── */
+  const quickStats = [
+    { label: "Completed", value: stats?.completedTrips ?? 0, color: "#10b981", bg: "#f0fdf4", icon: "bi-check-circle-fill" },
+    { label: "Ongoing", value: stats?.ongoingTrips ?? 0, color: "#2F7BFF", bg: "#eff6ff", icon: "bi-broadcast-pin" },
+    { label: "Cancelled", value: stats?.cancelledTrips ?? 0, color: "#ef4444", bg: "#fef2f2", icon: "bi-x-circle-fill" },
+    { label: "Withdrawals", value: stats?.pendingWithdrawals ?? 0, color: "#f59e0b", bg: "#fefce8", icon: "bi-clock-history" },
+    { label: "Reviews", value: stats?.totalReviews ?? 0, color: "#f59e0b", bg: "#fffbeb", icon: "bi-star-fill" },
+    { label: "Zones", value: stats?.totalZones ?? 0, color: "#7c3aed", bg: "#f5f3ff", icon: "bi-map-fill" },
+  ];
+
   const quickLinks = [
     { label: "All Trips", icon: "bi-car-front", href: "/admin/trips", color: "#2F7BFF" },
     { label: "Drivers", icon: "bi-person-badge", href: "/admin/drivers", color: "#16a34a" },
     { label: "Withdrawals", icon: "bi-cash-coin", href: "/admin/withdrawals", color: "#d97706" },
     { label: "Reports", icon: "bi-graph-up", href: "/admin/reports", color: "#7c3aed" },
-    { label: "Customer APK", icon: "bi-android2", href: "/apks/jago-customer-latest.apk", color: "#16a34a", external: true },
-    { label: "Driver APK", icon: "bi-android2", href: "/apks/jago-driver-latest.apk", color: "#0891b2", external: true },
   ];
 
-  const recentNotifs = Array.isArray(notifs) ? notifs.slice(0, 12) : [];
+  const pieData = [
+    { name: "Completed", value: stats?.completedTrips || 0, color: "#10b981" },
+    { name: "Ongoing", value: stats?.ongoingTrips || 0, color: "#2F7BFF" },
+    { name: "Cancelled", value: stats?.cancelledTrips || 0, color: "#ef4444" },
+    { name: "Other", value: Math.max(0, (stats?.totalTrips || 0) - (stats?.completedTrips || 0) - (stats?.ongoingTrips || 0) - (stats?.cancelledTrips || 0)), color: "#cbd5e1" },
+  ].filter((item) => item.value > 0);
 
-  const timeAgo = (d: string) => {
-    const s = Math.floor((Date.now() - new Date(d).getTime()) / 1000);
-    if (s < 60) return `${s}s ago`;
-    if (s < 3600) return `${Math.floor(s/60)}m ago`;
-    if (s < 86400) return `${Math.floor(s/3600)}h ago`;
-    return `${Math.floor(s/86400)}d ago`;
-  };
+  const liveItems = liveKpis
+    ? [
+        { label: "Searching", value: liveKpis.live?.searching ?? 0, color: "#f59e0b", bg: "#fffbeb", icon: "bi-search" },
+        { label: "Dispatching", value: liveKpis.live?.dispatching ?? 0, color: "#2563eb", bg: "#eff6ff", icon: "bi-lightning-charge-fill" },
+        { label: "In Progress", value: liveKpis.live?.inProgress ?? 0, color: "#16a34a", bg: "#f0fdf4", icon: "bi-car-front-fill" },
+        { label: "Done (1h)", value: liveKpis.live?.completedLastHour ?? 0, color: "#0891b2", bg: "#ecfeff", icon: "bi-check-circle-fill" },
+        { label: "Cancelled (1h)", value: liveKpis.live?.cancelledLastHour ?? 0, color: "#dc2626", bg: "#fef2f2", icon: "bi-x-circle-fill" },
+        { label: "Avg Wait", value: `${liveKpis.live?.avgPickupWaitMin ?? 0}m`, color: "#7c3aed", bg: "#f5f3ff", icon: "bi-clock-fill" },
+      ]
+    : [];
 
-  /* ── Quick stats mini ── */
-  const quickStatsMini = [
-    { label: "Completed", val: stats?.completedTrips ?? 0, color: "#10b981", bg: "#f0fdf4", icon: "bi-check-circle-fill" },
-    { label: "Ongoing", val: stats?.ongoingTrips ?? 0, color: "#2F7BFF", bg: "#eff6ff", icon: "bi-broadcast-pin" },
-    { label: "Cancelled", val: stats?.cancelledTrips ?? 0, color: "#ef4444", bg: "#fef2f2", icon: "bi-x-circle-fill" },
-    { label: "Withdrawals", val: stats?.pendingWithdrawals ?? 0, color: "#f59e0b", bg: "#fefce8", icon: "bi-clock-history" },
-    { label: "Reviews", val: stats?.totalReviews ?? 0, color: "#f59e0b", bg: "#fffbeb", icon: "bi-star-fill" },
-    { label: "Zones", val: stats?.totalZones ?? 0, color: "#7c3aed", bg: "#f5f3ff", icon: "bi-map-fill" },
-  ];
-
-  /* ── Live KPI items ── */
-  const liveKpiItems = liveKpis ? [
-    { label: "Searching", val: liveKpis.live?.searching ?? 0, icon: "bi-search", color: "#f59e0b", bg: "#fffbeb" },
-    { label: "Dispatching", val: liveKpis.live?.dispatching ?? 0, icon: "bi-lightning-charge-fill", color: "#2563eb", bg: "#eff6ff" },
-    { label: "In Progress", val: liveKpis.live?.inProgress ?? 0, icon: "bi-car-front-fill", color: "#16a34a", bg: "#f0fdf4" },
-    { label: "Done (1h)", val: liveKpis.live?.completedLastHour ?? 0, icon: "bi-check-circle-fill", color: "#0891b2", bg: "#ecfeff" },
-    { label: "Cancelled (1h)", val: liveKpis.live?.cancelledLastHour ?? 0, icon: "bi-x-circle-fill", color: "#dc2626", bg: "#fef2f2" },
-    { label: "Avg Wait", val: `${liveKpis.live?.avgPickupWaitMin ?? 0}m`, icon: "bi-clock-fill", color: "#7c3aed", bg: "#f5f3ff" },
-    { label: "Ghost Pilots", val: liveKpis.quality?.ghostDriverCount ?? 0, icon: "bi-wifi-off", color: "#6b7280", bg: "#f9fafb" },
-    { label: "Surge Zones", val: liveKpis.surge?.activeSurgeZones?.length ?? 0, icon: "bi-arrow-up-circle-fill", color: "#ea580c", bg: "#fff7ed" },
-  ] : [];
+  const recentTrips = Array.isArray(stats?.recentTrips) ? stats.recentTrips.filter((item: any) => item?.trip).slice(0, 6) : [];
+  const recentNotifications = Array.isArray(notifications) ? notifications.slice(0, 8) : [];
+  const pendingCommission = serviceData?.drivers?.totalPendingCommission ?? 0;
 
   return (
     <div className="container-fluid admin-dashboard-page">
-
-      {/* ═══════════ BANNER ═══════════ */}
       <div className="jd-banner mb-3" data-testid="dashboard-banner">
         <div className="jd-banner-inner">
           <div className="d-flex align-items-center gap-3">
             <div className="jd-avatar">
-              <span style={{ fontSize: "1.5rem" }}>👋</span>
+              <i className="bi bi-sunrise-fill" style={{ fontSize: "1.25rem", color: "#fbbf24" }}></i>
             </div>
             <div>
-              <h3 className="mb-1" style={{ fontSize: "1.25rem", fontWeight: 700 }}>{greeting}, {adminName}!</h3>
-              <p className="mb-0" style={{ fontSize: 13 }}>Here's your platform overview for today</p>
+              <h3 className="mb-1" style={{ fontSize: "1.55rem", fontWeight: 800 }}>{greeting}, {adminName}!</h3>
+              <p className="mb-0" style={{ fontSize: 14, color: "rgba(255,255,255,0.82)" }}>Here is your platform overview for today</p>
             </div>
           </div>
-          <div className="d-flex align-items-center gap-2">
-            <div className="jd-date-badge">
-              <i className="bi bi-calendar3" style={{ fontSize: 12 }}></i>
-              <span>{today}</span>
-            </div>
+          <div className="jd-date-badge">
+            <i className="bi bi-calendar3" style={{ fontSize: 12 }}></i>
+            <span>{today}</span>
           </div>
         </div>
         <div className="jd-banner-kpis">
           <div className="jd-kpi">
-            <span className="jd-kpi-n">{liveKpis?.live?.inProgress ?? stats?.ongoingTrips ?? "—"}</span>
+            <span className="jd-kpi-n">{liveKpis?.live?.inProgress ?? stats?.ongoingTrips ?? "-"}</span>
             <span className="jd-kpi-l">Live Trips</span>
           </div>
           <div className="jd-kpi-sep"></div>
           <div className="jd-kpi">
-            <span className="jd-kpi-n">{svcData?.drivers?.online ?? Math.round((stats?.totalDrivers ?? 0) * 0.7)}</span>
+            <span className="jd-kpi-n">{serviceData?.drivers?.online ?? Math.round((stats?.totalDrivers ?? 0) * 0.7)}</span>
             <span className="jd-kpi-l">Online Pilots</span>
           </div>
           <div className="jd-kpi-sep"></div>
           <div className="jd-kpi">
-            <span className="jd-kpi-n">₹{Number(stats?.totalRevenue ?? 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })}</span>
+            <span className="jd-kpi-n">{formatMoney(stats?.totalRevenue)}</span>
             <span className="jd-kpi-l">Total Revenue</span>
           </div>
           <div className="jd-kpi-sep"></div>
           <div className="jd-kpi">
-            <span className="jd-kpi-n">{stats?.totalZones ?? "—"}</span>
+            <span className="jd-kpi-n">{stats?.totalZones ?? "-"}</span>
             <span className="jd-kpi-l">Active Zones</span>
           </div>
         </div>
       </div>
 
-      {/* ═══════════ TWO-COLUMN LAYOUT ═══════════ */}
       <div className="row g-3">
-
-        {/* ────── LEFT: Main Content ────── */}
         <div className="col-xl-8 col-lg-8">
-
-          {/* 4 Stat Cards */}
           <div className="row g-3 mb-3">
-            {topStats.map((s, i) => (
-              <div key={i} className="col-xl-6 col-sm-6">
-                <StatCard {...s} isLoading={isLoading} />
+            {topStats.map((card) => (
+              <div key={card.label} className="col-xl-6 col-sm-6">
+                <StatCard {...card} />
               </div>
             ))}
           </div>
 
-          {/* Services Overview */}
           <SectionHeader
             title="Services Overview"
-            badge={pendingComm > 0 ? `₹${pendingComm.toLocaleString("en-IN", { maximumFractionDigits: 0 })} pending commission` : undefined}
+            badge={pendingCommission > 0 ? `${formatMoney(pendingCommission)} pending commission` : undefined}
             badgeColor="#dc2626"
           />
           <div className="row g-3 mb-3">
-            {services.map((s, i) => (
-              <div key={i} className="col-xl-3 col-sm-6">
-                <ServiceCard {...s} loaded={!!svcData} />
+            {services.map((service) => (
+              <div key={service.label} className="col-xl-3 col-sm-6">
+                <ServiceCard {...service} />
               </div>
             ))}
           </div>
 
-          {/* Live Operations KPIs */}
-          {liveKpis && (
+          {liveItems.length > 0 ? (
             <div className="mb-3">
-              <div className="mb-2 d-flex align-items-center justify-content-between">
+              <div className="mb-2 d-flex align-items-center justify-content-between flex-wrap gap-2">
                 <span style={{ fontSize: 10.5, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 1.2 }}>
                   Live Operations
                 </span>
@@ -326,66 +376,35 @@ export default function Dashboard() {
                 </span>
               </div>
               <div className="row g-2">
-                {liveKpiItems.map((k, i) => (
-                  <div key={i} className="col-xl-3 col-sm-6 col-6">
-                    <div className="jd-kpi-mini-card" style={{ background: k.bg, borderColor: `${k.color}20` }}>
-                      <div className="jd-kpi-mini-icon" style={{ background: `${k.color}15` }}>
-                        <i className={`bi ${k.icon}`} style={{ color: k.color, fontSize: 13 }}></i>
+                {liveItems.map((item) => (
+                  <div key={item.label} className="col-xl-4 col-sm-6 col-6">
+                    <div className="jd-kpi-mini-card" style={{ background: item.bg, borderColor: `${item.color}20` }}>
+                      <div className="jd-kpi-mini-icon" style={{ background: `${item.color}15` }}>
+                        <i className={`bi ${item.icon}`} style={{ color: item.color, fontSize: 13 }}></i>
                       </div>
                       <div>
-                        <div style={{ fontSize: 18, fontWeight: 800, color: k.color, lineHeight: 1.1 }}>{k.val}</div>
-                        <div style={{ fontSize: 10, color: "#64748b", fontWeight: 600 }}>{k.label}</div>
+                        <div style={{ fontSize: 18, fontWeight: 800, color: item.color, lineHeight: 1.1 }}>{item.value}</div>
+                        <div style={{ fontSize: 10, color: "#64748b", fontWeight: 600 }}>{item.label}</div>
                       </div>
                     </div>
                   </div>
                 ))}
               </div>
-              {/* Cancellation & Surge badges */}
-              {(liveKpis.cancellations?.penaltyCollectedToday > 0 || liveKpis.cancellations?.totalToday > 0) && (
-                <div className="mt-2 d-flex gap-2 flex-wrap">
-                  <span className="jd-info-pill" style={{ background: "#fef2f2", color: "#dc2626", borderColor: "#fecaca" }}>
-                    {liveKpis.cancellations?.driverCancelsToday ?? 0} driver cancels today
-                  </span>
-                  <span className="jd-info-pill" style={{ background: "#fff7ed", color: "#ea580c", borderColor: "#fed7aa" }}>
-                    {liveKpis.cancellations?.customerCancelsToday ?? 0} customer cancels today
-                  </span>
-                  {liveKpis.cancellations?.penaltyCollectedToday > 0 && (
-                    <span className="jd-info-pill" style={{ background: "#f0fdf4", color: "#16a34a", borderColor: "#bbf7d0" }}>
-                      ₹{liveKpis.cancellations?.penaltyCollectedToday} penalty collected
-                    </span>
-                  )}
-                  {liveKpis.surge?.activeSurgeZones?.length > 0 && (
-                    <span className="jd-info-pill" style={{ background: "#fff7ed", color: "#ea580c", borderColor: "#fed7aa" }}>
-                      Surge: {liveKpis.surge.activeSurgeZones.map((z: any) => `${z.name} ${z.factor}x`).join(", ")}
-                    </span>
-                  )}
-                </div>
-              )}
             </div>
-          )}
+          ) : null}
 
-          {/* ── Charts Row ── */}
           <div className="row g-3 mb-3">
-            {/* Area Chart */}
             <div className="col-lg-7">
               <div className="jd-card h-100">
                 <div className="jd-card-header">
                   <div>
                     <h6 className="jd-card-title">Weekly Revenue Trend</h6>
-                    <div className="jd-card-subtitle">Revenue & trips over the last 7 days</div>
-                  </div>
-                  <div className="d-flex gap-3 small">
-                    <span className="d-flex align-items-center gap-1" style={{ color: "#2F7BFF", fontWeight: 600, fontSize: 11 }}>
-                      <span style={{ width: 8, height: 8, borderRadius: 2, background: "#2F7BFF", display: "inline-block" }}></span>Revenue
-                    </span>
-                    <span className="d-flex align-items-center gap-1" style={{ color: "#16a34a", fontWeight: 600, fontSize: 11 }}>
-                      <span style={{ width: 8, height: 8, borderRadius: 2, background: "#16a34a", display: "inline-block" }}></span>Trips
-                    </span>
+                    <div className="jd-card-subtitle">Revenue and trips over the last 7 days</div>
                   </div>
                 </div>
                 <div style={{ padding: "0 12px 16px" }}>
                   {chart.length > 0 ? (
-                    <ResponsiveContainer width="100%" height={210}>
+                    <ResponsiveContainer width="100%" height={220}>
                       <AreaChart data={chart} margin={{ top: 8, right: 10, bottom: 0, left: 0 }}>
                         <defs>
                           <linearGradient id="gradRev" x1="0" y1="0" x2="0" y2="1">
@@ -402,28 +421,24 @@ export default function Dashboard() {
                         <YAxis tick={{ fontSize: 10.5, fill: "#94a3b8", fontWeight: 500 }} axisLine={false} tickLine={false} width={42} />
                         <Tooltip
                           contentStyle={{ borderRadius: 12, border: "1px solid #e2e8f0", boxShadow: "0 8px 32px rgba(0,0,0,0.08)", fontSize: 12, padding: "10px 14px" }}
-                          formatter={(val: any, name: string) => [name === "revenue" ? `₹${val}` : val, name === "revenue" ? "Revenue" : "Trips"]}
+                          formatter={(value: any, name: string) => [name === "revenue" ? formatMoney(value) : value, name === "revenue" ? "Revenue" : "Trips"]}
                         />
-                        <Area type="monotone" dataKey="revenue" stroke="#2F7BFF" strokeWidth={2.5} fill="url(#gradRev)" dot={false} activeDot={{ r: 5, fill: "#2F7BFF", stroke: "#fff", strokeWidth: 2 }} />
-                        <Area type="monotone" dataKey="trips" stroke="#16a34a" strokeWidth={2} fill="url(#gradTrips)" dot={false} activeDot={{ r: 4, fill: "#16a34a", stroke: "#fff", strokeWidth: 2 }} />
+                        <Area type="monotone" dataKey="revenue" stroke="#2F7BFF" strokeWidth={2.5} fill="url(#gradRev)" dot={false} />
+                        <Area type="monotone" dataKey="trips" stroke="#16a34a" strokeWidth={2} fill="url(#gradTrips)" dot={false} />
                       </AreaChart>
                     </ResponsiveContainer>
                   ) : (
                     <div className="jd-empty-chart">
-                      <svg width="120" height="70" viewBox="0 0 120 70" fill="none" style={{ opacity: 0.15 }}>
-                        <path d="M8 60 Q20 20 35 35 Q50 50 65 20 Q80 -10 95 30 Q105 55 112 40" stroke="#2F7BFF" strokeWidth="2.5" strokeLinecap="round" fill="none"/>
-                        <path d="M8 62 Q20 22 35 37 Q50 52 65 22 Q80 -8 95 32 Q105 57 112 42 L112 65 L8 65Z" fill="#2F7BFF" fillOpacity="0.1"/>
-                        <path d="M8 60 Q25 50 40 55 Q55 60 70 45 Q85 30 112 55" stroke="#16a34a" strokeWidth="2" strokeLinecap="round" strokeDasharray="4 3" fill="none"/>
-                      </svg>
                       <div style={{ fontSize: 13, fontWeight: 700, color: "#64748B", marginBottom: 4 }}>No analytics yet</div>
-                      <div style={{ fontSize: 11, color: "#94a3b8", maxWidth: 220, lineHeight: 1.5, textAlign: "center" }}>Data will appear once trips are completed on the platform</div>
+                      <div style={{ fontSize: 11, color: "#94a3b8", maxWidth: 220, lineHeight: 1.5, textAlign: "center" }}>
+                        Data will appear once trips are completed on the platform
+                      </div>
                     </div>
                   )}
                 </div>
               </div>
             </div>
 
-            {/* Pie Chart */}
             <div className="col-lg-5">
               <div className="jd-card h-100">
                 <div className="jd-card-header">
@@ -434,19 +449,19 @@ export default function Dashboard() {
                 </div>
                 <div style={{ padding: "0 12px 8px" }} className="d-flex flex-column align-items-center">
                   {pieData.length > 0 ? (
-                    <ResponsiveContainer width="100%" height={210}>
+                    <ResponsiveContainer width="100%" height={220}>
                       <PieChart>
-                        <Pie data={pieData} cx="50%" cy="45%" innerRadius={52} outerRadius={80} paddingAngle={3} dataKey="value" labelLine={false} label={CUSTOM_LABEL}>
-                          {pieData.map((entry, i) => (
-                            <Cell key={i} fill={entry.color} />
+                        <Pie data={pieData} cx="50%" cy="45%" innerRadius={52} outerRadius={80} paddingAngle={3} dataKey="value" labelLine={false} label={customLabel}>
+                          {pieData.map((entry, index) => (
+                            <Cell key={index} fill={entry.color} />
                           ))}
                         </Pie>
-                        <Tooltip formatter={(val: any, name: string) => [`${val} trips`, name]} contentStyle={{ borderRadius: 10, fontSize: 12, border: "1px solid #e2e8f0" }} />
+                        <Tooltip formatter={(value: any, name: string) => [`${value} trips`, name]} contentStyle={{ borderRadius: 10, fontSize: 12, border: "1px solid #e2e8f0" }} />
                         <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11, paddingTop: 4, fontWeight: 500 }} />
                       </PieChart>
                     </ResponsiveContainer>
                   ) : (
-                    <div className="d-flex flex-column align-items-center justify-content-center" style={{ height: 210, color: "#cbd5e1" }}>
+                    <div className="d-flex flex-column align-items-center justify-content-center" style={{ height: 220, color: "#cbd5e1" }}>
                       <i className="bi bi-pie-chart fs-1 mb-2" style={{ opacity: 0.3 }}></i>
                       <span style={{ fontSize: 12, fontWeight: 500 }}>No trip data yet</span>
                     </div>
@@ -456,7 +471,6 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* ── Recent Trips Table ── */}
           <div className="jd-card mb-3" data-testid="recent-trips-card">
             <div className="jd-card-header">
               <div>
@@ -472,74 +486,75 @@ export default function Dashboard() {
                 <table className="table table-borderless align-middle table-hover mb-0">
                   <thead>
                     <tr className="jd-table-head">
-                      {["Trip ID","Customer","Vehicle","Type","Fare","Payment","Status","Date"].map((h, i) => (
-                        <th key={i} className={i === 0 ? "ps-4" : ""}>{h}</th>
+                      {["Trip ID", "Customer", "Vehicle", "Type", "Fare", "Payment", "Status", "Date"].map((heading, index) => (
+                        <th key={heading} className={index === 0 ? "ps-4" : ""}>{heading}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
                     {isLoading ? (
-                      Array(5).fill(0).map((_, i) => (
-                        <tr key={i}>
-                          {Array(8).fill(0).map((_, j) => (
-                            <td key={j}><div className="jd-skeleton" style={{ width: j === 0 ? 70 : "80%", height: 12 }} /></td>
+                      Array.from({ length: 5 }).map((_, rowIndex) => (
+                        <tr key={rowIndex}>
+                          {Array.from({ length: 8 }).map((__, cellIndex) => (
+                            <td key={cellIndex}><div className="jd-skeleton" style={{ width: cellIndex === 0 ? 70 : "80%", height: 12 }} /></td>
                           ))}
                         </tr>
                       ))
-                    ) : stats?.recentTrips?.length ? (
-                      stats.recentTrips.filter((item: any) => item?.trip).map((item: any) => {
-                        const st = item.trip?.currentStatus || "pending";
-                        const badge = STATUS_BADGE[st] || { cls: "badge bg-secondary", label: st };
-                        const name = item.customer?.fullName || "—";
+                    ) : recentTrips.length > 0 ? (
+                      recentTrips.map((item: any) => {
+                        const status = item.trip?.currentStatus || "pending";
+                        const badge = STATUS_BADGE[status] || { cls: "badge bg-secondary", label: status };
+                        const name = item.customer?.fullName || "-";
                         return (
                           <tr key={item.trip?.id} data-testid={`trip-row-${item.trip?.id}`}>
                             <td className="ps-4">
-                              <span style={{ fontSize: 12, color: "#2F7BFF", fontFamily: "'Inter', monospace", fontWeight: 700 }}>{item.trip?.refId || "—"}</span>
+                              <span style={{ fontSize: 12, color: "#2F7BFF", fontFamily: "'Inter', monospace", fontWeight: 700 }}>
+                                {item.trip?.refId || "-"}
+                              </span>
                             </td>
                             <td>
                               <div className="d-flex align-items-center gap-2">
-                                <div className="jd-mini-avatar" style={{ background: avatarBg(name) }}>
-                                  {initials(name)}
-                                </div>
+                                <div className="jd-mini-avatar" style={{ background: avatarBg(name) }}>{initials(name)}</div>
                                 <span style={{ fontSize: 12.5, fontWeight: 500 }}>{name}</span>
                               </div>
                             </td>
-                            <td style={{ fontSize: 12, color: "#64748b" }}>{item.vehicleCategory?.name || "—"}</td>
+                            <td style={{ fontSize: 12, color: "#64748b" }}>{item.vehicleCategory?.name || "-"}</td>
                             <td>
-                              <span className="jd-type-badge" style={{
-                                background: item.trip?.type === "parcel" ? "#f0fdf4" : "#eff6ff",
-                                color: item.trip?.type === "parcel" ? "#16a34a" : "#1E5FCC",
-                              }}>
+                              <span
+                                className="jd-type-badge"
+                                style={{
+                                  background: item.trip?.type === "parcel" ? "#f0fdf4" : "#eff6ff",
+                                  color: item.trip?.type === "parcel" ? "#16a34a" : "#1E5FCC",
+                                }}
+                              >
                                 {item.trip?.type === "parcel" ? "Parcel" : "Ride"}
                               </span>
                             </td>
-                            <td style={{ fontSize: 13, fontWeight: 600, color: "#0f172a" }}>₹{Number(item.trip?.actualFare || item.trip?.estimatedFare || 0).toFixed(0)}</td>
+                            <td style={{ fontSize: 13, fontWeight: 600, color: "#0f172a" }}>{formatMoney(item.trip?.actualFare || item.trip?.estimatedFare || 0)}</td>
                             <td>
                               <span className={`badge ${item.trip?.paymentStatus === "paid" ? "bg-success" : "bg-warning text-dark"}`} style={{ fontSize: 10, fontWeight: 600 }}>
                                 {item.trip?.paymentStatus === "paid" ? "Paid" : "Unpaid"}
                               </span>
                             </td>
                             <td><span className={badge.cls} style={{ fontSize: 10, fontWeight: 600 }}>{badge.label}</span></td>
-                            <td style={{ fontSize: 11.5, color: "#94a3b8", fontWeight: 500 }}>{item.trip?.createdAt ? new Date(item.trip.createdAt).toLocaleDateString("en-IN") : "—"}</td>
+                            <td style={{ fontSize: 11.5, color: "#94a3b8", fontWeight: 500 }}>{item.trip?.createdAt ? new Date(item.trip.createdAt).toLocaleDateString("en-IN") : "-"}</td>
                           </tr>
                         );
                       })
                     ) : (
-                      <tr><td colSpan={8}>
-                        <div className="jd-empty-table">
-                          <div className="jd-empty-icon">
-                            <i className="bi bi-car-front" style={{ fontSize: 28, color: "#93c5fd" }}></i>
+                      <tr>
+                        <td colSpan={8}>
+                          <div className="jd-empty-table">
+                            <div className="jd-empty-icon">
+                              <i className="bi bi-car-front" style={{ fontSize: 28, color: "#93c5fd" }}></i>
+                            </div>
+                            <h6 style={{ fontWeight: 700, color: "#0f172a", marginBottom: 4 }}>No Trips Yet</h6>
+                            <p style={{ fontSize: 12.5, color: "#94a3b8", maxWidth: 260, textAlign: "center", lineHeight: 1.5, margin: "0 0 12px" }}>
+                              Trips will appear here once customers start booking through the JAGO app.
+                            </p>
                           </div>
-                          <h6 style={{ fontWeight: 700, color: "#0f172a", marginBottom: 4 }}>No Trips Yet</h6>
-                          <p style={{ fontSize: 12.5, color: "#94a3b8", maxWidth: 260, textAlign: "center", lineHeight: 1.5, margin: "0 0 12px" }}>
-                            Trips will appear here once customers book rides through the JAGO app
-                          </p>
-                          <div style={{ display: "flex", gap: 8 }}>
-                            <span className="jd-info-pill" style={{ background: "#f0fdf4", color: "#16a34a", borderColor: "#bbf7d0" }}>Platform Ready</span>
-                            <span className="jd-info-pill" style={{ background: "#eff6ff", color: "#1E5FCC", borderColor: "#bfdbfe" }}>Awaiting First Trip</span>
-                          </div>
-                        </div>
-                      </td></tr>
+                        </td>
+                      </tr>
                     )}
                   </tbody>
                 </table>
@@ -548,24 +563,20 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* ────── RIGHT PANEL ────── */}
         <div className="col-xl-4 col-lg-4">
+          <LiveClockCard />
 
-          {/* Live Clock */}
-          <LiveClock />
-
-          {/* Quick Stats Mini */}
           <div className="jd-card mb-3">
             <div style={{ padding: "16px 16px 12px" }}>
               <SectionHeader title="Quick Stats" />
               <div className="row g-2">
-                {quickStatsMini.map((s, i) => (
-                  <div key={i} className="col-6">
-                    <div className="jd-quick-stat" style={{ background: s.bg }}>
-                      <i className={`bi ${s.icon}`} style={{ color: s.color, fontSize: 15 }}></i>
+                {quickStats.map((item) => (
+                  <div key={item.label} className="col-6">
+                    <div className="jd-quick-stat" style={{ background: item.bg }}>
+                      <i className={`bi ${item.icon}`} style={{ color: item.color, fontSize: 15 }}></i>
                       <div>
-                        <div style={{ fontSize: 17, fontWeight: 800, color: s.color, lineHeight: 1 }}>{isLoading ? "—" : s.val}</div>
-                        <div style={{ fontSize: 10, color: "#64748b", marginTop: 1, fontWeight: 500 }}>{s.label}</div>
+                        <div style={{ fontSize: 17, fontWeight: 800, color: item.color, lineHeight: 1 }}>{isLoading ? "-" : item.value}</div>
+                        <div style={{ fontSize: 10, color: "#64748b", marginTop: 1, fontWeight: 500 }}>{item.label}</div>
                       </div>
                     </div>
                   </div>
@@ -574,39 +585,26 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Quick Actions */}
           <div className="jd-card mb-3">
             <div style={{ padding: "16px 16px 12px" }}>
               <SectionHeader title="Quick Actions" />
               <div className="row g-2">
-                {quickLinks.map((l, i) => (
-                  <div key={i} className="col-6">
-                    {l.external ? (
-                      <a href={l.href} download style={{ textDecoration: "none" }}>
-                        <div className="jd-quick-action" style={{ "--accent": l.color } as any}>
-                          <div className="jd-quick-action-icon" style={{ background: `${l.color}12` }}>
-                            <i className={`bi ${l.icon}`} style={{ color: l.color, fontSize: 13 }}></i>
-                          </div>
-                          <span style={{ fontSize: 12, fontWeight: 600, color: "#1e293b" }}>{l.label}</span>
+                {quickLinks.map((item) => (
+                  <div key={item.label} className="col-6">
+                    <Link href={item.href}>
+                      <div className="jd-quick-action" style={{ "--accent": item.color } as any}>
+                        <div className="jd-quick-action-icon" style={{ background: `${item.color}12` }}>
+                          <i className={`bi ${item.icon}`} style={{ color: item.color, fontSize: 13 }}></i>
                         </div>
-                      </a>
-                    ) : (
-                      <Link href={l.href}>
-                        <div className="jd-quick-action" style={{ "--accent": l.color } as any}>
-                          <div className="jd-quick-action-icon" style={{ background: `${l.color}12` }}>
-                            <i className={`bi ${l.icon}`} style={{ color: l.color, fontSize: 13 }}></i>
-                          </div>
-                          <span style={{ fontSize: 12, fontWeight: 600, color: "#1e293b" }}>{l.label}</span>
-                        </div>
-                      </Link>
-                    )}
+                        <span style={{ fontSize: 12, fontWeight: 600, color: "#1e293b" }}>{item.label}</span>
+                      </div>
+                    </Link>
                   </div>
                 ))}
               </div>
             </div>
           </div>
 
-          {/* Notifications Feed */}
           <div className="jd-card">
             <div className="jd-card-header" style={{ paddingBottom: 0 }}>
               <h6 className="jd-card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -618,29 +616,37 @@ export default function Dashboard() {
               </Link>
             </div>
             <div style={{ maxHeight: 420, overflowY: "auto", padding: 0 }}>
-              {recentNotifs.length === 0 ? (
+              {recentNotifications.length === 0 ? (
                 <div className="text-center py-5" style={{ color: "#94a3b8" }}>
                   <i className="bi bi-bell-slash fs-2 d-block mb-2" style={{ opacity: 0.25 }}></i>
                   <span style={{ fontSize: 12, fontWeight: 500 }}>No notifications yet</span>
                 </div>
               ) : (
-                recentNotifs.map((n: any, i: number) => {
-                  const type = n.type || "trip";
+                recentNotifications.map((notification: any, index: number) => {
+                  const type = notification.type || "trip";
                   const style = NOTIF_ICONS[type] || NOTIF_ICONS.trip;
                   return (
-                    <div key={n.id || i} className="jd-notif-item" style={{
-                      background: n.isRead === false ? "#f8fbff" : "transparent",
-                      borderBottom: i < recentNotifs.length - 1 ? "1px solid #f8fafc" : "none",
-                    }}>
+                    <div
+                      key={notification.id || index}
+                      className="jd-notif-item"
+                      style={{
+                        background: notification.isRead === false ? "#f8fbff" : "transparent",
+                        borderBottom: index < recentNotifications.length - 1 ? "1px solid #f8fafc" : "none",
+                      }}
+                    >
                       <div className="jd-notif-icon" style={{ background: style.bg }}>
                         <i className={`bi ${style.icon}`} style={{ color: style.color, fontSize: 13 }}></i>
                       </div>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 12, fontWeight: 600, color: "#1e293b", lineHeight: 1.3, marginBottom: 1 }}>{n.title || "Notification"}</div>
-                        <div style={{ fontSize: 11, color: "#64748b", lineHeight: 1.4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{n.message || n.body || ""}</div>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: "#1e293b", lineHeight: 1.3, marginBottom: 1 }}>
+                          {notification.title || "Notification"}
+                        </div>
+                        <div style={{ fontSize: 11, color: "#64748b", lineHeight: 1.4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {notification.message || notification.body || ""}
+                        </div>
                       </div>
                       <div style={{ fontSize: 9.5, color: "#94a3b8", whiteSpace: "nowrap", marginTop: 2, fontWeight: 500 }}>
-                        {n.createdAt ? timeAgo(n.createdAt) : ""}
+                        {timeAgo(notification.createdAt)}
                       </div>
                     </div>
                   );
@@ -648,7 +654,6 @@ export default function Dashboard() {
               )}
             </div>
           </div>
-
         </div>
       </div>
     </div>

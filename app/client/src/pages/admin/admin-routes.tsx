@@ -1,77 +1,183 @@
-import { lazy, Suspense } from "react";
-import { Switch, Route, Redirect } from "wouter";
+import { lazy, Suspense, useEffect } from "react";
+import { Switch, Route, Redirect, useLocation } from "wouter";
 import AdminLayout from "@/pages/admin/layout";
 
-const Dashboard = lazy(() => import("@/pages/admin/dashboard"));
-const Trips = lazy(() => import("@/pages/admin/trips"));
-const Customers = lazy(() => import("@/pages/admin/customers"));
-const Drivers = lazy(() => import("@/pages/admin/drivers"));
-const VehicleCategories = lazy(() => import("@/pages/admin/vehicle-categories"));
-const Zones = lazy(() => import("@/pages/admin/zones"));
-const Fares = lazy(() => import("@/pages/admin/fares"));
-const Transactions = lazy(() => import("@/pages/admin/transactions"));
-const Coupons = lazy(() => import("@/pages/admin/coupons"));
-const Reviews = lazy(() => import("@/pages/admin/reviews"));
-const Settings = lazy(() => import("@/pages/admin/settings"));
-const BlogsPage = lazy(() => import("@/pages/admin/blogs"));
-const Withdrawals = lazy(() => import("@/pages/admin/withdrawals"));
-const CancellationReasonsPage = lazy(() => import("@/pages/admin/cancellation-reasons"));
-const HeatMap = lazy(() => import("@/pages/admin/heat-map"));
-const RealtimeOps = lazy(() => import("@/pages/admin/realtime-ops"));
-const FleetView = lazy(() => import("@/pages/admin/fleet-view"));
-const CarSharing = lazy(() => import("@/pages/admin/car-sharing"));
-const ParcelRefunds = lazy(() => import("@/pages/admin/parcel-refunds"));
-const SafetyAlerts = lazy(() => import("@/pages/admin/safety-alerts"));
-const AlertEngine = lazy(() => import("@/pages/admin/alert-engine"));
-const Banners = lazy(() => import("@/pages/admin/banners"));
-const Discounts = lazy(() => import("@/pages/admin/discounts"));
-const SpinWheel = lazy(() => import("@/pages/admin/spin-wheel"));
-const Notifications = lazy(() => import("@/pages/admin/notifications"));
-const DriverLevels = lazy(() => import("@/pages/admin/driver-levels"));
-const CustomerLevels = lazy(() => import("@/pages/admin/customer-levels"));
-const CustomerWallet = lazy(() => import("@/pages/admin/customer-wallet"));
-const WalletBonus = lazy(() => import("@/pages/admin/wallet-bonus"));
-const Employees = lazy(() => import("@/pages/admin/employees"));
-const Newsletter = lazy(() => import("@/pages/admin/newsletter"));
-const Subscriptions = lazy(() => import("@/pages/admin/subscriptions"));
-const RevenueModel = lazy(() => import("@/pages/admin/revenue-model"));
-const DriverWalletPage = lazy(() => import("@/pages/admin/driver-wallet"));
-const RefundRequestsPage = lazy(() => import("@/pages/admin/refund-requests"));
-const ApiDocsPage = lazy(() => import("@/pages/admin/api-docs"));
-const AppDesignPage = lazy(() => import("@/pages/admin/app-design"));
-const LanguagesPage = lazy(() => import("@/pages/admin/languages"));
-const ServiceManagement = lazy(() => import("@/pages/admin/service-management"));
-const ParcelAttributes = lazy(() => import("@/pages/admin/parcel-attributes"));
-const VehicleAttributes = lazy(() => import("@/pages/admin/vehicle-attributes"));
-const VehicleRequests = lazy(() => import("@/pages/admin/vehicle-requests"));
-const ParcelFares = lazy(() => import("@/pages/admin/parcel-fares"));
-const SurgePricing = lazy(() => import("@/pages/admin/surge-pricing"));
-const Reports = lazy(() => import("@/pages/admin/reports"));
-const Chatting = lazy(() => import("@/pages/admin/chatting"));
-const CallLogs = lazy(() => import("@/pages/admin/call-logs"));
-const BusinessSetup = lazy(() => import("@/pages/admin/business-setup"));
-const PagesMedia = lazy(() => import("@/pages/admin/pages-media"));
-const Configurations = lazy(() => import("@/pages/admin/configurations"));
-const B2BCompanies = lazy(() => import("@/pages/admin/b2b-companies"));
-const IntercityRoutes = lazy(() => import("@/pages/admin/intercity-routes"));
-const Insurance = lazy(() => import("@/pages/admin/insurance"));
-const DriverEarnings = lazy(() => import("@/pages/admin/driver-earnings"));
-const Referrals = lazy(() => import("@/pages/admin/referrals"));
-const DriverVerificationPage = lazy(() => import("@/pages/admin/driver-verification"));
-const LocalPool = lazy(() => import("@/pages/admin/local-pool"));
-const OutstationPool = lazy(() => import("@/pages/admin/outstation-pool"));
-const ParcelOrders = lazy(() => import("@/pages/admin/parcel-orders"));
-const SystemHealth = lazy(() => import("@/pages/admin/system-health"));
-const VoiceCommandsPage = lazy(() => import("@/pages/admin/voice-commands"));
-const CityServices = lazy(() => import("@/pages/admin/city-services"));
-const ParcelVehiclesAdmin = lazy(() => import("@/pages/admin/parcel-vehicles"));
-const AIBrainDashboard = lazy(() => import("@/pages/admin/ai-brain-dashboard"));
+function preloadStylesheet(id: string, href: string) {
+  if (document.getElementById(id)) return;
+  const link = document.createElement("link");
+  link.id = id;
+  link.rel = "stylesheet";
+  link.href = href;
+  document.head.appendChild(link);
+}
+
+function preloadScript(id: string, src: string) {
+  if (document.getElementById(id) || document.querySelector(`script[src="${src}"]`)) return;
+  const script = document.createElement("script");
+  script.id = id;
+  script.src = src;
+  script.async = true;
+  document.head.appendChild(script);
+}
+
+function preloadHeatMapAssets() {
+  preloadStylesheet("admin-leaflet-css", "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css");
+  preloadScript("admin-leaflet-js", "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js");
+  preloadScript("admin-leaflet-heat-js", "https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js");
+}
+
+const loadDashboard = () => import("@/pages/admin/dashboard");
+const loadTrips = () => import("@/pages/admin/trips");
+const loadCustomers = () => import("@/pages/admin/customers");
+const loadDrivers = () => import("@/pages/admin/drivers");
+const loadVehicleCategories = () => import("@/pages/admin/vehicle-categories");
+const loadZones = () => import("@/pages/admin/zones");
+const loadFares = () => import("@/pages/admin/fares");
+const loadTransactions = () => import("@/pages/admin/transactions");
+const loadCoupons = () => import("@/pages/admin/coupons");
+const loadReviews = () => import("@/pages/admin/reviews");
+const loadSettings = () => import("@/pages/admin/settings");
+const loadBlogsPage = () => import("@/pages/admin/blogs");
+const loadWithdrawals = () => import("@/pages/admin/withdrawals");
+const loadCancellationReasonsPage = () => import("@/pages/admin/cancellation-reasons");
+const loadHeatMap = () => import("@/pages/admin/heat-map");
+const loadRealtimeOps = () => import("@/pages/admin/realtime-ops");
+const loadFleetView = () => import("@/pages/admin/fleet-view");
+const loadCarSharing = () => import("@/pages/admin/car-sharing");
+const loadParcelRefunds = () => import("@/pages/admin/parcel-refunds");
+const loadSafetyAlerts = () => import("@/pages/admin/safety-alerts");
+const loadAlertEngine = () => import("@/pages/admin/alert-engine");
+const loadBanners = () => import("@/pages/admin/banners");
+const loadDiscounts = () => import("@/pages/admin/discounts");
+const loadSpinWheel = () => import("@/pages/admin/spin-wheel");
+const loadNotifications = () => import("@/pages/admin/notifications");
+const loadDriverLevels = () => import("@/pages/admin/driver-levels");
+const loadCustomerLevels = () => import("@/pages/admin/customer-levels");
+const loadCustomerWallet = () => import("@/pages/admin/customer-wallet");
+const loadWalletBonus = () => import("@/pages/admin/wallet-bonus");
+const loadEmployees = () => import("@/pages/admin/employees");
+const loadNewsletter = () => import("@/pages/admin/newsletter");
+const loadSubscriptions = () => import("@/pages/admin/subscriptions");
+const loadRevenueModel = () => import("@/pages/admin/revenue-model");
+const loadDriverWalletPage = () => import("@/pages/admin/driver-wallet");
+const loadRefundRequestsPage = () => import("@/pages/admin/refund-requests");
+const loadApiDocsPage = () => import("@/pages/admin/api-docs");
+const loadAppDesignPage = () => import("@/pages/admin/app-design");
+const loadLanguagesPage = () => import("@/pages/admin/languages");
+const loadServiceManagement = () => import("@/pages/admin/service-management");
+const loadParcelAttributes = () => import("@/pages/admin/parcel-attributes");
+const loadVehicleAttributes = () => import("@/pages/admin/vehicle-attributes");
+const loadVehicleRequests = () => import("@/pages/admin/vehicle-requests");
+const loadParcelFares = () => import("@/pages/admin/parcel-fares");
+const loadSurgePricing = () => import("@/pages/admin/surge-pricing");
+const loadReports = () => import("@/pages/admin/reports");
+const loadChatting = () => import("@/pages/admin/chatting");
+const loadCallLogs = () => import("@/pages/admin/call-logs");
+const loadBusinessSetup = () => import("@/pages/admin/business-setup");
+const loadPagesMedia = () => import("@/pages/admin/pages-media");
+const loadConfigurations = () => import("@/pages/admin/configurations");
+const loadB2BCompanies = () => import("@/pages/admin/b2b-companies");
+const loadIntercityRoutes = () => import("@/pages/admin/intercity-routes");
+const loadInsurance = () => import("@/pages/admin/insurance");
+const loadDriverEarnings = () => import("@/pages/admin/driver-earnings");
+const loadReferrals = () => import("@/pages/admin/referrals");
+const loadDriverVerificationPage = () => import("@/pages/admin/driver-verification");
+const loadLocalPool = () => import("@/pages/admin/local-pool");
+const loadOutstationPool = () => import("@/pages/admin/outstation-pool");
+const loadParcelOrders = () => import("@/pages/admin/parcel-orders");
+const loadSystemHealth = () => import("@/pages/admin/system-health");
+const loadVoiceCommandsPage = () => import("@/pages/admin/voice-commands");
+const loadCityServices = () => import("@/pages/admin/city-services");
+const loadParcelVehiclesAdmin = () => import("@/pages/admin/parcel-vehicles");
+const loadAIBrainDashboard = () => import("@/pages/admin/ai-brain-dashboard");
+
+const Dashboard = lazy(loadDashboard);
+const Trips = lazy(loadTrips);
+const Customers = lazy(loadCustomers);
+const Drivers = lazy(loadDrivers);
+const VehicleCategories = lazy(loadVehicleCategories);
+const Zones = lazy(loadZones);
+const Fares = lazy(loadFares);
+const Transactions = lazy(loadTransactions);
+const Coupons = lazy(loadCoupons);
+const Reviews = lazy(loadReviews);
+const Settings = lazy(loadSettings);
+const BlogsPage = lazy(loadBlogsPage);
+const Withdrawals = lazy(loadWithdrawals);
+const CancellationReasonsPage = lazy(loadCancellationReasonsPage);
+const HeatMap = lazy(loadHeatMap);
+const RealtimeOps = lazy(loadRealtimeOps);
+const FleetView = lazy(loadFleetView);
+const CarSharing = lazy(loadCarSharing);
+const ParcelRefunds = lazy(loadParcelRefunds);
+const SafetyAlerts = lazy(loadSafetyAlerts);
+const AlertEngine = lazy(loadAlertEngine);
+const Banners = lazy(loadBanners);
+const Discounts = lazy(loadDiscounts);
+const SpinWheel = lazy(loadSpinWheel);
+const Notifications = lazy(loadNotifications);
+const DriverLevels = lazy(loadDriverLevels);
+const CustomerLevels = lazy(loadCustomerLevels);
+const CustomerWallet = lazy(loadCustomerWallet);
+const WalletBonus = lazy(loadWalletBonus);
+const Employees = lazy(loadEmployees);
+const Newsletter = lazy(loadNewsletter);
+const Subscriptions = lazy(loadSubscriptions);
+const RevenueModel = lazy(loadRevenueModel);
+const DriverWalletPage = lazy(loadDriverWalletPage);
+const RefundRequestsPage = lazy(loadRefundRequestsPage);
+const ApiDocsPage = lazy(loadApiDocsPage);
+const AppDesignPage = lazy(loadAppDesignPage);
+const LanguagesPage = lazy(loadLanguagesPage);
+const ServiceManagement = lazy(loadServiceManagement);
+const ParcelAttributes = lazy(loadParcelAttributes);
+const VehicleAttributes = lazy(loadVehicleAttributes);
+const VehicleRequests = lazy(loadVehicleRequests);
+const ParcelFares = lazy(loadParcelFares);
+const SurgePricing = lazy(loadSurgePricing);
+const Reports = lazy(loadReports);
+const Chatting = lazy(loadChatting);
+const CallLogs = lazy(loadCallLogs);
+const BusinessSetup = lazy(loadBusinessSetup);
+const PagesMedia = lazy(loadPagesMedia);
+const Configurations = lazy(loadConfigurations);
+const B2BCompanies = lazy(loadB2BCompanies);
+const IntercityRoutes = lazy(loadIntercityRoutes);
+const Insurance = lazy(loadInsurance);
+const DriverEarnings = lazy(loadDriverEarnings);
+const Referrals = lazy(loadReferrals);
+const DriverVerificationPage = lazy(loadDriverVerificationPage);
+const LocalPool = lazy(loadLocalPool);
+const OutstationPool = lazy(loadOutstationPool);
+const ParcelOrders = lazy(loadParcelOrders);
+const SystemHealth = lazy(loadSystemHealth);
+const VoiceCommandsPage = lazy(loadVoiceCommandsPage);
+const CityServices = lazy(loadCityServices);
+const ParcelVehiclesAdmin = lazy(loadParcelVehiclesAdmin);
+const AIBrainDashboard = lazy(loadAIBrainDashboard);
+
+const preloadAdminModules = [
+  loadDashboard,
+  loadTrips,
+  loadCustomers,
+  loadDrivers,
+  loadZones,
+  loadHeatMap,
+  loadFleetView,
+  loadRealtimeOps,
+  loadSystemHealth,
+  loadServiceManagement,
+  loadDiscounts,
+  loadCoupons,
+  loadReports,
+  loadChatting,
+];
 
 function AdminPageFallback() {
   return (
     <div className="admin-page-loading" aria-live="polite">
       <div className="admin-page-loading__bar" />
-      <div className="admin-page-loading__text">Loading workspace...</div>
+      <div className="admin-page-loading__text">Opening module...</div>
     </div>
   );
 }
@@ -89,6 +195,39 @@ function AdminRouteMissing() {
 }
 
 export default function AdminRoutes() {
+  const [location] = useLocation();
+
+  useEffect(() => {
+    const run = () => {
+      preloadHeatMapAssets();
+      preloadAdminModules.forEach((loader, index) => {
+        setTimeout(() => {
+          loader().catch(() => undefined);
+        }, index * 80);
+      });
+    };
+
+    if ("requestIdleCallback" in window) {
+      const idleId = (window as any).requestIdleCallback(run, { timeout: 1200 });
+      return () => (window as any).cancelIdleCallback?.(idleId);
+    }
+
+    const timeoutId = setTimeout(run, 500);
+    return () => clearTimeout(timeoutId);
+  }, []);
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+    document.querySelectorAll(".main-area, .admin-main-area, .main-area-inner, .admin-main-inner").forEach((node) => {
+      if (node instanceof HTMLElement) {
+        node.scrollTop = 0;
+        node.scrollLeft = 0;
+      }
+    });
+  }, [location]);
+
   return (
     <AdminLayout>
       <Suspense fallback={<AdminPageFallback />}>
