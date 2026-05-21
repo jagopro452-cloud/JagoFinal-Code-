@@ -1,5 +1,5 @@
-import express from "express";
 import fs from "node:fs";
+import http from "node:http";
 import path from "node:path";
 
 const rootDir = process.cwd();
@@ -18,15 +18,60 @@ function ensureBuildExists() {
 async function main() {
   ensureBuildExists();
   const indexHtml = await fs.promises.readFile(path.join(distDir, "index.html"), "utf8");
+  const server = http.createServer(async (req, res) => {
+    try {
+      const requestPath = decodeURIComponent((req.url || "/").split("?")[0] || "/");
+      const normalized = requestPath === "/" ? "/index.html" : requestPath;
+      const relativePath = normalized.replace(/^\/+/, "");
+      const candidatePath = path.resolve(distDir, relativePath);
 
-  const app = express();
-  app.use(express.static(distDir, { extensions: ["html"] }));
+      if (!candidatePath.startsWith(distDir)) {
+        res.statusCode = 403;
+        res.end("Forbidden");
+        return;
+      }
 
-  app.get(/.*/, (_req, res) => {
-    res.type("html").send(indexHtml);
+      if (fs.existsSync(candidatePath) && fs.statSync(candidatePath).isFile()) {
+        const ext = path.extname(candidatePath).toLowerCase();
+        const contentType =
+          (
+            {
+              ".html": "text/html; charset=utf-8",
+              ".js": "application/javascript; charset=utf-8",
+              ".css": "text/css; charset=utf-8",
+              ".json": "application/json; charset=utf-8",
+              ".svg": "image/svg+xml",
+              ".png": "image/png",
+              ".jpg": "image/jpeg",
+              ".jpeg": "image/jpeg",
+              ".gif": "image/gif",
+              ".webp": "image/webp",
+              ".ico": "image/x-icon",
+            } as Record<string, string>
+          )[ext] || "application/octet-stream";
+
+        res.statusCode = 200;
+        res.setHeader("Content-Type", contentType);
+        fs.createReadStream(candidatePath).pipe(res);
+        return;
+      }
+
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.end(indexHtml);
+    } catch (error) {
+      res.statusCode = 500;
+      res.end(`Playwright server error: ${String(error)}`);
+    }
   });
 
-  app.listen(port, "127.0.0.1", () => {
+  const shutdown = () => {
+    server.close(() => process.exit(0));
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+
+  server.listen(port, "127.0.0.1", () => {
     console.log(`[playwright-web-server] serving ${distDir} on ${port}`);
   });
 }

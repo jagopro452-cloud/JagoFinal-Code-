@@ -1,10 +1,11 @@
 const defaultBaseURL = process.env.APP_BASE_URL || "http://127.0.0.1:4173";
+const defaultApiBaseURL = process.env.PW_API_BASE_URL || `http://127.0.0.1:${process.env.PW_API_PORT || "4010"}`;
 const qaTagPrefix = process.env.PW_QA_TAG_PREFIX || "JAGO-QA-LIVE";
 
 export const runtime = {
   envName: process.env.PW_ENV || "mock",
   baseURL: process.env.PW_BASE_URL || defaultBaseURL,
-  apiBaseURL: process.env.PW_API_BASE_URL || defaultBaseURL,
+  apiBaseURL: defaultApiBaseURL,
   adminEmail: process.env.PW_ADMIN_EMAIL || process.env.ADMIN_EMAIL || "qa-admin@jago.test",
   adminPassword: process.env.PW_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || "Jago@123",
   opsApiKey: process.env.PW_OPS_API_KEY || process.env.OPS_API_KEY || "",

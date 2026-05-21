@@ -3,6 +3,9 @@ node_modules
 _safe_archive_2026-05-20/
 public/apks/
 public/uploads/
+app/debug.log
+app/playwright-report/
+app/test-results/
 
 # Local nested worktree used for production recovery history.
 jago-Updates-23-04-jago/

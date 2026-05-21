@@ -1,8 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
 import dotenv from "dotenv";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const rootDir = process.cwd();
+const configDir = path.dirname(fileURLToPath(import.meta.url));
+const rootDir = configDir;
 const envProfile = (process.env.PW_ENV || "").trim();
 const liveAdminStorageStatePath = path.resolve(rootDir, "test-results", ".live", "admin-storage-state.json");
 
@@ -26,6 +28,7 @@ const webServer = [];
 if (shouldUseLocalUi) {
   webServer.push({
     command: "npm.cmd run dev:playwright:web",
+    cwd: rootDir,
     url: baseURL,
     reuseExistingServer: !isCI,
     timeout: 240_000,
@@ -34,6 +37,7 @@ if (shouldUseLocalUi) {
 if (shouldUseMockApi) {
   webServer.push({
     command: "npm.cmd run dev:playwright:mock-api",
+    cwd: rootDir,
     url: `${apiBaseURL}/health`,
     reuseExistingServer: !isCI,
     timeout: 120_000,

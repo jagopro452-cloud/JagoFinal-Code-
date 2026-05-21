@@ -681,7 +681,7 @@ export default function LandingPage() {
         .modal-overlay.open .service-detail-card{opacity:1;transform:translate3d(0,0,0) scale(1)}
       `}</style>
 
-      <div style={{ background: C.cream, color: C.body, minHeight: "100vh" }}>
+      <div data-testid="landing-page" style={{ background: C.cream, color: C.body, minHeight: "100vh" }}>
 
         {/* ═══ NAV ═══ */}
         <nav style={{
@@ -766,7 +766,7 @@ export default function LandingPage() {
         )}
 
         {/* ═══ HERO ═══ */}
-        <section style={{ minHeight: "100vh", display: "flex", alignItems: "center", position: "relative", overflow: "hidden", paddingTop: 80 }}>
+        <section data-testid="hero-section" style={{ minHeight: "100vh", display: "flex", alignItems: "center", position: "relative", overflow: "hidden", paddingTop: 80 }}>
           {/* Background */}
           <div style={{ position: "absolute", inset: 0, background: C.gradHero, zIndex: 0 }} />
           {/* Orbs */}
@@ -803,7 +803,7 @@ export default function LandingPage() {
 
               {/* CTA Buttons */}
               <div className="hero-btns" style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 40, animation: "jg-hero-text .8s cubic-bezier(.16,1,.3,1) forwards", animationDelay: ".8s", opacity: 0 }}>
-                <a href="#download" className="btn-primary" onClick={(event) => handleSectionNavigation(event, "#download")} style={{
+                <a href="#download" data-testid="btn-book-ride-primary" className="btn-primary" onClick={(event) => handleSectionNavigation(event, "#download")} style={{
                   display: "inline-flex", alignItems: "center", gap: 10,
                   background: C.gradViolet, color: "#fff",
                   padding: "18px 40px", borderRadius: 18, textDecoration: "none",
@@ -1107,7 +1107,7 @@ export default function LandingPage() {
         </section>
 
         {/* ═══ APP DOWNLOAD CTA ═══ */}
-        <section id="download" className="sec" style={{ background: C.cream, position: "relative" }}>
+        <section id="download" data-testid="download-section" className="sec" style={{ background: C.cream, position: "relative" }}>
           <div className="cx">
             <div ref={rCta.ref} className={`rv${rCta.vis ? " v" : ""}`}>
               <div style={{
@@ -1163,11 +1163,11 @@ export default function LandingPage() {
 
                     <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 32 }}>
                       {[
-                        { l: "Customer App", ic: "📱", desc: "For daily commuters", c: "#fff", bg: "rgba(255,255,255,1)" },
-                        { l: "Driver App", ic: "🏍️", desc: "Start earning today", c: "#fff", bg: "rgba(255,255,255,0.15)", glass: true },
+                        { l: "Customer App", ic: "📱", desc: "For daily commuters", c: "#fff", bg: "rgba(255,255,255,1)", testId: "download-cta-customer-app" },
+                        { l: "Driver App", ic: "🏍️", desc: "Start earning today", c: "#fff", bg: "rgba(255,255,255,0.15)", glass: true, testId: "download-cta-driver-app" },
                         { l: "Become Pilot", ic: "🚀", desc: "Join our elite team", c: "#fff", bg: "rgba(255,255,255,0.15)", glass: true },
                       ].map(d => (
-                        <button key={d.l} type="button" className="btn-primary" onClick={(event) => handleSectionNavigation(event, "#download")} style={{
+                        <button key={d.l} data-testid={d.testId} type="button" className="btn-primary" onClick={(event) => handleSectionNavigation(event, "#download")} style={{
                           display: "flex", alignItems: "center", gap: 14,
                           background: d.bg, color: d.glass ? "#fff" : C.heading,
                           padding: "14px 24px", borderRadius: 20, textDecoration: "none",
