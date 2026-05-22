@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { adminFetch } from "@/lib/queryClient";
 
 interface ParcelVehicle {
   id: string;
@@ -36,7 +37,7 @@ export default function ParcelVehiclesAdmin() {
   const { data: vehicles = [], isLoading } = useQuery<ParcelVehicle[]>({
     queryKey: ["/api/admin/parcel-vehicles"],
     queryFn: async () => {
-      const r = await fetch("/api/admin/parcel-vehicles");
+      const r = await adminFetch("/api/admin/parcel-vehicles");
       if (!r.ok) throw new Error("Failed");
       const d = await r.json();
       return d.vehicles;
@@ -45,7 +46,7 @@ export default function ParcelVehiclesAdmin() {
 
   const updateMut = useMutation({
     mutationFn: async ({ key, data }: { key: string; data: Record<string, any> }) => {
-      const r = await fetch(`/api/admin/parcel-vehicles/${key}`, {
+      const r = await adminFetch(`/api/admin/parcel-vehicles/${key}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),
@@ -57,7 +58,7 @@ export default function ParcelVehiclesAdmin() {
 
   const addMut = useMutation({
     mutationFn: async (data: Record<string, any>) => {
-      const r = await fetch("/api/admin/parcel-vehicles", {
+      const r = await adminFetch("/api/admin/parcel-vehicles", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { adminConfirm } from "./components/AdminPrimitives";
 
 function FareCalculator({ zones, vehicleCategories }: { zones: any[]; vehicleCategories: any[] }) {
   const [calc, setCalc] = useState({ zoneId: "", vehicleCategoryId: "", distanceKm: "5", durationMin: "10" });
@@ -348,7 +349,7 @@ export default function Fares() {
                       <td className="text-center">
                         <div className="d-flex justify-content-center gap-2">
                           <button className="btn btn-sm btn-outline-primary" onClick={() => openEdit(item)} data-testid={`btn-edit-fare-${item.fare.id}`}><i className="bi bi-pencil-fill"></i></button>
-                          <button className="btn btn-sm btn-outline-danger" onClick={() => { if (confirm("Delete this fare?")) remove.mutate(item.fare.id); }} data-testid={`btn-delete-fare-${item.fare.id}`}><i className="bi bi-trash-fill"></i></button>
+                          <button className="btn btn-sm btn-outline-danger" onClick={async () => { if (await adminConfirm("Delete this fare?")) remove.mutate(item.fare.id); }} data-testid={`btn-delete-fare-${item.fare.id}`}><i className="bi bi-trash-fill"></i></button>
                         </div>
                       </td>
                     </tr>

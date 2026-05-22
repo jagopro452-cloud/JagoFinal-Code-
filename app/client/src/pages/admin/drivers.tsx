@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { adminFetch, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { ImageUploader } from "@/components/image-uploader";
+import { AdminDataTable, AdminEmptyState } from "@/pages/admin/components/AdminPrimitives";
 
 const avatarBg = (name: string) => {
   const colors = ["#1a73e8","#16a34a","#d97706","#9333ea","#0891b2","#dc2626","#0ea5e9"];
@@ -252,7 +253,7 @@ export default function Drivers() {
       const params = new URLSearchParams({ userType: "driver", page: String(page), limit: "50" });
       if (search) params.set("search", search);
       if (verifyTab !== "all") params.set("verificationStatus", verifyTab);
-      return fetch(`/api/users?${params}`).then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => d?.data ? d : { data: Array.isArray(d) ? d : [], total: 0 });
+      return adminFetch(`/api/users?${params}`).then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => d?.data ? d : { data: Array.isArray(d) ? d : [], total: 0 });
     },
   });
 
@@ -443,8 +444,7 @@ export default function Drivers() {
         </div>
 
         <div className="card-body p-0">
-          <div className="table-responsive" style={{ maxHeight: "calc(100vh - 360px)", overflowY: "auto" }}>
-            <table className="table table-borderless align-middle table-hover mb-0" style={{ minWidth: 1080 }}>
+          <AdminDataTable minWidth={1080} aria-label="Drivers list">
               <thead style={{ background: "#f8fafc" }}>
                 <tr>
                   {["#","Driver","Contact","Vehicle Info","Documents","Rating","Status","Verification","Action"].map((h, i) => (
@@ -462,10 +462,7 @@ export default function Drivers() {
                   ))
                 ) : drivers.length === 0 ? (
                   <tr><td colSpan={9}>
-                    <div className="text-center py-5 text-muted">
-                      <i className="bi bi-people fs-1 d-block mb-2" style={{ opacity: 0.25 }}></i>
-                      <p className="fw-semibold mb-1">No drivers found</p>
-                    </div>
+                    <AdminEmptyState icon="bi-people" title="No drivers found" />
                   </td></tr>
                 ) : drivers.map((driver: any, idx: number) => {
                   const name = driver.fullName || `${driver.firstName || ""} ${driver.lastName || ""}`.trim() || "Driver";
@@ -541,8 +538,7 @@ export default function Drivers() {
                   );
                 })}
               </tbody>
-            </table>
-          </div>
+          </AdminDataTable>
           <div className="d-flex align-items-center justify-content-between px-4 py-3 border-top flex-wrap gap-2">
             <div className="text-muted small">
               Showing {firstRow}-{lastRow} of {totalRows} drivers

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { adminFetch, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -24,7 +24,7 @@ export default function DriverVerificationPage() {
   const { data: drivers, isLoading } = useQuery<any[]>({
     queryKey: ["/api/admin/drivers/pending-verification", activeTab],
     queryFn: async () => {
-      const res = await fetch(`/api/admin/drivers/pending-verification?status=${activeTab}`);
+      const res = await adminFetch(`/api/admin/drivers/pending-verification?status=${activeTab}`);
       if (!res.ok) throw new Error("Failed to fetch drivers");
       const json = await res.json();
       return json.drivers || [];

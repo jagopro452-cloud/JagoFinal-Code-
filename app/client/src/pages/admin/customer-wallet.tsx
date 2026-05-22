@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { apiRequest } from "@/lib/queryClient";
+import { adminFetch, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 const avatarBg = (name: string) => {
@@ -103,7 +103,7 @@ export default function CustomerWalletPage() {
 
   const { data, isLoading } = useQuery<any>({
     queryKey: ["/api/users", { userType: "customer" }],
-    queryFn: () => fetch("/api/users?userType=customer&limit=200").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => (d && !d.message && !d.error) ? d : { data: [] }),
+    queryFn: () => adminFetch("/api/users?userType=customer&limit=200").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => (d && !d.message && !d.error) ? d : { data: [] }),
   });
   const customers = Array.isArray(data?.data) ? data.data : [];
   const filtered = customers.filter((c: any) =>

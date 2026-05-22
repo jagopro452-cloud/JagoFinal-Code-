@@ -2,6 +2,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
+import { adminConfirm } from "./components/AdminPrimitives";
 
 const STATUS_BADGE: Record<string, string> = {
   active: "bg-success", suspended: "bg-danger", pending: "bg-warning text-dark",
@@ -479,7 +480,7 @@ export default function B2BCompaniesPage() {
                           <i className="bi bi-box-seam"></i>
                         </button>
                         <button className="btn btn-sm btn-outline-danger" style={{ borderRadius: 8 }}
-                          onClick={() => { if (confirm(`Delete ${co.companyName}?`)) remove.mutate(co.id); }}
+                          onClick={async () => { if (await adminConfirm(`Delete ${co.companyName}?`)) remove.mutate(co.id); }}
                           data-testid={`btn-delete-b2b-${co.id}`}>
                           <i className="bi bi-trash-fill"></i>
                         </button>

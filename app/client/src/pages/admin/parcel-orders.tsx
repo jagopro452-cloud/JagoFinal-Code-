@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { adminFetch } from "@/lib/queryClient";
 
 interface ParcelOrder {
   id: string;
@@ -165,7 +166,7 @@ export default function ParcelOrdersPage() {
       const params = new URLSearchParams();
       if (statusFilter !== "all") params.set("status", statusFilter);
       if (b2bOnly) params.set("b2b", "true");
-      const r = await fetch(`/api/admin/parcel-orders?${params}`);
+      const r = await adminFetch(`/api/admin/parcel-orders?${params}`);
       if (!r.ok) throw new Error("Failed");
       return r.json();
     },

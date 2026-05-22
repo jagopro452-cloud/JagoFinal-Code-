@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { adminFetch } from "@/lib/queryClient";
 
 export default function Transactions() {
   const [page, setPage] = useState(1);
 
   const { data, isLoading } = useQuery<any>({
     queryKey: ["/api/transactions", { page }],
-    queryFn: () => fetch(`/api/transactions?page=${page}&limit=15`).then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => d?.data ? d : { data: Array.isArray(d) ? d : [], total: 0 }),
+    queryFn: () => adminFetch(`/api/transactions?page=${page}&limit=15`).then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => d?.data ? d : { data: Array.isArray(d) ? d : [], total: 0 }),
   });
 
   const totalPages = Math.ceil((data?.total || 0) / 15);

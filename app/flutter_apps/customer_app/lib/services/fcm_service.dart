@@ -105,7 +105,9 @@ class FcmService {
         debugPrint('[FCM-CUSTOMER] ❌ getToken() returned null — Firebase not ready?');
         return;
       }
+      if (kDebugMode) {
       debugPrint('[FCM-CUSTOMER] 🔑 Token obtained: ${token.substring(0, 20)}...');
+      }
       await _saveTokenToServer(token);
     } catch (e) {
       debugPrint('[FCM-CUSTOMER] ❌ getToken() threw: $e');
@@ -120,7 +122,9 @@ class FcmService {
         debugPrint('[FCM-CUSTOMER] ⚠️  No auth_token in prefs — token NOT saved (login first)');
         return;
       }
+      if (kDebugMode) {
       debugPrint('[FCM-CUSTOMER] 📤 Saving token to server: ${token.substring(0, 20)}...');
+      }
       final res = await http.post(
         Uri.parse(ApiConfig.fcmToken),
         headers: {

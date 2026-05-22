@@ -2,6 +2,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
+import { adminConfirm } from "./components/AdminPrimitives";
 
 export default function SurgePricingPage() {
   const { toast } = useToast();
@@ -94,7 +95,7 @@ export default function SurgePricingPage() {
                       </td>
                       <td>
                         <button className="btn btn-sm btn-outline-primary me-1" onClick={() => openEdit(s)}><i className="bi bi-pencil-fill"></i></button>
-                        <button className="btn btn-sm btn-outline-danger" onClick={() => { if (confirm("Delete?")) deleteMutation.mutate(s.id); }}><i className="bi bi-trash-fill"></i></button>
+                        <button className="btn btn-sm btn-outline-danger" onClick={async () => { if (await adminConfirm("Delete this surge rule?")) deleteMutation.mutate(s.id); }}><i className="bi bi-trash-fill"></i></button>
                       </td>
                     </tr>
                   ))}

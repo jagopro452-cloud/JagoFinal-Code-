@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { adminFetch, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 interface RealtimeOpsConfig {
@@ -134,7 +134,7 @@ export default function RealtimeOpsPage() {
 
   const snapshotQuery = useQuery<SnapshotResponse>({
     queryKey: ["/api/admin/realtime-ops/bootstrap"],
-    queryFn: () => fetch("/api/admin/realtime-ops/bootstrap").then(async (r) => {
+    queryFn: () => adminFetch("/api/admin/realtime-ops/bootstrap").then(async (r) => {
       if (!r.ok) throw new Error("Realtime Ops bootstrap failed");
       return r.json();
     }),
@@ -143,7 +143,7 @@ export default function RealtimeOpsPage() {
 
   const configQuery = useQuery<{ config: RealtimeOpsConfig }>({
     queryKey: ["/api/admin/realtime-ops/config"],
-    queryFn: () => fetch("/api/admin/realtime-ops/config").then(async (r) => {
+    queryFn: () => adminFetch("/api/admin/realtime-ops/config").then(async (r) => {
       if (!r.ok) throw new Error("Realtime Ops config failed");
       return r.json();
     }),

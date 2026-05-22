@@ -2,6 +2,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
+import { adminConfirm } from "./components/AdminPrimitives";
 
 export default function WalletBonusPage() {
   const { toast } = useToast();
@@ -81,7 +82,7 @@ export default function WalletBonusPage() {
                       <td><span className={`badge ${b.isActive ? "bg-success" : "bg-secondary"}`}>{b.isActive ? "Active" : "Inactive"}</span></td>
                       <td>
                         <button className="btn btn-sm btn-outline-primary me-1" onClick={() => openEdit(b)}><i className="bi bi-pencil-fill"></i></button>
-                        <button className="btn btn-sm btn-outline-danger" onClick={() => { if (confirm("Delete?")) deleteMutation.mutate(b.id); }}><i className="bi bi-trash-fill"></i></button>
+                        <button className="btn btn-sm btn-outline-danger" onClick={async () => { if (await adminConfirm("Delete this wallet bonus?")) deleteMutation.mutate(b.id); }}><i className="bi bi-trash-fill"></i></button>
                       </td>
                     </tr>
                   ))}

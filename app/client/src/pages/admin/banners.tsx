@@ -3,6 +3,7 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { ImageUploader } from "@/components/image-uploader";
+import { adminConfirm } from "./components/AdminPrimitives";
 
 export default function BannersPage() {
   const { toast } = useToast();
@@ -125,7 +126,7 @@ export default function BannersPage() {
                         </button>
                         <button
                           className="btn btn-sm btn-outline-danger"
-                          onClick={() => { if (confirm("Delete this banner?")) deleteMutation.mutate(b.id); }}
+                          onClick={async () => { if (await adminConfirm("Delete this banner?")) deleteMutation.mutate(b.id); }}
                           data-testid={`btn-delete-banner-${b.id}`}
                         >
                           <i className="bi bi-trash-fill"></i>

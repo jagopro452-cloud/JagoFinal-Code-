@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { adminFetch } from "@/lib/queryClient";
 
 const STATUS_COLORS: any = {
   approved: { bg: "#d1fae5", color: "#065f46", label: "Active" },
@@ -10,7 +11,7 @@ const STATUS_COLORS: any = {
 function DriverDetail({ driver, onClose }: { driver: any; onClose: () => void }) {
   const { data, isLoading } = useQuery<any>({
     queryKey: ["/api/driver-earnings", driver.id],
-    queryFn: () => fetch(`/api/driver-earnings/${driver.id}`).then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => (d && !d.message && !d.error) ? d : {}),
+    queryFn: () => adminFetch(`/api/driver-earnings/${driver.id}`).then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => (d && !d.message && !d.error) ? d : {}),
   });
 
   return (

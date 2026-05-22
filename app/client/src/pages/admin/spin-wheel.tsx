@@ -2,6 +2,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
+import { adminConfirm } from "./components/AdminPrimitives";
 
 export default function SpinWheelPage() {
   const { toast } = useToast();
@@ -100,7 +101,7 @@ export default function SpinWheelPage() {
                           <i className={`bi ${item.isActive ? "bi-toggle-on" : "bi-toggle-off"}`}></i>
                         </button>
                         <button className="btn btn-sm btn-outline-primary me-1" onClick={() => { setEditing(item); setForm({ label: item.label, rewardAmount: item.rewardAmount, rewardType: item.rewardType, probability: item.probability, isActive: item.isActive }); setShowModal(true); }}><i className="bi bi-pencil-fill"></i></button>
-                        <button className="btn btn-sm btn-outline-danger" onClick={() => { if (confirm("Delete?")) deleteMutation.mutate(item.id); }}><i className="bi bi-trash-fill"></i></button>
+                        <button className="btn btn-sm btn-outline-danger" onClick={async () => { if (await adminConfirm("Delete this spin wheel slot?")) deleteMutation.mutate(item.id); }}><i className="bi bi-trash-fill"></i></button>
                       </td>
                     </tr>
                   ))}

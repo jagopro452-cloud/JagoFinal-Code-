@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { adminFetch } from "@/lib/queryClient";
 
 const STATUS_BADGE: Record<string, { cls: string; label: string }> = {
   scheduled:   { cls: "badge bg-primary",          label: "Scheduled" },
@@ -30,7 +31,7 @@ export default function OutstationPool() {
 
   const toggleMode = useMutation({
     mutationFn: async (mode: "on" | "off") => {
-      const res = await fetch("/api/admin/outstation-pool/settings", {
+      const res = await adminFetch("/api/admin/outstation-pool/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode }),

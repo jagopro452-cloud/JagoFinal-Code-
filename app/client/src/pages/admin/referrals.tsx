@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { adminConfirm } from "./components/AdminPrimitives";
 
 const STATUS_STYLES: Record<string, { bg: string; color: string; label: string }> = {
   paid: { bg: "#dcfce7", color: "#166534", label: "Paid" },
@@ -286,8 +287,13 @@ export default function ReferralsPage() {
                                     className="btn btn-sm btn-success"
                                     style={{ fontSize: "0.72rem", padding: "2px 8px" }}
                                     disabled={payMutation.isPending}
-                                    onClick={() => {
-                                      if (confirm(`Pay ${formatCurrency(referral.rewardAmount)} to ${referral.referrerName}?`)) {
+                                    onClick={async () => {
+                                      if (await adminConfirm({
+                                        title: "Confirm referral payout",
+                                        message: `Pay ${formatCurrency(referral.rewardAmount)} to ${referral.referrerName}?`,
+                                        confirmLabel: "Pay",
+                                        variant: "primary",
+                                      })) {
                                         payMutation.mutate(referral.id);
                                       }
                                     }}

@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { adminFetch, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { adminConfirm } from "./components/AdminPrimitives";
 
 const STATUS_BADGE: Record<string, { cls: string; label: string }> = {
   active:       { cls: "bg-danger text-white",  label: "🔴 Active SOS" },
@@ -39,14 +40,14 @@ export default function SafetyAlertsPage() {
 
   const { data: alerts = [], isLoading: alertsLoading } = useQuery<any[]>({
     queryKey: ["/api/safety-alerts", filter, triggeredBy],
-    queryFn: () => fetch(`/api/safety-alerts?status=${filter}&triggered_by=${triggeredBy}`)
+    queryFn: () => adminFetch(`/api/safety-alerts?status=${filter}&triggered_by=${triggeredBy}`)
       .then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => Array.isArray(d) ? d : (d?.data && Array.isArray(d.data) ? d.data : [])),
     refetchInterval: 15000,
   });
 
   const { data: stats } = useQuery<any>({
     queryKey: ["/api/safety-alerts/stats"],
-    queryFn: () => fetch("/api/safety-alerts/stats").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => (d && !d.message && !d.error) ? d : {}),
+    queryFn: () => adminFetch("/api/safety-alerts/stats").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => (d && !d.message && !d.error) ? d : {}),
     refetchInterval: 15000,
   });
 
@@ -75,7 +76,7 @@ export default function SafetyAlertsPage() {
   const { data: stations = [], isLoading: stationsLoading } = useQuery<any[]>({
     queryKey: ["/api/police-stations"],
     enabled: activeTab === "police",
-    queryFn: () => fetch("/api/police-stations").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => Array.isArray(d) ? d : (d?.data && Array.isArray(d.data) ? d.data : [])),
+    queryFn: () => adminFetch("/api/police-stations").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => Array.isArray(d) ? d : (d?.data && Array.isArray(d.data) ? d.data : [])),
   });
   const { data: zones = [] } = useQuery<any[]>({ queryKey: ["/api/zones"] });
 
@@ -103,7 +104,7 @@ export default function SafetyAlertsPage() {
   const { data: matchingData } = useQuery<any>({
     queryKey: ["/api/matching/stats"],
     enabled: activeTab === "matching",
-    queryFn: () => fetch("/api/matching/stats").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => (d && !d.message && !d.error) ? d : { stats: {}, settings: {} }),
+    queryFn: () => adminFetch("/api/matching/stats").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => (d && !d.message && !d.error) ? d : { stats: {}, settings: {} }),
   });
 
   const saveSetting = useMutation({
@@ -376,7 +377,7 @@ export default function SafetyAlertsPage() {
                             </div>
                             <div className="d-flex gap-1">
                               <button className="btn btn-sm btn-outline-primary" onClick={() => { setEditingStation(s); setStationForm({ name: s.name, zoneId: s.zoneId || "", address: s.address || "", phone: s.phone || "", latitude: s.latitude || "", longitude: s.longitude || "" }); setStationModal(true); }} data-testid={`btn-edit-station-${s.id}`}><i className="bi bi-pencil"></i></button>
-                              <button className="btn btn-sm btn-outline-danger" onClick={() => { if (confirm("Delete this station?")) deleteStation.mutate(s.id); }} data-testid={`btn-del-station-${s.id}`}><i className="bi bi-trash"></i></button>
+                              <button className="btn btn-sm btn-outline-danger" onClick={async () => { if (await adminConfirm("Delete this station?")) deleteStation.mutate(s.id); }} data-testid={`btn-del-station-${s.id}`}><i className="bi bi-trash"></i></button>
                             </div>
                           </div>
                           {s.address && <div style={{ fontSize: "0.78rem", color: "#64748b" }}><i className="bi bi-geo-alt me-1"></i>{s.address}</div>}

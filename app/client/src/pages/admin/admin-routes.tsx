@@ -1,30 +1,9 @@
 import { lazy, Suspense, useEffect } from "react";
+import type { ComponentType } from "react";
 import { Switch, Route, Redirect, useLocation } from "wouter";
-import AdminLayout from "@/pages/admin/layout";
-
-function preloadStylesheet(id: string, href: string) {
-  if (document.getElementById(id)) return;
-  const link = document.createElement("link");
-  link.id = id;
-  link.rel = "stylesheet";
-  link.href = href;
-  document.head.appendChild(link);
-}
-
-function preloadScript(id: string, src: string) {
-  if (document.getElementById(id) || document.querySelector(`script[src="${src}"]`)) return;
-  const script = document.createElement("script");
-  script.id = id;
-  script.src = src;
-  script.async = true;
-  document.head.appendChild(script);
-}
-
-function preloadHeatMapAssets() {
-  preloadStylesheet("admin-leaflet-css", "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css");
-  preloadScript("admin-leaflet-js", "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js");
-  preloadScript("admin-leaflet-heat-js", "https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js");
-}
+import AdminLayout, { canAccessAdminPath } from "@/pages/admin/layout";
+import { AdminEmptyState, AdminErrorBoundary, AdminLoader } from "@/pages/admin/components/AdminPrimitives";
+import { getSavedAdminSession } from "@/lib/queryClient";
 
 const loadDashboard = () => import("@/pages/admin/dashboard");
 const loadTrips = () => import("@/pages/admin/trips");
@@ -43,7 +22,6 @@ const loadCancellationReasonsPage = () => import("@/pages/admin/cancellation-rea
 const loadHeatMap = () => import("@/pages/admin/heat-map");
 const loadRealtimeOps = () => import("@/pages/admin/realtime-ops");
 const loadFleetView = () => import("@/pages/admin/fleet-view");
-const loadCarSharing = () => import("@/pages/admin/car-sharing");
 const loadParcelRefunds = () => import("@/pages/admin/parcel-refunds");
 const loadSafetyAlerts = () => import("@/pages/admin/safety-alerts");
 const loadAlertEngine = () => import("@/pages/admin/alert-engine");
@@ -83,6 +61,7 @@ const loadDriverEarnings = () => import("@/pages/admin/driver-earnings");
 const loadReferrals = () => import("@/pages/admin/referrals");
 const loadDriverVerificationPage = () => import("@/pages/admin/driver-verification");
 const loadLocalPool = () => import("@/pages/admin/local-pool");
+const loadIntercityPool = () => import("@/pages/admin/intercity-carsharing");
 const loadOutstationPool = () => import("@/pages/admin/outstation-pool");
 const loadParcelOrders = () => import("@/pages/admin/parcel-orders");
 const loadSystemHealth = () => import("@/pages/admin/system-health");
@@ -108,7 +87,6 @@ const CancellationReasonsPage = lazy(loadCancellationReasonsPage);
 const HeatMap = lazy(loadHeatMap);
 const RealtimeOps = lazy(loadRealtimeOps);
 const FleetView = lazy(loadFleetView);
-const CarSharing = lazy(loadCarSharing);
 const ParcelRefunds = lazy(loadParcelRefunds);
 const SafetyAlerts = lazy(loadSafetyAlerts);
 const AlertEngine = lazy(loadAlertEngine);
@@ -148,6 +126,7 @@ const DriverEarnings = lazy(loadDriverEarnings);
 const Referrals = lazy(loadReferrals);
 const DriverVerificationPage = lazy(loadDriverVerificationPage);
 const LocalPool = lazy(loadLocalPool);
+const IntercityPool = lazy(loadIntercityPool);
 const OutstationPool = lazy(loadOutstationPool);
 const ParcelOrders = lazy(loadParcelOrders);
 const SystemHealth = lazy(loadSystemHealth);
@@ -166,6 +145,8 @@ const preloadAdminModules = [
   loadFleetView,
   loadRealtimeOps,
   loadSystemHealth,
+  loadLocalPool,
+  loadIntercityPool,
   loadServiceManagement,
   loadDiscounts,
   loadCoupons,
@@ -174,23 +155,40 @@ const preloadAdminModules = [
 ];
 
 function AdminPageFallback() {
-  return (
-    <div className="admin-page-loading" aria-live="polite">
-      <div className="admin-page-loading__bar" />
-      <div className="admin-page-loading__text">Opening module...</div>
-    </div>
-  );
+  return <AdminLoader label="Opening module..." />;
 }
 
 function AdminRouteMissing() {
   return (
-    <div className="d-flex flex-column align-items-center justify-content-center py-5 text-center">
-      <div className="rounded-circle d-inline-flex align-items-center justify-content-center mb-3" style={{ width: 64, height: 64, background: "#eff6ff", color: "#2563eb" }}>
-        <i className="bi bi-exclamation-diamond-fill fs-3"></i>
-      </div>
-      <h2 className="h4 fw-bold mb-2">Module Not Found</h2>
-      <p className="text-muted mb-0">This admin route is not mapped to a live module in the current build.</p>
-    </div>
+    <AdminEmptyState
+      icon="bi-exclamation-diamond-fill"
+      title="Module Not Found"
+      message="This admin route is not mapped to a live module in the current build."
+    />
+  );
+}
+
+function AdminAccessDenied() {
+  return (
+    <AdminEmptyState
+      icon="bi-shield-lock-fill"
+      title="Access denied"
+      message="Your admin role is not allowed to open this module."
+    />
+  );
+}
+
+function ProtectedAdminPage({ path, component: Component }: { path: string; component: ComponentType<any> }) {
+  const session = getSavedAdminSession();
+  if (!canAccessAdminPath(session.role, path)) return <AdminAccessDenied />;
+  return <Component />;
+}
+
+function GuardedRoute({ path, component }: { path: string; component: ComponentType<any> }) {
+  return (
+    <Route path={path}>
+      <ProtectedAdminPage path={path} component={component} />
+    </Route>
   );
 }
 
@@ -199,7 +197,6 @@ export default function AdminRoutes() {
 
   useEffect(() => {
     const run = () => {
-      preloadHeatMapAssets();
       preloadAdminModules.forEach((loader, index) => {
         setTimeout(() => {
           loader().catch(() => undefined);
@@ -230,78 +227,86 @@ export default function AdminRoutes() {
 
   return (
     <AdminLayout>
+      <AdminErrorBoundary>
       <Suspense fallback={<AdminPageFallback />}>
         <Switch>
-          <Route path="/admin/dashboard" component={Dashboard} />
-          <Route path="/admin/realtime-ops" component={RealtimeOps} />
-          <Route path="/admin/heat-map" component={HeatMap} />
-          <Route path="/admin/fleet-view" component={FleetView} />
-          <Route path="/admin/zones" component={Zones} />
+          <Route path="/admin/car-sharing">
+            <Redirect to="/admin/local-pool" />
+          </Route>
+          <Route path="/admin/intercity-carsharing">
+            <Redirect to="/admin/intercity-pool" />
+          </Route>
+          <GuardedRoute path="/admin/dashboard" component={Dashboard} />
+          <GuardedRoute path="/admin/realtime-ops" component={RealtimeOps} />
+          <GuardedRoute path="/admin/heat-map" component={HeatMap} />
+          <GuardedRoute path="/admin/fleet-view" component={FleetView} />
+          <GuardedRoute path="/admin/zones" component={Zones} />
           <Route path="/admin/popular-locations">
             <Redirect to="/admin/zones" />
           </Route>
-          <Route path="/admin/trips" component={Trips} />
-          <Route path="/admin/intercity-pool" component={CarSharing} />
-          <Route path="/admin/local-pool" component={LocalPool} />
-          <Route path="/admin/outstation-pool" component={OutstationPool} />
-          <Route path="/admin/parcel-refunds" component={ParcelRefunds} />
-          <Route path="/admin/safety-alerts" component={SafetyAlerts} />
-          <Route path="/admin/alert-engine" component={AlertEngine} />
-          <Route path="/admin/banners" component={Banners} />
-          <Route path="/admin/coupons" component={Coupons} />
-          <Route path="/admin/discounts" component={Discounts} />
-          <Route path="/admin/spin-wheel" component={SpinWheel} />
-          <Route path="/admin/notifications" component={Notifications} />
-          <Route path="/admin/driver-levels" component={DriverLevels} />
-          <Route path="/admin/driver-verification" component={DriverVerificationPage} />
-          <Route path="/admin/drivers" component={Drivers} />
-          <Route path="/admin/withdrawals" component={Withdrawals} />
-          <Route path="/admin/customer-levels" component={CustomerLevels} />
-          <Route path="/admin/customers" component={Customers} />
-          <Route path="/admin/customer-wallet" component={CustomerWallet} />
-          <Route path="/admin/wallet-bonus" component={WalletBonus} />
-          <Route path="/admin/employees" component={Employees} />
-          <Route path="/admin/newsletter" component={Newsletter} />
-          <Route path="/admin/subscriptions" component={Subscriptions} />
-          <Route path="/admin/revenue-model" component={RevenueModel} />
-          <Route path="/admin/parcel-attributes" component={ParcelAttributes} />
-          <Route path="/admin/vehicle-attributes" component={VehicleAttributes} />
-          <Route path="/admin/vehicles" component={VehicleCategories} />
-          <Route path="/admin/vehicle-requests" component={VehicleRequests} />
-          <Route path="/admin/fares" component={Fares} />
-          <Route path="/admin/cancellation-reasons" component={CancellationReasonsPage} />
-          <Route path="/admin/parcel-fares" component={ParcelFares} />
-          <Route path="/admin/surge-pricing" component={SurgePricing} />
-          <Route path="/admin/transactions" component={Transactions} />
-          <Route path="/admin/reports" component={Reports} />
-          <Route path="/admin/chatting" component={Chatting} />
-          <Route path="/admin/call-logs" component={CallLogs} />
-          <Route path="/admin/blogs" component={BlogsPage} />
-          <Route path="/admin/reviews" component={Reviews} />
-          <Route path="/admin/business-setup" component={BusinessSetup} />
-          <Route path="/admin/pages-media" component={PagesMedia} />
-          <Route path="/admin/configurations" component={Configurations} />
-          <Route path="/admin/settings" component={Settings} />
-          <Route path="/admin/b2b-companies" component={B2BCompanies} />
-          <Route path="/admin/intercity-routes" component={IntercityRoutes} />
-          <Route path="/admin/insurance" component={Insurance} />
-          <Route path="/admin/driver-earnings" component={DriverEarnings} />
-          <Route path="/admin/driver-wallet" component={DriverWalletPage} />
-          <Route path="/admin/refund-requests" component={RefundRequestsPage} />
-          <Route path="/admin/api-docs" component={ApiDocsPage} />
-          <Route path="/admin/app-design" component={AppDesignPage} />
-          <Route path="/admin/languages" component={LanguagesPage} />
-          <Route path="/admin/service-management" component={ServiceManagement} />
-          <Route path="/admin/parcel-orders" component={ParcelOrders} />
-          <Route path="/admin/system-health" component={SystemHealth} />
-          <Route path="/admin/voice-commands" component={VoiceCommandsPage} />
-          <Route path="/admin/referrals" component={Referrals} />
-          <Route path="/admin/city-services" component={CityServices} />
-          <Route path="/admin/parcel-vehicle-types" component={ParcelVehiclesAdmin} />
-          <Route path="/admin/ai-brain" component={AIBrainDashboard} />
+          <GuardedRoute path="/admin/trips" component={Trips} />
+          <GuardedRoute path="/admin/intercity-pool" component={IntercityPool} />
+          <GuardedRoute path="/admin/local-pool" component={LocalPool} />
+          <GuardedRoute path="/admin/outstation-pool" component={OutstationPool} />
+          <GuardedRoute path="/admin/parcel-refunds" component={ParcelRefunds} />
+          <GuardedRoute path="/admin/safety-alerts" component={SafetyAlerts} />
+          <GuardedRoute path="/admin/alert-engine" component={AlertEngine} />
+          <GuardedRoute path="/admin/banners" component={Banners} />
+          <GuardedRoute path="/admin/coupons" component={Coupons} />
+          <GuardedRoute path="/admin/discounts" component={Discounts} />
+          <GuardedRoute path="/admin/spin-wheel" component={SpinWheel} />
+          <GuardedRoute path="/admin/notifications" component={Notifications} />
+          <GuardedRoute path="/admin/driver-levels" component={DriverLevels} />
+          <GuardedRoute path="/admin/driver-verification" component={DriverVerificationPage} />
+          <GuardedRoute path="/admin/drivers" component={Drivers} />
+          <GuardedRoute path="/admin/withdrawals" component={Withdrawals} />
+          <GuardedRoute path="/admin/customer-levels" component={CustomerLevels} />
+          <GuardedRoute path="/admin/customers" component={Customers} />
+          <GuardedRoute path="/admin/customer-wallet" component={CustomerWallet} />
+          <GuardedRoute path="/admin/wallet-bonus" component={WalletBonus} />
+          <GuardedRoute path="/admin/employees" component={Employees} />
+          <GuardedRoute path="/admin/newsletter" component={Newsletter} />
+          <GuardedRoute path="/admin/subscriptions" component={Subscriptions} />
+          <GuardedRoute path="/admin/revenue-model" component={RevenueModel} />
+          <GuardedRoute path="/admin/parcel-attributes" component={ParcelAttributes} />
+          <GuardedRoute path="/admin/vehicle-attributes" component={VehicleAttributes} />
+          <GuardedRoute path="/admin/vehicles" component={VehicleCategories} />
+          <GuardedRoute path="/admin/vehicle-requests" component={VehicleRequests} />
+          <GuardedRoute path="/admin/fares" component={Fares} />
+          <GuardedRoute path="/admin/cancellation-reasons" component={CancellationReasonsPage} />
+          <GuardedRoute path="/admin/parcel-fares" component={ParcelFares} />
+          <GuardedRoute path="/admin/surge-pricing" component={SurgePricing} />
+          <GuardedRoute path="/admin/transactions" component={Transactions} />
+          <GuardedRoute path="/admin/reports" component={Reports} />
+          <GuardedRoute path="/admin/chatting" component={Chatting} />
+          <GuardedRoute path="/admin/call-logs" component={CallLogs} />
+          <GuardedRoute path="/admin/blogs" component={BlogsPage} />
+          <GuardedRoute path="/admin/reviews" component={Reviews} />
+          <GuardedRoute path="/admin/business-setup" component={BusinessSetup} />
+          <GuardedRoute path="/admin/pages-media" component={PagesMedia} />
+          <GuardedRoute path="/admin/configurations" component={Configurations} />
+          <GuardedRoute path="/admin/settings" component={Settings} />
+          <GuardedRoute path="/admin/b2b-companies" component={B2BCompanies} />
+          <GuardedRoute path="/admin/intercity-routes" component={IntercityRoutes} />
+          <GuardedRoute path="/admin/insurance" component={Insurance} />
+          <GuardedRoute path="/admin/driver-earnings" component={DriverEarnings} />
+          <GuardedRoute path="/admin/driver-wallet" component={DriverWalletPage} />
+          <GuardedRoute path="/admin/refund-requests" component={RefundRequestsPage} />
+          <GuardedRoute path="/admin/api-docs" component={ApiDocsPage} />
+          <GuardedRoute path="/admin/app-design" component={AppDesignPage} />
+          <GuardedRoute path="/admin/languages" component={LanguagesPage} />
+          <GuardedRoute path="/admin/service-management" component={ServiceManagement} />
+          <GuardedRoute path="/admin/parcel-orders" component={ParcelOrders} />
+          <GuardedRoute path="/admin/system-health" component={SystemHealth} />
+          <GuardedRoute path="/admin/voice-commands" component={VoiceCommandsPage} />
+          <GuardedRoute path="/admin/referrals" component={Referrals} />
+          <GuardedRoute path="/admin/city-services" component={CityServices} />
+          <GuardedRoute path="/admin/parcel-vehicle-types" component={ParcelVehiclesAdmin} />
+          <GuardedRoute path="/admin/ai-brain" component={AIBrainDashboard} />
           <Route component={AdminRouteMissing} />
         </Switch>
       </Suspense>
+      </AdminErrorBoundary>
     </AdminLayout>
   );
 }

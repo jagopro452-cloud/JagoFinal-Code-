@@ -2,6 +2,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
+import { adminConfirm } from "./components/AdminPrimitives";
 
 const defaultForm = { zoneId: "", baseFare: "", farePerKm: "", farePerKg: "", minimumFare: "", loadingCharge: "", helperChargePerHour: "", maxHelpers: "" };
 
@@ -104,7 +105,7 @@ export default function ParcelFaresPage() {
                       <td>{f.maxHelpers ?? 0}</td>
                       <td>
                         <button className="btn btn-sm btn-outline-primary me-1" onClick={() => openEdit(f)}><i className="bi bi-pencil-fill"></i></button>
-                        <button className="btn btn-sm btn-outline-danger" onClick={() => { if (confirm("Delete?")) deleteMutation.mutate(f.id); }}><i className="bi bi-trash-fill"></i></button>
+                        <button className="btn btn-sm btn-outline-danger" onClick={async () => { if (await adminConfirm("Delete this parcel fare?")) deleteMutation.mutate(f.id); }}><i className="bi bi-trash-fill"></i></button>
                       </td>
                     </tr>
                   ))}

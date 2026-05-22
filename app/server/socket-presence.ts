@@ -1,6 +1,8 @@
 type PresenceRole = "driver" | "customer";
 
-const SOCKET_PRESENCE_TTL_SEC = 60 * 60 * 24;
+// Keep socket presence short-lived so a crashed pod cannot leave ghost sockets.
+// Active sockets refresh this TTL from server/socket.ts heartbeat.
+const SOCKET_PRESENCE_TTL_SEC = 180;
 
 let redisClientPromise: Promise<any | null> | null = null;
 
@@ -42,6 +44,21 @@ export async function addSocketPresence(role: PresenceRole, userId: string, sock
     await client.expire(presenceKey(role, userId), SOCKET_PRESENCE_TTL_SEC);
   } catch {
     // Presence caching must never break socket flows.
+  }
+}
+
+export async function touchSocketPresence(role: PresenceRole, userId: string, socketId: string): Promise<void> {
+  const client = await getRedisClient();
+  if (!client) return;
+  try {
+    const key = presenceKey(role, userId);
+    const isKnownSocket = Number(await client.sismember(key, socketId)) === 1;
+    if (!isKnownSocket) {
+      await client.sadd(key, socketId);
+    }
+    await client.expire(key, SOCKET_PRESENCE_TTL_SEC);
+  } catch {
+    // Presence refresh must never break active sockets.
   }
 }
 

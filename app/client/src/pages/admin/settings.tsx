@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, useEffect } from "react";
-import { apiRequest } from "@/lib/queryClient";
+import { adminFetch, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 type Setting = { keyName: string; value: string; settingsType: string };
@@ -35,28 +35,15 @@ function PasswordChangePanel() {
 
     setLoading(true);
     try {
-      const admin = JSON.parse(localStorage.getItem("jago-admin") || "{}");
-      const res = await fetch("/api/admin/change-password", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${admin.token}`,
-        },
-        body: JSON.stringify({
-          currentPassword: form.currentPassword,
-          newPassword: form.newPassword,
-          confirmPassword: form.confirmPassword,
-        }),
+      await apiRequest("POST", "/api/admin/change-password", {
+        currentPassword: form.currentPassword,
+        newPassword: form.newPassword,
+        confirmPassword: form.confirmPassword,
       });
-      const data = await res.json();
-      if (res.ok) {
-        toast({ title: "Password changed successfully" });
-        setForm({ currentPassword: "", newPassword: "", confirmPassword: "" });
-      } else {
-        toast({ title: data.message || "Failed to change password", variant: "destructive" });
-      }
-    } catch {
-      toast({ title: "Connection error", variant: "destructive" });
+      toast({ title: "Password changed successfully" });
+      setForm({ currentPassword: "", newPassword: "", confirmPassword: "" });
+    } catch (error: any) {
+      toast({ title: error?.message || "Failed to change password", variant: "destructive" });
     } finally {
       setLoading(false);
     }
@@ -202,7 +189,7 @@ function OtpSettingsPanel() {
 
   const { data, isLoading } = useQuery<OtpSettings>({
     queryKey: ["/api/otp-settings"],
-    queryFn: () => fetch("/api/otp-settings").then(r => r.json()),
+    queryFn: () => adminFetch("/api/otp-settings").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })),
   });
 
   const [form, setForm] = useState<OtpSettings>({
@@ -353,7 +340,7 @@ export default function Settings() {
 
   const { data: settings, isLoading } = useQuery<Setting[]>({
     queryKey: ["/api/settings"],
-    queryFn: () => fetch("/api/settings").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => Array.isArray(d) ? d : (d?.data && Array.isArray(d.data) ? d.data : [])),
+    queryFn: () => adminFetch("/api/settings").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => Array.isArray(d) ? d : (d?.data && Array.isArray(d.data) ? d.data : [])),
   });
 
   useEffect(() => {

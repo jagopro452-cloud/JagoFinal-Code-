@@ -1,6 +1,6 @@
 ﻿import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { adminFetch, queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 const ROUTES = [
@@ -247,7 +247,7 @@ function RidesTab() {
 
   const { data, isLoading } = useQuery<any>({
     queryKey: ["/api/intercity-cs/rides", filter],
-    queryFn: () => fetch(`/api/intercity-cs/rides${filter !== "all" ? `?status=${filter}` : ""}`).then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => d?.data ? d : { data: Array.isArray(d) ? d : [], total: 0 }),
+    queryFn: () => adminFetch(`/api/intercity-cs/rides${filter !== "all" ? `?status=${filter}` : ""}`).then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => d?.data ? d : { data: Array.isArray(d) ? d : [], total: 0 }),
   });
   const rides: any[] = Array.isArray(data?.data) ? data.data : [];
 
@@ -404,7 +404,7 @@ function BookingsTab() {
 
   const { data, isLoading } = useQuery<any>({
     queryKey: ["/api/intercity-cs/bookings", filter],
-    queryFn: () => fetch(`/api/intercity-cs/bookings${filter !== "all" ? `?status=${filter}` : ""}`).then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => d?.data ? d : { data: Array.isArray(d) ? d : [], total: 0 }),
+    queryFn: () => adminFetch(`/api/intercity-cs/bookings${filter !== "all" ? `?status=${filter}` : ""}`).then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => d?.data ? d : { data: Array.isArray(d) ? d : [], total: 0 }),
   });
   const bookings: any[] = Array.isArray(data?.data) ? data.data : [];
 
@@ -548,12 +548,12 @@ export default function IntercarysharingPage() {
 
   const { data: settings, isLoading: settLoading } = useQuery<any>({
     queryKey: ["/api/intercity-cs/settings"],
-    queryFn: () => fetch("/api/intercity-cs/settings").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => (d && !d.message && !d.error) ? d : {}),
+    queryFn: () => adminFetch("/api/intercity-cs/settings").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => (d && !d.message && !d.error) ? d : {}),
   });
 
   const { data: ridesData } = useQuery<any>({
     queryKey: ["/api/intercity-cs/rides", "all"],
-    queryFn: () => fetch("/api/intercity-cs/rides").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => d?.data ? d : { data: Array.isArray(d) ? d : [] }),
+    queryFn: () => adminFetch("/api/intercity-cs/rides").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => d?.data ? d : { data: Array.isArray(d) ? d : [] }),
   });
   const rides: any[] = Array.isArray(ridesData?.data) ? ridesData.data : [];
   const moduleEnabled = settings?.module_enabled === "true";

@@ -132,7 +132,7 @@ export async function sendFcmNotification(opts: {
 
     await admin.messaging().send(message);
     lastFcmError = null;
-    log(`[FCM] Sent to ${opts.fcmToken.substring(0, 20)}... — ${opts.title}${opts.dataOnly ? " (data-only)" : ""}`, "fcm");
+    log(`[FCM] Sent notification title=${opts.title}${opts.dataOnly ? " dataOnly=true" : ""}`, "fcm");
     return true;
   } catch (e: any) {
     lastFcmError = e?.message || "FCM send failed";

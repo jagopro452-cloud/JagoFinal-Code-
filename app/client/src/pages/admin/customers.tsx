@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { adminFetch, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { adminConfirm } from "./components/AdminPrimitives";
 
 const avatarBg = (name: string) => {
   const colors = ["#1a73e8", "#16a34a", "#d97706", "#9333ea", "#0891b2", "#dc2626", "#0ea5e9"];
@@ -45,7 +46,7 @@ export default function Customers() {
       if (search) params.set("search", search);
       if (status !== "all") params.set("isActive", status === "active" ? "true" : "false");
 
-      const response = await fetch(`/api/users?${params}`);
+      const response = await adminFetch(`/api/users?${params}`);
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         throw new Error(body?.message || "Error");
@@ -352,8 +353,8 @@ export default function Customers() {
                             <button
                               className="btn btn-sm btn-outline-danger rounded-pill"
                               style={{ fontSize: 12 }}
-                              onClick={() => {
-                                if (confirm("Delete this customer?")) deleteCustomer.mutate(user.id);
+                              onClick={async () => {
+                                if (await adminConfirm("Delete this customer?")) deleteCustomer.mutate(user.id);
                               }}
                               data-testid={`btn-delete-customer-${user.id}`}
                             >

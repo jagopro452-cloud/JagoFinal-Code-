@@ -1,5 +1,6 @@
 ﻿import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
+import { clearAdminSession, saveAdminSession, verifyAdminSession } from "@/lib/queryClient";
 
 function useAdminBootstrap() {
   useEffect(() => {
@@ -82,8 +83,11 @@ export default function AdminLogin() {
   useEffect(() => {
     setMounted(true);
     const saved = localStorage.getItem("jago-admin");
-    if (saved) setLocation("/admin/dashboard");
-  }, []);
+    if (!saved) return;
+    verifyAdminSession()
+      .then(() => setLocation("/admin/dashboard"))
+      .catch(() => clearAdminSession("stale-login-session"));
+  }, [setLocation]);
 
   const handleForgotPassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -138,7 +142,7 @@ export default function AdminLogin() {
       });
       const data = await res.json();
       if (res.ok && data?.token) {
-        localStorage.setItem("jago-admin", JSON.stringify({ ...(data.admin || data), token: data.token, refreshToken: data.refreshToken || null, expiresAt: data.expiresAt }));
+        saveAdminSession({ ...(data.admin || data), token: data.token, refreshToken: data.refreshToken || null, expiresAt: data.expiresAt });
         setLocation("/admin/dashboard");
       } else {
         // 2FA disabled - just show error message
@@ -163,7 +167,7 @@ export default function AdminLogin() {
       });
       const data = await res.json();
       if (res.ok && data?.token) {
-        localStorage.setItem("jago-admin", JSON.stringify({ ...(data.admin || data), token: data.token, refreshToken: data.refreshToken || null, expiresAt: data.expiresAt }));
+        saveAdminSession({ ...(data.admin || data), token: data.token, refreshToken: data.refreshToken || null, expiresAt: data.expiresAt });
         setLocation("/admin/dashboard");
       } else {
         setError(data.message || "Invalid OTP. Please try again.");

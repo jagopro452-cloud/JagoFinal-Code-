@@ -1,9 +1,10 @@
 import { useState, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
+import { adminFetch } from "@/lib/queryClient";
 
 async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(url);
+  const response = await adminFetch(url);
   if (!response.ok) {
     throw new Error(`Request failed (${response.status}) for ${url}`);
   }
@@ -248,7 +249,7 @@ export default function AlertEnginePage() {
   // Mutations
   const reloadMut = useMutation<ReloadResult, Error, { reason: string; force: boolean }>({
     mutationFn: async ({ reason, force }) => {
-      const r = await fetch("/api/admin/alert-engine/config/reload", {
+      const r = await adminFetch("/api/admin/alert-engine/config/reload", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reason: reason || undefined, force }),
       });
@@ -268,7 +269,7 @@ export default function AlertEnginePage() {
   });
 
   const testMut = useMutation({
-    mutationFn: () => fetch("/api/admin/alert-engine/test", { method: "POST" }).then(r => r.json()),
+    mutationFn: () => adminFetch("/api/admin/alert-engine/test", { method: "POST" }).then(r => r.json()),
     onSuccess: () => {
       toast({ title: "Force check complete" });
       qc.invalidateQueries({ queryKey: ["/api/admin/alert-engine/status"] });
@@ -279,7 +280,7 @@ export default function AlertEnginePage() {
 
   const manualMut = useMutation<{ ok: boolean; message: string }, Error, { action: string; reason: string }>({
     mutationFn: async ({ action, reason }) => {
-      const r = await fetch("/api/admin/alert-engine/manual-action", {
+      const r = await adminFetch("/api/admin/alert-engine/manual-action", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action, reason: reason || undefined }),
       });

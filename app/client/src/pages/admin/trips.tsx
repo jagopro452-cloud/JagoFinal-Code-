@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest } from "@/lib/queryClient";
+import { adminFetch, apiRequest } from "@/lib/queryClient";
 
 const avatarBg = (name: string) => {
   const colors = ["#1a73e8", "#16a34a", "#d97706", "#9333ea", "#0891b2", "#dc2626"];
@@ -60,7 +60,7 @@ export default function Trips() {
       if (search) params.set("search", search);
       if (typeFilter !== "all") params.set("type", typeFilter);
 
-      const response = await fetch(`/api/trips?${params.toString()}`);
+      const response = await adminFetch(`/api/trips?${params.toString()}`);
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         throw new Error(body?.message || "Error");

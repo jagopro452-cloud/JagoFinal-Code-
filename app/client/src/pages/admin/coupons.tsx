@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { adminFetch, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { adminConfirm } from "./components/AdminPrimitives";
 
 const EMPTY_FORM = {
   name: "",
@@ -126,7 +127,7 @@ export default function Coupons() {
   const { data, isLoading } = useQuery<any>({
     queryKey: ["/api/coupons", { page }],
     queryFn: () =>
-      fetch(`/api/coupons?page=${page}&limit=15`)
+      adminFetch(`/api/coupons?page=${page}&limit=15`)
         .then((r) => (r.ok ? r.json() : r.json().then((d) => { throw new Error(d?.message || "Error"); })))
         .then((d) => (d?.data ? d : { data: Array.isArray(d) ? d : [], total: 0 })),
   });
@@ -286,7 +287,7 @@ export default function Coupons() {
                       <td className="text-center">
                         <div className="d-flex justify-content-center gap-2">
                           <button className="btn btn-sm btn-outline-primary" onClick={() => openEdit(c)} data-testid={`btn-edit-coupon-${c.id}`}><i className="bi bi-pencil-fill"></i></button>
-                          <button className="btn btn-sm btn-outline-danger" onClick={() => { if (confirm("Delete this coupon?")) remove.mutate(c.id); }} data-testid={`btn-delete-coupon-${c.id}`}><i className="bi bi-trash-fill"></i></button>
+                          <button className="btn btn-sm btn-outline-danger" onClick={async () => { if (await adminConfirm("Delete this coupon?")) remove.mutate(c.id); }} data-testid={`btn-delete-coupon-${c.id}`}><i className="bi bi-trash-fill"></i></button>
                         </div>
                       </td>
                     </tr>

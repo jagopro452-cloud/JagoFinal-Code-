@@ -590,7 +590,7 @@ async function offerTripToDriver(session: DispatchSession, driver: DriverMatchSc
       vehicleCategoryName: session.tripMeta.vehicleCategoryName || null,
       timeoutMs: session.config.driverTimeoutMs,
     }).then(() => {
-      console.log(`[DISPATCH] ✅ FCM sent — trip=${session.tripId} pilot=${driver.driverId} (${driver.fullName}) token=${driver.fcmToken!.substring(0, 15)}...`);
+      console.log(`[DISPATCH] FCM sent trip=${session.tripId} pilot=${driver.driverId} (${driver.fullName})`);
     }).catch((err: any) => {
       console.error(`[DISPATCH] ❌ FCM FAILED — trip=${session.tripId} pilot=${driver.driverId} error=${err?.message || err}`);
       // FCM failed fallback: re-emit via socket (covers apps that were background but socket stayed open)
@@ -607,7 +607,7 @@ async function offerTripToDriver(session: DispatchSession, driver: DriverMatchSc
     // No FCM token — socket is the only channel. Already emitted above. Log for monitoring.
   }
 
-  console.log(`[DISPATCH] 📣 PILOT NOTIFIED — trip=${session.tripId} → pilot=${driver.driverId} (${driver.fullName}, ${driver.distanceKm}km away, score=${driver.score}) socketOnline=${socketConnected} fcmToken=${driver.fcmToken ? driver.fcmToken.substring(0, 15) + '...' : 'MISSING'} timeout=${session.config.driverTimeoutMs / 1000}s`);
+  console.log(`[DISPATCH] PILOT NOTIFIED trip=${session.tripId} pilot=${driver.driverId} (${driver.fullName}, ${driver.distanceKm}km away, score=${driver.score}) socketOnline=${socketConnected} fcmConfigured=${Boolean(driver.fcmToken)} timeout=${session.config.driverTimeoutMs / 1000}s`);
 
   // Start timeout timer — if driver doesn't respond, auto-skip
   session.offerTimer = setTimeout(async () => {

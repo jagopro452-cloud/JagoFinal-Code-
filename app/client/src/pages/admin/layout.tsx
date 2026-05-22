@@ -1,7 +1,16 @@
 ﻿import { useLocation, Link } from "wouter";
-import { useState, useEffect, useLayoutEffect, useRef } from "react";
+import { useMemo, useState, useEffect, useLayoutEffect, useRef } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useTheme } from "@/components/theme-provider";
 import { Logo } from "@/components/Logo";
+import {
+  AdminSession,
+  getSavedAdminSession,
+  logoutAdminSession,
+  queryClient,
+  verifyAdminSession,
+} from "@/lib/queryClient";
+import { AdminConfirmHost } from "./components/AdminPrimitives";
 
 function useLiveClock() {
   const [time, setTime] = useState(() => new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }));
@@ -54,25 +63,23 @@ function useAdminBootstrap() {
     const fallback = setTimeout(() => setCssReady(true), 1500);
     return () => {
       clearTimeout(fallback);
-      added.forEach(el => el.remove());
-      cssFiles.forEach(({ id }) => {
-        const el = document.getElementById(id);
-        if (el) el.remove();
+      added.forEach((el) => {
+        el.onload = null;
+        el.onerror = null;
       });
-      setCssReady(false);
     };
   }, []);
 
   return cssReady;
 }
 
-interface NavItem {
+export interface NavItem {
   label: string;
   icon: string;
   href: string;
 }
 
-interface NavSection {
+export interface NavSection {
   category: string;
   items: NavItem[];
   roles?: string[]; // undefined = visible to all
@@ -80,7 +87,7 @@ interface NavSection {
 
 // Sections accessible per employee role. Super admin / admin see everything.
 // Undefined roles = visible to all authenticated admins.
-const ROLE_SECTION_ACCESS: Record<string, string[]> = {
+export const ROLE_SECTION_ACCESS: Record<string, string[]> = {
   operations_head: ["Dashboard","Zone Management","Trip Management","Promotion Management","User Management","Parcel Management","B2B / Porter","Vehicle Management","Fare Management","Transactions & Reports","Help & Support","Reviews","Business Management"],
   zone_head: ["Dashboard","Zone Management","Trip Management","User Management","Fare Management","Transactions & Reports","Help & Support","Reviews"],
   zone_manager: ["Dashboard","Zone Management","Trip Management","User Management","Fare Management"],
@@ -89,7 +96,7 @@ const ROLE_SECTION_ACCESS: Record<string, string[]> = {
   marketing_exec: ["Dashboard","Promotion Management","User Management","Reviews"],
 };
 
-const navSections: NavSection[] = [
+export const navSections: NavSection[] = [
   {
     category: "Dashboard",
     items: [
@@ -111,8 +118,8 @@ const navSections: NavSection[] = [
     category: "Trip Management",
     items: [
       { label: "All Trips", icon: "bi-car-front-fill", href: "/admin/trips" },
-      { label: "Local Pool", icon: "bi-people-fill", href: "/admin/car-sharing" },
-      { label: "Intercity Pool", icon: "bi-car-front-fill", href: "/admin/intercity-carsharing" },
+      { label: "Local Pool", icon: "bi-people-fill", href: "/admin/local-pool" },
+      { label: "Intercity Pool", icon: "bi-car-front-fill", href: "/admin/intercity-pool" },
       { label: "Outstation Pool", icon: "bi-signpost-2-fill", href: "/admin/outstation-pool" },
       { label: "Intercity Routes", icon: "bi-map", href: "/admin/intercity-routes" },
       { label: "Parcel Refund Request", icon: "bi-arrow-return-left", href: "/admin/parcel-refunds" },
@@ -219,6 +226,53 @@ const navSections: NavSection[] = [
   },
 ];
 
+const ADMIN_ROUTE_ALIASES: Record<string, string> = {
+  "/admin": "/admin/dashboard",
+  "/admin/": "/admin/dashboard",
+  "/admin/car-sharing": "/admin/local-pool",
+  "/admin/intercity-carsharing": "/admin/intercity-pool",
+};
+
+export function normalizeAdminPath(path: string) {
+  return ADMIN_ROUTE_ALIASES[path] || path;
+}
+
+export function isPrivilegedAdminRole(role?: string | null) {
+  const normalized = String(role || "").toLowerCase().trim();
+  return normalized === "admin" || normalized === "superadmin" || normalized === "super_admin";
+}
+
+export function getVisibleAdminNav(role?: string | null, search = "") {
+  const normalizedRole = String(role || "").toLowerCase().trim();
+  const allowedSections = isPrivilegedAdminRole(normalizedRole)
+    ? null
+    : new Set(ROLE_SECTION_ACCESS[normalizedRole] || []);
+  const searchTerm = search.trim().toLowerCase();
+
+  return navSections
+    .filter((section) => !allowedSections || allowedSections.has(section.category))
+    .map((section) => ({
+      ...section,
+      items: searchTerm
+        ? section.items.filter((item) =>
+            item.label.toLowerCase().includes(searchTerm) ||
+            section.category.toLowerCase().includes(searchTerm) ||
+            item.href.toLowerCase().includes(searchTerm)
+          )
+        : section.items,
+    }))
+    .filter((section) => section.items.length > 0);
+}
+
+export function canAccessAdminPath(role: string | undefined | null, path: string) {
+  const normalizedPath = normalizeAdminPath(path);
+  if (isPrivilegedAdminRole(role)) return true;
+  const visibleNav = getVisibleAdminNav(role);
+  return visibleNav.some((section) =>
+    section.items.some((item) => normalizedPath === item.href || normalizedPath.startsWith(`${item.href}/`))
+  );
+}
+
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const cssReady = useAdminBootstrap();
   const [location, setLocation] = useLocation();
@@ -244,24 +298,74 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   });
   const [mobileOpen, setMobileOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [navSearch, setNavSearch] = useState("");
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [authChecking, setAuthChecking] = useState(true);
+  const [authError, setAuthError] = useState("");
+  const [admin, setAdmin] = useState<AdminSession>(() => getSavedAdminSession());
   const userMenuRef = useRef<HTMLDivElement>(null);
-
-  const admin = (() => {
-    try { return JSON.parse(localStorage.getItem("jago-admin") || "{}"); }
-    catch { return {}; }
-  })();
 
   const adminName = admin.name || admin.email || "Admin";
   const adminInitials = adminName.split(" ").map((n: string) => n[0]).join("").substring(0, 2).toUpperCase();
   const adminBg = ["#2F7BFF","#7c3aed","#0891b2","#16a34a"][adminName.charCodeAt(0) % 4];
 
   useEffect(() => {
-    if (!admin?.email && !admin?.name) {
-      setLocation("/admin/login");
-    }
-  }, []);
+    let active = true;
+    setAuthChecking(true);
+    verifyAdminSession()
+      .then((session) => {
+        if (!active) return;
+        setAdmin(session);
+        setAuthError("");
+      })
+      .catch((error) => {
+        if (!active) return;
+        setAuthError(error?.message || "Admin session verification failed");
+        setLocation("/admin/login");
+      })
+      .finally(() => {
+        if (active) setAuthChecking(false);
+      });
 
-  // Auth token injection is handled in queryClient.ts at module load time.
+    const onAuthCleared = () => {
+      if (!window.location.pathname.includes("/admin/login")) {
+        setLocation("/admin/login");
+      }
+    };
+    window.addEventListener("jago-admin-auth-cleared", onAuthCleared);
+    return () => {
+      active = false;
+      window.removeEventListener("jago-admin-auth-cleared", onAuthCleared);
+    };
+  }, [setLocation]);
+
+  const { data: notificationPayload } = useQuery<any>({
+    queryKey: ["/api/notifications"],
+    enabled: !authChecking && !!admin?.token,
+    refetchInterval: 60_000,
+    staleTime: 15_000,
+  });
+
+  const notifications = useMemo(() => {
+    if (Array.isArray(notificationPayload)) return notificationPayload.slice(0, 5);
+    if (Array.isArray(notificationPayload?.data)) return notificationPayload.data.slice(0, 5);
+    if (Array.isArray(notificationPayload?.notifications)) return notificationPayload.notifications.slice(0, 5);
+    return [];
+  }, [notificationPayload]);
+
+  useEffect(() => {
+    if (!notificationsOpen) return;
+    function handleClick(event: MouseEvent) {
+      const target = event.target as HTMLElement;
+      if (!target.closest("[data-admin-notifications]")) {
+        setNotificationsOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [notificationsOpen]);
+
+  // Auth is verified through /api/admin/me before the shell renders.
 
   useLayoutEffect(() => {
     document.body.classList.add("admin-route");
@@ -300,27 +404,11 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
   const isActive = (href: string) => location === href || location.startsWith(href + "/");
 
-  // Filter nav sections by role — only superadmin gets full access; undefined/null role is DENIED
-  const adminRole = (admin.role || "").toLowerCase().trim();
-  const isSuperAdmin = adminRole === "superadmin" || adminRole === "super_admin";
-  const isAdmin = isSuperAdmin || adminRole === "admin";
-  const allowedSections: Set<string> | null = isAdmin ? null : (ROLE_SECTION_ACCESS[adminRole] ? new Set(ROLE_SECTION_ACCESS[adminRole]) : new Set()); // Empty set = no access
-  const visibleNav = allowedSections ? navSections.filter(s => allowedSections.has(s.category)) : navSections;
+  const visibleNav = useMemo(() => getVisibleAdminNav(admin.role, navSearch), [admin.role, navSearch]);
 
   const handleLogout = async () => {
-    try {
-      const refreshToken = String(admin?.refreshToken || "");
-      await fetch("/api/admin/logout", {
-        method: "POST",
-        headers: admin?.token ? {
-          Authorization: `Bearer ${admin.token}`,
-          "Content-Type": "application/json",
-          "X-Device-Id": String(localStorage.getItem("jago-admin-device-id") || "admin-web-fallback"),
-        } : undefined,
-        body: refreshToken ? JSON.stringify({ refreshToken }) : undefined,
-      });
-    } catch (_) {}
-    localStorage.removeItem("jago-admin");
+    await logoutAdminSession().catch(() => undefined);
+    queryClient.clear();
     setUserMenuOpen(false);
     window.location.href = "/admin/login";
   };
@@ -333,20 +421,12 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     const reset = () => {
       clearTimeout(timer);
       timer = setTimeout(() => {
-        const refreshToken = String(admin?.refreshToken || "");
-        if (admin?.token) {
-          fetch("/api/admin/logout", {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${admin.token}`,
-              "Content-Type": "application/json",
-              "X-Device-Id": String(localStorage.getItem("jago-admin-device-id") || "admin-web-fallback"),
-            },
-            body: refreshToken ? JSON.stringify({ refreshToken }) : undefined,
-          }).catch(() => undefined);
-        }
-        localStorage.removeItem("jago-admin");
-        window.location.href = "/admin/login?reason=timeout";
+        logoutAdminSession()
+          .catch(() => undefined)
+          .finally(() => {
+            queryClient.clear();
+            window.location.href = "/admin/login?reason=timeout";
+          });
       }, TIMEOUT_MS);
     };
 
@@ -358,17 +438,19 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       clearTimeout(timer);
       events.forEach(e => window.removeEventListener(e, reset));
     };
-  }, []);
+  }, [admin?.token]);
 
-  // Wait for Bootstrap CSS before rendering — prevents flash of broken layout on refresh
-  if (!cssReady) {
+  // Wait for Bootstrap and verified auth before rendering admin chrome.
+  if (!cssReady || authChecking || !admin?.token) {
     return (
       <div style={{
         minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
         background: "#f8fafc", flexDirection: "column", gap: 12
       }}>
         <Logo variant="blue" size="md" />
-        <div style={{ fontSize: 13, color: "#64748b", fontWeight: 500 }}>Loading JAGO Admin…</div>
+        <div style={{ fontSize: 13, color: "#64748b", fontWeight: 500 }}>
+          {authError ? "Redirecting to secure login..." : "Verifying JAGO Admin session..."}
+        </div>
         <div style={{
           width: 40, height: 3, borderRadius: 2, background: "#e2e8f0", overflow: "hidden"
         }}>
@@ -434,6 +516,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                   type="search"
                   className="theme-input-style search-form__input"
                   placeholder="Search Here"
+                  value={navSearch}
+                  onChange={(event) => setNavSearch(event.target.value)}
                   data-testid="sidebar-search"
                 />
               </div>
@@ -461,6 +545,11 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                   </ul>
                 </li>
               ))}
+              {visibleNav.length === 0 && (
+                <li className="px-3 py-2 text-white-50 small" style={{ listStyle: "none" }}>
+                  No admin modules match "{navSearch}".
+                </li>
+              )}
             </ul>
 
             {/* Sidebar Logout */}
@@ -550,15 +639,47 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                   </button>
                 </li>
                 <li>
-                  <div className="position-relative">
-                    <button className="header-icon-btn" data-testid="btn-notifications">
+                  <div className="position-relative" data-admin-notifications>
+                    <button
+                      className="header-icon-btn"
+                      data-testid="btn-notifications"
+                      aria-expanded={notificationsOpen}
+                      aria-haspopup="menu"
+                      onClick={() => setNotificationsOpen((open) => !open)}
+                    >
                       <i className="bi bi-bell-fill"></i>
                     </button>
-                    <span style={{
-                      position: "absolute", top: 3, right: 3,
-                      width: 7, height: 7, borderRadius: "50%",
-                      background: "#ef4444", border: "1.5px solid white"
-                    }}></span>
+                    {notifications.length > 0 && (
+                      <span style={{
+                        position: "absolute", top: 3, right: 3,
+                        width: 7, height: 7, borderRadius: "50%",
+                        background: "#ef4444", border: "1.5px solid white"
+                      }}></span>
+                    )}
+                    {notificationsOpen && (
+                      <div
+                        className="dropdown-menu dropdown-menu-right show admin-user-dropdown"
+                        role="menu"
+                        style={{ width: 320, maxWidth: "calc(100vw - 32px)", padding: 8 }}
+                      >
+                        <div className="px-2 py-2 fw-bold" style={{ fontSize: 13 }}>Recent notifications</div>
+                        {notifications.length === 0 ? (
+                          <div className="px-2 py-3 text-muted small">No recent notification activity.</div>
+                        ) : (
+                          notifications.map((item: any, index: number) => (
+                            <div key={item.id || index} className="px-2 py-2 rounded" style={{ borderBottom: index < notifications.length - 1 ? "1px solid #f1f5f9" : 0 }}>
+                              <div className="fw-semibold" style={{ fontSize: 12 }}>{item.title || item.name || "Notification"}</div>
+                              <div className="text-muted" style={{ fontSize: 11, lineHeight: 1.4 }}>
+                                {item.message || item.body || item.description || "No message preview available."}
+                              </div>
+                            </div>
+                          ))
+                        )}
+                        <Link href="/admin/notifications" className="dropdown-item rounded mt-1" onClick={() => setNotificationsOpen(false)}>
+                          Open notification center
+                        </Link>
+                      </div>
+                    )}
                   </div>
                 </li>
                 <li>
@@ -600,6 +721,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           {children}
         </div>
       </div>
+      <AdminConfirmHost />
     </div>
   );
 }

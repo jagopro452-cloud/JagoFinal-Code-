@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { adminFetch } from "@/lib/queryClient";
 
 interface PlatformService {
   id: string;
@@ -39,7 +40,7 @@ export default function ServiceManagement() {
   const { data: services = [], isLoading } = useQuery<PlatformService[]>({
     queryKey: ["/api/platform-services"],
     queryFn: async () => {
-      const r = await fetch("/api/platform-services");
+      const r = await adminFetch("/api/platform-services");
       if (!r.ok) throw new Error("Failed");
       return r.json();
     },
@@ -47,7 +48,7 @@ export default function ServiceManagement() {
 
   const toggleMutation = useMutation({
     mutationFn: async ({ key, current }: { key: string; current: "active" | "inactive" }) => {
-      const r = await fetch(`/api/platform-services/${key}`, {
+      const r = await adminFetch(`/api/platform-services/${key}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ service_status: current === "active" ? "inactive" : "active" }),
@@ -60,7 +61,7 @@ export default function ServiceManagement() {
 
   const modelMutation = useMutation({
     mutationFn: async ({ key, revenue_model, commission_rate }: { key: string; revenue_model: string; commission_rate: string }) => {
-      const r = await fetch(`/api/platform-services/${key}`, {
+      const r = await adminFetch(`/api/platform-services/${key}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ revenue_model, commission_rate: parseFloat(commission_rate) }),

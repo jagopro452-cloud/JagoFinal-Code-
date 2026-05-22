@@ -2,6 +2,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
+import { adminConfirm } from "./components/AdminPrimitives";
 
 export default function VehicleAttributesPage() {
   const { toast } = useToast();
@@ -47,8 +48,8 @@ export default function VehicleAttributesPage() {
     else modelSave.mutate(form);
   };
 
-  const handleDelete = (id: string) => {
-    if (!confirm("Delete?")) return;
+  const handleDelete = async (id: string) => {
+    if (!(await adminConfirm(`Delete this vehicle ${tab === "brands" ? "brand" : "model"}?`))) return;
     if (tab === "brands") brandDelete.mutate(id);
     else modelDelete.mutate(id);
   };

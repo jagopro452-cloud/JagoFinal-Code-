@@ -40,12 +40,11 @@ import {
   noteSocketDisconnected,
   registerRealtimeOpsIO,
 } from "./realtime-ops";
-import { addSocketPresence, hasSocketPresence, removeSocketPresence } from "./socket-presence";
+import { addSocketPresence, hasSocketPresence, removeSocketPresence, touchSocketPresence } from "./socket-presence";
 
 export let io: SocketIOServer;
 
 // Track connected sockets: userId → socketId
-// NOTE: These maps are local to this process. With Redis adapter, socket routing works across processes but these maps still need Redis-backed storage for full HA. TODO: migrate to Redis hashes.
 export async function hasActiveDriverSocket(driverId: string): Promise<boolean> {
   return hasSocketPresence("driver", driverId);
 }
@@ -64,6 +63,7 @@ async function disconnectDuplicateUserSockets(userId: string, currentSocketId: s
 // This prevents momentary network blips from removing drivers from active dispatch searches.
 const pendingOfflineTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const DRIVER_OFFLINE_GRACE_MS = 90_000; // 90 seconds
+const SOCKET_PRESENCE_HEARTBEAT_MS = 45_000;
 
 type ActiveCallSession = {
   sessionId: string;
@@ -261,6 +261,10 @@ export function setupSocket(httpServer: HttpServer) {
       });
 
       console.log(`[SOCKET] Driver ${userId} connected`);
+      const driverPresenceHeartbeat = setInterval(() => {
+        touchSocketPresence("driver", userId, socket.id).catch(() => {});
+      }, SOCKET_PRESENCE_HEARTBEAT_MS);
+      socket.once("disconnect", () => clearInterval(driverPresenceHeartbeat));
 
       // ── Driver: send location update ───────────────────────────────────────
       socket.on("driver:location", async (data: { lat: number; lng: number; heading?: number; speed?: number }) => {
@@ -949,6 +953,10 @@ export function setupSocket(httpServer: HttpServer) {
       await disconnectDuplicateUserSockets(userId, socket.id).catch(() => {});
       addSocketPresence("customer", userId, socket.id).catch(() => {});
       console.log(`[SOCKET] Customer ${userId} connected`);
+      const customerPresenceHeartbeat = setInterval(() => {
+        touchSocketPresence("customer", userId, socket.id).catch(() => {});
+      }, SOCKET_PRESENCE_HEARTBEAT_MS);
+      socket.once("disconnect", () => clearInterval(customerPresenceHeartbeat));
 
       // ── Customer: join trip room for tracking ──────────────────────────────
       socket.on("customer:track_trip", async (data: { tripId: string }) => {

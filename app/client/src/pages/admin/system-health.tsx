@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { adminFetch, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { AdminModal } from "./components/AdminPrimitives";
 
 interface HealthData {
   timestamp: string;
@@ -110,11 +111,12 @@ function KpiCard({ icon, label, value, sub, accent }: { icon: string; label: str
 
 export default function SystemHealthPage() {
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [confirmServiceToggle, setConfirmServiceToggle] = useState<{ serviceKey: string; currentStatus: string; nextStatus: string } | null>(null);
   const { toast } = useToast();
 
   const { data, isLoading, error, refetch, dataUpdatedAt } = useQuery<HealthData>({
     queryKey: ["/api/admin/system-health"],
-    queryFn: () => fetch("/api/admin/system-health").then(r => {
+    queryFn: () => adminFetch("/api/admin/system-health").then(r => {
       if (!r.ok) throw new Error("Health check failed");
       return r.json();
     }).then(d => (d && !d.message && !d.error) ? d : (() => { throw new Error("Invalid health data"); })()),
@@ -128,7 +130,7 @@ export default function SystemHealthPage() {
     refetch: refetchVehicles,
   } = useQuery<{ vehicles: VehicleStatus[] }>({
     queryKey: ["/api/admin/vehicle-status"],
-    queryFn: (): Promise<{ vehicles: VehicleStatus[] }> => fetch("/api/admin/vehicle-status").then(r => {
+    queryFn: (): Promise<{ vehicles: VehicleStatus[] }> => adminFetch("/api/admin/vehicle-status").then(r => {
       if (!r.ok) throw new Error("Vehicle status unavailable");
       return r.json();
     }),
@@ -141,14 +143,23 @@ export default function SystemHealthPage() {
 
   const toggleService = async (serviceKey: string, currentStatus: string) => {
     const newStatus = currentStatus === "active" ? "inactive" : "active";
-    if (!confirm(`Are you sure you want to ${newStatus === "active" ? "ACTIVATE" : "INACTIVATE"} ${serviceKey.replace('_', ' ')}?`)) return;
-    
+    setConfirmServiceToggle({ serviceKey, currentStatus, nextStatus: newStatus });
+  };
+
+  const confirmToggleService = async () => {
+    if (!confirmServiceToggle) return;
+    const { serviceKey, nextStatus } = confirmServiceToggle;
+    setConfirmServiceToggle(null);
     setToggling(serviceKey);
     try {
-      await apiRequest("POST", "/api/admin/services/toggle", { serviceKey, status: newStatus });
+      await apiRequest("POST", "/api/admin/services/toggle", { serviceKey, status: nextStatus });
       await refetch();
     } catch (e: any) {
-      alert("Action Failed: " + e.message);
+      toast({
+        title: "Action failed",
+        description: e.message || "Could not toggle service",
+        variant: "destructive",
+      });
     } finally {
       setToggling(null);
     }
@@ -183,6 +194,7 @@ export default function SystemHealthPage() {
   const hasStaleTrips = (data?.trips.staleSearching ?? 0) > 0;
 
   return (
+      <>
       <div style={{ padding: "28px 32px", maxWidth: 1280, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
 
         {/* Header */}
@@ -557,5 +569,26 @@ export default function SystemHealthPage() {
           </>
         )}
       </div>
+      <AdminModal
+        open={!!confirmServiceToggle}
+        title="Confirm service status change"
+        onClose={() => setConfirmServiceToggle(null)}
+        footer={(
+          <>
+            <button className="btn btn-outline-secondary" type="button" onClick={() => setConfirmServiceToggle(null)}>
+              Cancel
+            </button>
+            <button className="btn btn-danger" type="button" onClick={confirmToggleService}>
+              {confirmServiceToggle?.nextStatus === "active" ? "Activate" : "Inactivate"}
+            </button>
+          </>
+        )}
+      >
+        <p className="mb-0">
+          Change <strong>{confirmServiceToggle?.serviceKey.replace("_", " ")}</strong> to{" "}
+          <strong>{confirmServiceToggle?.nextStatus}</strong>? This affects live customer and driver availability.
+        </p>
+      </AdminModal>
+      </>
   );
 }

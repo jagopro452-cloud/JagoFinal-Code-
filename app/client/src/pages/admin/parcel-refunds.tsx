@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { adminFetch, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 const TABS = ["all","pending","approved","denied","refunded"];
@@ -25,7 +25,7 @@ export default function ParcelRefundsPage() {
 
   const { data, isLoading } = useQuery<any>({
     queryKey: ["/api/parcel-refunds", tab],
-    queryFn: () => fetch(`/api/parcel-refunds${tab !== "all" ? `?status=${tab}` : ""}`).then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => d?.data ? d : { data: Array.isArray(d) ? d : [], total: 0 }),
+    queryFn: () => adminFetch(`/api/parcel-refunds${tab !== "all" ? `?status=${tab}` : ""}`).then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => d?.data ? d : { data: Array.isArray(d) ? d : [], total: 0 }),
   });
 
   const updateStatus = useMutation({

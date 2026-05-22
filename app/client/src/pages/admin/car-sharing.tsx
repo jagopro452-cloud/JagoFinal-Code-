@@ -1,6 +1,6 @@
 ﻿import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { adminFetch, queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 const RIDE_STATUS_BADGE: Record<string, string> = {
@@ -58,20 +58,20 @@ export default function CarSharingPage() {
 
   const { data: ridesData, isLoading: ridesLoading } = useQuery<any>({
     queryKey: ["/api/car-sharing/rides"],
-    queryFn: () => fetch("/api/car-sharing/rides").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => d?.data ? d : { data: Array.isArray(d) ? d : [] }),
+    queryFn: () => adminFetch("/api/car-sharing/rides").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => d?.data ? d : { data: Array.isArray(d) ? d : [] }),
   });
   const allRides: any[] = Array.isArray(ridesData?.data) ? ridesData.data : [];
 
   const { data: bookingsData, isLoading: bookingsLoading } = useQuery<any>({
     queryKey: ["/api/car-sharing/bookings"],
-    queryFn: () => fetch("/api/car-sharing/bookings").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => d?.data ? d : { data: Array.isArray(d) ? d : [] }),
+    queryFn: () => adminFetch("/api/car-sharing/bookings").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => d?.data ? d : { data: Array.isArray(d) ? d : [] }),
     enabled: tab === "bookings",
   });
   const allBookings: any[] = Array.isArray(bookingsData?.data) ? bookingsData.data : [];
 
   const { data: settingsData, isLoading: settingsLoading } = useQuery<any>({
     queryKey: ["/api/car-sharing/settings"],
-    queryFn: () => fetch("/api/car-sharing/settings").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => (d && !d.message && !d.error) ? d : {}),
+    queryFn: () => adminFetch("/api/car-sharing/settings").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => (d && !d.message && !d.error) ? d : {}),
     enabled: tab === "settings",
   });
 

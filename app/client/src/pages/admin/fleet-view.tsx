@@ -1,8 +1,8 @@
 ﻿import { useEffect, useRef, useState, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
-
-declare global { interface Window { L: any; } }
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 
 /*  CSS injected once  */
 function injectMapStyles() {
@@ -58,21 +58,6 @@ function injectMapStyles() {
     }
   `;
   document.head.appendChild(style);
-}
-
-function loadScript(src: string): Promise<void> {
-  return new Promise((res, rej) => {
-    if (document.querySelector(`script[src="${src}"]`)) { res(); return; }
-    const s = document.createElement("script");
-    s.src = src; s.onload = () => res(); s.onerror = rej;
-    document.head.appendChild(s);
-  });
-}
-function loadLeafletCss() {
-  if (document.querySelector('link[href*="leaflet.css"]')) return;
-  const l = document.createElement("link");
-  l.rel = "stylesheet"; l.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
-  document.head.appendChild(l);
 }
 
 const VEHICLE_CONFIG: Record<string, { color: string; dark: string; label: string; bg: string }> = {
@@ -279,18 +264,12 @@ export default function FleetViewPage() {
 
   useEffect(() => {
     injectMapStyles();
-    loadLeafletCss();
-    async function init() {
-      await loadScript("https://unpkg.com/leaflet@1.9.4/dist/leaflet.js");
-      setMapReady(true);
-    }
-    init();
+    setMapReady(true);
     return () => { if (mapInstance.current) { mapInstance.current.remove(); mapInstance.current = null; } };
   }, []);
 
   useEffect(() => {
     if (!mapReady || !mapRef.current || mapInstance.current) return;
-    const L = window.L;
     const map = L.map(mapRef.current, {
       center: [17.43, 78.49], zoom: 11,
       zoomControl: false,
@@ -319,7 +298,6 @@ export default function FleetViewPage() {
   // Driver markers (when in drivers mode)
   useEffect(() => {
     if (!mapReady || !mapInstance.current || viewMode !== "drivers") return;
-    const L = window.L;
     const map = mapInstance.current;
     const currentIds = new Set(filteredDrivers.map((d: any) => `drv-${d.id}`));
 
@@ -384,7 +362,6 @@ export default function FleetViewPage() {
   // Update markers on each data refresh (TRIP mode)
   useEffect(() => {
     if (!mapReady || !mapInstance.current || viewMode !== "trips") return;
-    const L = window.L;
     const map = mapInstance.current;
     const currentIds = new Set(filtered.map((t: any) => t.id));
 
@@ -601,7 +578,6 @@ export default function FleetViewPage() {
                         mapInstance.current.eachLayer((l: any) => {
                           if (l._url) mapInstance.current.removeLayer(l);
                         });
-                        const L = window.L;
                         const tile = TILES[s];
                         L.tileLayer(tile.url, { attribution: tile.attr, maxZoom: 19, subdomains: "abcd" })
                           .addTo(mapInstance.current);

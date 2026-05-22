@@ -1,7 +1,8 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { adminFetch, queryClient, apiRequest } from "@/lib/queryClient";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
+import { adminConfirm } from "./components/AdminPrimitives";
 
 const ROLES = [
   "super_admin",
@@ -42,13 +43,13 @@ export default function EmployeesPage() {
     queryKey: ["/api/employees", zoneFilter],
     queryFn: () => {
       const url = zoneFilter ? `/api/employees?zoneId=${zoneFilter}` : "/api/employees";
-      return fetch(url).then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => Array.isArray(d) ? d : (d?.data && Array.isArray(d.data) ? d.data : []));
+      return adminFetch(url).then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => Array.isArray(d) ? d : (d?.data && Array.isArray(d.data) ? d.data : []));
     },
   });
 
   const { data: zones = [] } = useQuery<any[]>({
     queryKey: ["/api/zones"],
-    queryFn: () => fetch("/api/zones").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => Array.isArray(d) ? d : (d?.data && Array.isArray(d.data) ? d.data : [])),
+    queryFn: () => adminFetch("/api/zones").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => Array.isArray(d) ? d : (d?.data && Array.isArray(d.data) ? d.data : [])),
   });
 
   const employees = Array.isArray(data) ? data : [];
@@ -212,7 +213,7 @@ export default function EmployeesPage() {
                           <i className="bi bi-pencil-fill"></i>
                         </button>
                         <button className="btn btn-sm btn-outline-danger" style={{ borderRadius: 8 }}
-                          onClick={() => { if (confirm("Delete employee?")) deleteMutation.mutate(e.id); }}
+                          onClick={async () => { if (await adminConfirm("Delete employee?")) deleteMutation.mutate(e.id); }}
                           data-testid={`btn-delete-emp-${e.id}`}>
                           <i className="bi bi-trash-fill"></i>
                         </button>

@@ -1,7 +1,8 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { adminFetch, queryClient, apiRequest } from "@/lib/queryClient";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
+import { adminConfirm } from "./components/AdminPrimitives";
 
 const EMPTY_FORM = {
   name: "",
@@ -75,7 +76,7 @@ export default function DiscountsPage() {
   const { data, isLoading } = useQuery<any>({
     queryKey: ["/api/discounts"],
     queryFn: async () => {
-      const response = await fetch("/api/discounts");
+      const response = await adminFetch("/api/discounts");
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         throw new Error(body?.message || "Failed to load discounts");
@@ -87,7 +88,7 @@ export default function DiscountsPage() {
   const { data: vehicleCategories } = useQuery<any>({
     queryKey: ["/api/vehicle-categories"],
     queryFn: async () => {
-      const response = await fetch("/api/vehicle-categories");
+      const response = await adminFetch("/api/vehicle-categories");
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         throw new Error(body?.message || "Failed to load vehicle categories");
@@ -298,8 +299,8 @@ export default function DiscountsPage() {
                           </button>
                           <button
                             className="btn btn-sm btn-outline-danger"
-                            onClick={() => {
-                              if (confirm("Delete this discount?")) deleteMutation.mutate(discount.id);
+                            onClick={async () => {
+                              if (await adminConfirm("Delete this discount?")) deleteMutation.mutate(discount.id);
                             }}
                             data-testid={`btn-delete-discount-${discount.id}`}
                           >

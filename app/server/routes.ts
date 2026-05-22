@@ -945,7 +945,7 @@ async function ensureAdminExists() {
       if (shouldSyncPassword) {
         console.log(`[admin-bootstrap] Hashing new password for ${adminEmail}...`);
         const hash = await hashPassword(adminPassword);
-        console.log(`[admin-bootstrap] Password hash generated: ${hash.substring(0, 20)}...`);
+        console.log(`[admin-bootstrap] Password hash generated for ${adminEmail}`);
         const updateResult = await rawDb.execute(rawSql`
           UPDATE admins 
           SET password=${hash}, is_active=true
@@ -955,7 +955,7 @@ async function ensureAdminExists() {
         if (updateResult.rows.length > 0) {
           const updated: any = updateResult.rows[0];
           console.log(`[admin-bootstrap] ? Password synced for ${adminEmail} (ID: ${updated.id})`);
-          console.log(`[admin-bootstrap] New password hash: ${(updated.password || '').substring(0, 20)}...`);
+          console.log(`[admin-bootstrap] Password hash stored for ${updated.email}`);
         } else {
           console.warn(`[admin-bootstrap] ? Update returned no rows - admin may not exist or email doesn't match`);
         }
@@ -1141,6 +1141,8 @@ async function ensureOperationalSchema() {
 
       ALTER TABLE driver_details ADD COLUMN IF NOT EXISTS vehicle_subcategory VARCHAR(120);
       ALTER TABLE driver_details ADD COLUMN IF NOT EXISTS service_eligibility TEXT[] DEFAULT '{}'::text[];
+      ALTER TABLE driver_details ADD COLUMN IF NOT EXISTS vehicle_number VARCHAR(60);
+      ALTER TABLE driver_details ADD COLUMN IF NOT EXISTS vehicle_model VARCHAR(120);
       ALTER TABLE driver_details ADD COLUMN IF NOT EXISTS parcel_eligibility BOOLEAN;
       ALTER TABLE driver_details ADD COLUMN IF NOT EXISTS pool_eligibility BOOLEAN;
       ALTER TABLE driver_details ADD COLUMN IF NOT EXISTS outstation_eligibility BOOLEAN;
@@ -2872,9 +2874,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const { db: hDb } = await import("./db");
       const { sql: hSql } = await import("drizzle-orm");
       const r = await hDb.execute(hSql`
-        SELECT pickup_lat as lat, pickup_lng as lng, 1 as intensity FROM trip_requests WHERE pickup_lat IS NOT NULL ORDER BY created_at DESC LIMIT 5000
+        SELECT * FROM (
+          SELECT pickup_lat as lat, pickup_lng as lng, 1 as intensity
+          FROM trip_requests
+          WHERE pickup_lat IS NOT NULL AND pickup_lng IS NOT NULL
+          ORDER BY created_at DESC
+          LIMIT 5000
+        ) pickup_points
         UNION ALL
-        SELECT destination_lat as lat, destination_lng as lng, 0.6 as intensity FROM trip_requests WHERE destination_lat IS NOT NULL ORDER BY created_at DESC LIMIT 5000
+        SELECT * FROM (
+          SELECT destination_lat as lat, destination_lng as lng, 0.6 as intensity
+          FROM trip_requests
+          WHERE destination_lat IS NOT NULL AND destination_lng IS NOT NULL
+          ORDER BY created_at DESC
+          LIMIT 5000
+        ) destination_points
       `);
       res.json(r.rows);
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
@@ -3536,7 +3550,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       // Hash the password
       const hash = await hashPassword(adminPassword);
-      console.log(`[FORCE-RESET] Generated bcrypt hash: ${hash.substring(0, 30)}...`);
+      console.log(`[FORCE-RESET] Generated bcrypt hash for ${adminEmail}`);
 
       // Update admin record
       const result = await rawDb.execute(rawSql`
@@ -3563,10 +3577,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             id: admin.id,
             email: admin.email,
             isActive: admin.is_active,
-            passwordUpdated: true,
-            hashPrefix: (admin.password || '').substring(0, 30) + '...'
+            passwordUpdated: true
           },
-          credentials: { email: adminEmail, password: adminPassword },
           nextStep: "Try login at https://jagopro.org/admin/login with these cred entials"
         });
       }
@@ -3579,10 +3591,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           id: admin.id,
           email: admin.email,
           isActive: admin.is_active,
-          passwordUpdated: true,
-          hashPrefix: (admin.password || '').substring(0, 30) + '...'
+          passwordUpdated: true
         },
-        credentials: { email: adminEmail, password: adminPassword },
         nextStep: "Try login at https://jagopro.org/admin/login with these credentials"
       });
     } catch (e: any) {
@@ -3745,6 +3755,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) {
       return res.status(500).json({ success: false, message: safeErrMsg(e) });
     }
+  });
+
+  app.get("/api/admin/me", async (req, res) => {
+    const admin = (req as any).adminUser;
+    if (!admin?.id) {
+      return res.status(401).json({ message: "Admin authorization required" });
+    }
+    res.json({
+      admin: {
+        id: admin.id,
+        name: admin.name,
+        email: admin.email,
+        role: admin.role,
+        isActive: admin.is_active ?? admin.isActive ?? true,
+      },
+      session: {
+        expiresAt: (req as any).adminSession?.accessTokenExpiresAt ?? null,
+      },
+    });
   });
 
   app.post("/api/admin/logout", async (req, res) => {
@@ -16900,7 +16929,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     try {
       res.json({ vehicles: await readVehicleStatuses() });
     } catch (e: any) {
-      res.status(503).json({ message: safeErrMsg(e) });
+      res.json({
+        vehicles: vehicleControlDefaults.map((v) => ({
+          key: v.key,
+          name: v.name,
+          active: v.active,
+          icon: v.icon,
+          updatedAt: null,
+          updatedBy: "fallback",
+        })),
+        warning: safeErrMsg(e),
+      });
     }
   });
 

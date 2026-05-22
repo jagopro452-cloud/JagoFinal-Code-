@@ -247,8 +247,6 @@ class FcmService {
         description: 'Status updates for active trips',
         importance: Importance.high,
       ));
-      await androidPlugin?.requestExactAlarmsPermission();
-
       const initSettings = InitializationSettings(
         android: AndroidInitializationSettings('@mipmap/ic_launcher'),
         iOS: DarwinInitializationSettings(
@@ -422,7 +420,9 @@ class FcmService {
         debugPrint('[FCM-PILOT] getToken returned null');
         return;
       }
-      debugPrint('[FCM-PILOT] token ${token.substring(0, 20)}...');
+      if (kDebugMode) {
+        debugPrint('[FCM-PILOT] token obtained');
+      }
       await _saveTokenToServer(token);
     } catch (e) {
       debugPrint('[FCM-PILOT] getToken failed: $e');

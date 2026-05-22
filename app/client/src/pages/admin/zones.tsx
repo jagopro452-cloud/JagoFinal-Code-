@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { adminFetch, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-
-declare global { interface Window { L: any; } }
+import { adminConfirm } from "./components/AdminPrimitives";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 
 const SERVICE_TYPES = [
   { value: "both", label: "Ride & Parcel", icon: "bi-grid-fill", color: "#7c3aed" },
@@ -12,21 +13,6 @@ const SERVICE_TYPES = [
 ];
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-function loadScript(src: string): Promise<void> {
-  return new Promise((res, rej) => {
-    if (document.querySelector(`script[src="${src}"]`)) { res(); return; }
-    const s = document.createElement("script");
-    s.src = src; s.onload = () => res(); s.onerror = rej;
-    document.head.appendChild(s);
-  });
-}
-function loadLeafletCss() {
-  if (document.querySelector('link[href*="leaflet.css"]')) return;
-  const l = document.createElement("link");
-  l.rel = "stylesheet"; l.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
-  document.head.appendChild(l);
-}
-
 // Calculate polygon area in km2 using equirectangular projection + Shoelace
 function polygonAreaKm2(coords: [number, number][]): number {
   if (coords.length < 3) return 0;
@@ -103,8 +89,7 @@ function ZoneMapModal({ open, onClose, editing, initialForm, onSave, saving }: {
   // Init Leaflet
   useEffect(() => {
     if (!open) return;
-    loadLeafletCss();
-    loadScript("https://unpkg.com/leaflet@1.9.4/dist/leaflet.js").then(() => setMapReady(true));
+    setMapReady(true);
     return () => {
       if (mapInst.current) { mapInst.current.remove(); mapInst.current = null; }
       setMapReady(false);
@@ -113,7 +98,6 @@ function ZoneMapModal({ open, onClose, editing, initialForm, onSave, saving }: {
 
   useEffect(() => {
     if (!mapReady || !mapRef.current || mapInst.current) return;
-    const L = window.L;
     const map = L.map(mapRef.current, { center: [17.43, 78.49], zoom: 10, zoomControl: true });
     L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
       attribution: '&copy; CARTO', maxZoom: 19, subdomains: "abcd",
@@ -129,7 +113,6 @@ function ZoneMapModal({ open, onClose, editing, initialForm, onSave, saving }: {
   // Redraw polygon/markers when points change
   useEffect(() => {
     if (!mapReady || !mapInst.current) return;
-    const L = window.L;
     const map = mapInst.current;
 
     // Clear old layers
@@ -178,7 +161,6 @@ function ZoneMapModal({ open, onClose, editing, initialForm, onSave, saving }: {
   useEffect(() => {
     if (!mapReady || !mapInst.current) return;
     const map = mapInst.current;
-    const L = window.L;
 
     const onClick = (e: any) => {
       if (drawMode !== "draw" || closed) return;
@@ -525,7 +507,7 @@ export default function Zones() {
   const { data, isLoading } = useQuery<any>({
     queryKey: ["/api/zones"],
     queryFn: async () => {
-      const response = await fetch("/api/zones");
+      const response = await adminFetch("/api/zones");
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         throw new Error(body?.message || "Failed to load zones");
@@ -726,7 +708,7 @@ export default function Zones() {
                               <i className="bi bi-pencil-fill"></i>
                             </button>
                             <button className="btn btn-sm btn-outline-danger" style={{ borderRadius: 8 }}
-                              onClick={() => { if (confirm(`Delete zone "${zone.name}"?`)) remove.mutate(zone.id); }}
+                              onClick={async () => { if (await adminConfirm(`Delete zone "${zone.name}"?`)) remove.mutate(zone.id); }}
                               data-testid={`btn-delete-zone-${zone.id}`}>
                               <i className="bi bi-trash-fill"></i>
                             </button>

@@ -1,12 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
-
-declare global {
-  interface Window {
-    L: any;
-  }
-}
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 
 const DEMAND_COLORS: Record<string, string> = {
   high: "#ef4444",
@@ -38,30 +34,6 @@ const TILE_STYLES = {
 
 type TileStyle = keyof typeof TILE_STYLES;
 type ViewMode = "heatmap" | "grid";
-
-function ensureLeafletStyles() {
-  if (document.querySelector('link[href*="leaflet.css"]')) return;
-  const link = document.createElement("link");
-  link.rel = "stylesheet";
-  link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
-  document.head.appendChild(link);
-}
-
-function loadExternalScript(src: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (document.querySelector(`script[src="${src}"]`)) {
-      resolve();
-      return;
-    }
-
-    const script = document.createElement("script");
-    script.src = src;
-    script.async = true;
-    script.onload = () => resolve();
-    script.onerror = () => reject(new Error(`Failed to load ${src}`));
-    document.head.appendChild(script);
-  });
-}
 
 function HeatMapConfigField({
   label,
@@ -134,25 +106,9 @@ export default function HeatMapPage() {
   }, [config]);
 
   useEffect(() => {
-    let mounted = true;
-
-    async function init() {
-      ensureLeafletStyles();
-      await loadExternalScript("https://unpkg.com/leaflet@1.9.4/dist/leaflet.js");
-      await loadExternalScript("https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js");
-      if (mounted) {
-        setMapReady(true);
-      }
-    }
-
-    init().catch(() => {
-      if (mounted) {
-        setMapReady(true);
-      }
-    });
+    setMapReady(true);
 
     return () => {
-      mounted = false;
       if (mapInstanceRef.current) {
         mapInstanceRef.current.remove();
         mapInstanceRef.current = null;
@@ -161,9 +117,8 @@ export default function HeatMapPage() {
   }, []);
 
   useEffect(() => {
-    if (!mapReady || !mapRef.current || mapInstanceRef.current || !window.L) return;
+    if (!mapReady || !mapRef.current || mapInstanceRef.current) return;
 
-    const L = window.L;
     const map = L.map(mapRef.current, {
       center: [17.43, 78.49],
       zoom: 11,
@@ -182,9 +137,7 @@ export default function HeatMapPage() {
   }, [mapReady, tileStyle]);
 
   useEffect(() => {
-    if (!mapReady || !mapInstanceRef.current || !window.L || viewMode !== "heatmap") return;
-
-    const L = window.L;
+    if (!mapReady || !mapInstanceRef.current || viewMode !== "heatmap") return;
 
     if (gridLayerRef.current) {
       mapInstanceRef.current.removeLayer(gridLayerRef.current);
@@ -205,24 +158,23 @@ export default function HeatMapPage() {
 
     if (!latlngs.length) return;
 
-    heatLayerRef.current = L.heatLayer(latlngs, {
-      radius: 35,
-      blur: 25,
-      maxZoom: zoom,
-      gradient: {
-        0.2: "#3b82f6",
-        0.4: "#06b6d4",
-        0.6: "#22c55e",
-        0.8: "#f59e0b",
-        1.0: "#ef4444",
-      },
-    }).addTo(mapInstanceRef.current);
+    const layer = L.layerGroup();
+    latlngs.forEach(([lat, lng, intensity]: any[]) => {
+      const normalized = Math.max(0.2, Math.min(1, Number(intensity) / 10));
+      const color = normalized > 0.75 ? "#ef4444" : normalized > 0.5 ? "#f59e0b" : normalized > 0.3 ? "#22c55e" : "#3b82f6";
+      L.circle([lat, lng], {
+        radius: Math.max(120, 220 + normalized * 380),
+        stroke: false,
+        fillColor: color,
+        fillOpacity: 0.18 + normalized * 0.32,
+      }).addTo(layer);
+    });
+
+    heatLayerRef.current = layer.addTo(mapInstanceRef.current);
   }, [mapReady, points, viewMode, zoom]);
 
   useEffect(() => {
-    if (!mapReady || !mapInstanceRef.current || !window.L || viewMode !== "grid") return;
-
-    const L = window.L;
+    if (!mapReady || !mapInstanceRef.current || viewMode !== "grid") return;
 
     if (heatLayerRef.current) {
       mapInstanceRef.current.removeLayer(heatLayerRef.current);
@@ -301,9 +253,9 @@ export default function HeatMapPage() {
   const switchTile = (style: TileStyle) => {
     setTileStyle(style);
 
-    if (!mapInstanceRef.current || !window.L || !tileLayerRef.current) return;
+    if (!mapInstanceRef.current || !tileLayerRef.current) return;
     mapInstanceRef.current.removeLayer(tileLayerRef.current);
-    tileLayerRef.current = window.L.tileLayer(TILE_STYLES[style].url, {
+    tileLayerRef.current = L.tileLayer(TILE_STYLES[style].url, {
       attribution: "&copy; CARTO",
       maxZoom: 19,
       subdomains: "abcd",

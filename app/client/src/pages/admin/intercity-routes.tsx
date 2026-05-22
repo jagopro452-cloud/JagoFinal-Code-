@@ -1,7 +1,8 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { adminFetch, queryClient, apiRequest } from "@/lib/queryClient";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
+import { adminConfirm } from "./components/AdminPrimitives";
 
 const CITIES = [
   "Hyderabad","Vijayawada","Visakhapatnam","Tirupati","Warangal","Bengaluru","Chennai",
@@ -150,12 +151,12 @@ export default function IntercityRoutesPage() {
 
   const { data = [], isLoading } = useQuery<any[]>({
     queryKey: ["/api/intercity-routes"],
-    queryFn: () => fetch("/api/intercity-routes").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => Array.isArray(d) ? d : (d?.data && Array.isArray(d.data) ? d.data : [])),
+    queryFn: () => adminFetch("/api/intercity-routes").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => Array.isArray(d) ? d : (d?.data && Array.isArray(d.data) ? d.data : [])),
   });
 
   const { data: vehicles = [] } = useQuery<any[]>({
     queryKey: ["/api/vehicle-categories"],
-    queryFn: () => fetch("/api/vehicle-categories").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => Array.isArray(d) ? d : (d?.data && Array.isArray(d.data) ? d.data : [])),
+    queryFn: () => adminFetch("/api/vehicle-categories").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => Array.isArray(d) ? d : (d?.data && Array.isArray(d.data) ? d.data : [])),
   });
 
   const routes = Array.isArray(data) ? data : [];
@@ -320,7 +321,7 @@ export default function IntercityRoutesPage() {
                           <i className="bi bi-pencil-fill"></i>
                         </button>
                         <button className="btn btn-sm btn-outline-danger" style={{ borderRadius: 8 }}
-                          onClick={() => { if (confirm("Delete route?")) remove.mutate(r.id); }}
+                          onClick={async () => { if (await adminConfirm("Delete route?")) remove.mutate(r.id); }}
                           data-testid={`btn-delete-route-${r.id}`}>
                           <i className="bi bi-trash-fill"></i>
                         </button>

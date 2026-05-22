@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { adminConfirm } from "./components/AdminPrimitives";
 
 interface Language {
   id: string;
@@ -315,8 +316,8 @@ export default function LanguagesPage() {
                       {lang.code !== "en" && (
                         <button
                           data-testid={`delete-language-${lang.code}`}
-                          onClick={() => {
-                            if (confirm(`Delete ${lang.name}? This cannot be undone.`)) {
+                          onClick={async () => {
+                            if (await adminConfirm(`Delete ${lang.name}? This cannot be undone.`)) {
                               deleteMutation.mutate(lang.id);
                             }
                           }}

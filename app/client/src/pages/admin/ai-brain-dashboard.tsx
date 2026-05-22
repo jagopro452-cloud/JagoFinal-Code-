@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { adminFetch } from "@/lib/queryClient";
 
 interface BrainMetrics {
   rideRequestsLast5Min: number;
@@ -64,7 +65,7 @@ export default function AIBrainDashboard() {
   const { data: dashData, isLoading } = useQuery({
     queryKey: ["/api/admin/ai-brain/dashboard"],
     queryFn: async () => {
-      const r = await fetch("/api/admin/ai-brain/dashboard");
+      const r = await adminFetch("/api/admin/ai-brain/dashboard");
       if (!r.ok) throw new Error("Failed");
       return r.json();
     },
