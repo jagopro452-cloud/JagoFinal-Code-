@@ -309,9 +309,15 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
   const handleLogout = async () => {
     try {
+      const refreshToken = String(admin?.refreshToken || "");
       await fetch("/api/admin/logout", {
         method: "POST",
-        headers: admin?.token ? { Authorization: `Bearer ${admin.token}` } : undefined,
+        headers: admin?.token ? {
+          Authorization: `Bearer ${admin.token}`,
+          "Content-Type": "application/json",
+          "X-Device-Id": String(localStorage.getItem("jago-admin-device-id") || "admin-web-fallback"),
+        } : undefined,
+        body: refreshToken ? JSON.stringify({ refreshToken }) : undefined,
       });
     } catch (_) {}
     localStorage.removeItem("jago-admin");
@@ -327,6 +333,18 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     const reset = () => {
       clearTimeout(timer);
       timer = setTimeout(() => {
+        const refreshToken = String(admin?.refreshToken || "");
+        if (admin?.token) {
+          fetch("/api/admin/logout", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${admin.token}`,
+              "Content-Type": "application/json",
+              "X-Device-Id": String(localStorage.getItem("jago-admin-device-id") || "admin-web-fallback"),
+            },
+            body: refreshToken ? JSON.stringify({ refreshToken }) : undefined,
+          }).catch(() => undefined);
+        }
         localStorage.removeItem("jago-admin");
         window.location.href = "/admin/login?reason=timeout";
       }, TIMEOUT_MS);

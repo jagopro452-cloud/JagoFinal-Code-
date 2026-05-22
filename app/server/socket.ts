@@ -21,6 +21,8 @@ import {
   checkSpeedAnomaly,
 } from "./ai";
 import { parseEnv } from "./config/env";
+import { authenticateAppAccessToken } from "./auth/app-session";
+import { authenticateAdminAccessToken } from "./auth/admin-session";
 import {
   findEligibleDriversForDispatch,
   isDriverEligibleForDispatch,
@@ -38,16 +40,23 @@ import {
   noteSocketDisconnected,
   registerRealtimeOpsIO,
 } from "./realtime-ops";
+import { addSocketPresence, hasSocketPresence, removeSocketPresence } from "./socket-presence";
 
 export let io: SocketIOServer;
 
 // Track connected sockets: userId → socketId
 // NOTE: These maps are local to this process. With Redis adapter, socket routing works across processes but these maps still need Redis-backed storage for full HA. TODO: migrate to Redis hashes.
-const driverSockets = new Map<string, string>();
-const customerSockets = new Map<string, string>();
+export async function hasActiveDriverSocket(driverId: string): Promise<boolean> {
+  return hasSocketPresence("driver", driverId);
+}
 
-export function hasActiveDriverSocket(driverId: string): boolean {
-  return driverSockets.has(driverId);
+async function disconnectDuplicateUserSockets(userId: string, currentSocketId: string) {
+  const sockets = await io.in(`user:${userId}`).fetchSockets();
+  await Promise.all(
+    sockets
+      .filter((candidate) => candidate.id !== currentSocketId)
+      .map((candidate) => candidate.disconnect(true)),
+  );
 }
 
 // Grace-period timers: when a driver socket disconnects we wait before marking them offline.
@@ -151,30 +160,14 @@ async function verifySocketToken(
   if (!token || !claimedUserId) return null;
   try {
     if (String(claimedUserType || "").toLowerCase() === "admin") {
-      const adminR = await rawDb.execute(rawSql`
-        SELECT id FROM admins
-        WHERE id = ${claimedUserId}::uuid
-          AND auth_token = ${token}
-          AND is_active = true
-          AND (auth_token_expires_at IS NULL OR auth_token_expires_at > NOW())
-        LIMIT 1
-      `);
-      if (!adminR.rows.length) return null;
+      const session = await authenticateAdminAccessToken(token);
+      if (!session || session.adminId !== claimedUserId) return null;
       return { userId: claimedUserId, userType: "admin" };
     }
-    const r = await rawDb.execute(rawSql`
-      SELECT id, user_type FROM users
-      WHERE id = ${claimedUserId}::uuid
-        AND auth_token = ${token}
-        AND is_active = true
-        AND (auth_token_expires_at IS NULL OR auth_token_expires_at > NOW())
-      LIMIT 1
-    `);
-    if (!r.rows.length) return null;
-    return {
-      userId: (r.rows[0] as any).id as string,
-      userType: String((r.rows[0] as any).user_type || "").toLowerCase(),
-    };
+    const session = await authenticateAppAccessToken(token);
+    if (!session) return null;
+    if (session.userId !== claimedUserId) return null;
+    return { userId: session.userId, userType: session.userType };
   } catch {
     return null;
   }
@@ -182,10 +175,14 @@ async function verifySocketToken(
 
 export function setupSocket(httpServer: HttpServer) {
   const env = parseEnv();
-  const socketAllowedOrigins = (env.SOCKET_ALLOWED_ORIGINS || "*")
+  const socketAllowedOrigins = (env.SOCKET_ALLOWED_ORIGINS || (env.NODE_ENV === "production" ? "" : "*"))
     .split(",")
     .map((v) => v.trim())
     .filter(Boolean);
+
+  if (env.NODE_ENV === "production" && !socketAllowedOrigins.length) {
+    throw new Error("SOCKET_ALLOWED_ORIGINS is required in production");
+  }
 
   io = new SocketIOServer(httpServer, {
     cors: {
@@ -228,7 +225,8 @@ export function setupSocket(httpServer: HttpServer) {
       emitRealtimeOpsSnapshot("admin_connected").catch(() => {});
       console.log(`[SOCKET] Admin ${userId} connected to admin:ops`);
     } else if (userType === "driver") {
-      driverSockets.set(userId, socket.id);
+      await disconnectDuplicateUserSockets(userId, socket.id).catch(() => {});
+      addSocketPresence("driver", userId, socket.id).catch(() => {});
       socket.join(`drivers`);
 
       // Cancel any pending offline timer (driver reconnected within grace window)
@@ -432,9 +430,11 @@ export function setupSocket(httpServer: HttpServer) {
             return;
           }
           if (driverState.is_locked) {
-            // socket.emit("driver:accept_trip_error", { message: "Account locked. Clear dues to continue" });
-            // return;
-            console.log(`[SOCKET_ACCEPT] Driver ${userId} - Locked, but ALLOWING for test`);
+            socket.emit("driver:accept_trip_error", {
+              message: "Account locked. Clear dues to continue",
+              code: "ACCOUNT_LOCKED",
+            });
+            return;
           }
           if (driverState.current_trip_id) {
             socket.emit("driver:accept_trip_error", { message: "You already have an active trip" });
@@ -497,45 +497,55 @@ export function setupSocket(httpServer: HttpServer) {
           }
 
           // Atomically claim the trip — only if still available (prevents race condition)
-          const claimed = await rawDb.execute(rawSql`
-            UPDATE trip_requests
-            SET driver_id=${userId}::uuid,
-                current_status='accepted',
-                driver_accepted_at=NOW(),
-                driver_arriving_at=NOW(),
-                pickup_otp=${pickupOtp},
-                updated_at=NOW()
-            WHERE id=${tripId}::uuid
-              AND current_status IN ('searching','driver_assigned')
-              AND (driver_id IS NULL OR driver_id=${userId}::uuid)
-            RETURNING id
-          `);
-          if (!claimed.rows.length) {
-            socket.emit("driver:accept_trip_error", { message: "Trip was already accepted by another pilot" });
-            return;
-          }
-          const driverClaim = await rawDb.execute(rawSql`
-            UPDATE users
-            SET current_trip_id=${tripId}::uuid
-            WHERE id=${userId}::uuid
-              AND (current_trip_id IS NULL OR current_trip_id=${tripId}::uuid)
-            RETURNING current_trip_id
-          `);
-          if (!driverClaim.rows.length) {
-            await rawDb.execute(rawSql`
+          const acceptOutcome = await rawDb.transaction(async (tx) => {
+            const driverLock = await tx.execute(rawSql`
+              SELECT id, current_trip_id
+              FROM users
+              WHERE id=${userId}::uuid
+              FOR UPDATE
+            `);
+            if (!driverLock.rows.length) {
+              return { ok: false as const, message: "Driver account not found" };
+            }
+            const driverRow = driverLock.rows[0] as any;
+            if (driverRow.current_trip_id && String(driverRow.current_trip_id) !== tripId) {
+              return { ok: false as const, message: "Driver already has another active trip" };
+            }
+            const tripLock = await tx.execute(rawSql`
+              SELECT *
+              FROM trip_requests
+              WHERE id=${tripId}::uuid
+              FOR UPDATE
+            `);
+            if (!tripLock.rows.length) {
+              return { ok: false as const, message: "Trip no longer available" };
+            }
+            const tripInfo = tripLock.rows[0] as any;
+            if (!["searching", "driver_assigned"].includes(String(tripInfo.current_status || ""))) {
+              return { ok: false as const, message: "Trip was already accepted by another pilot" };
+            }
+            if (tripInfo.driver_id && String(tripInfo.driver_id) !== userId) {
+              return { ok: false as const, message: "Trip was already accepted by another pilot" };
+            }
+            await tx.execute(rawSql`
               UPDATE trip_requests
-              SET current_status='searching',
-                  driver_id=NULL,
-                  pickup_otp=NULL,
-                  driver_accepted_at=NULL,
-                  driver_arriving_at=NULL,
-                  rejected_driver_ids = array_append(COALESCE(rejected_driver_ids,'{}'), ${userId}::uuid),
+              SET driver_id=${userId}::uuid,
+                  current_status='accepted',
+                  driver_accepted_at=NOW(),
+                  driver_arriving_at=NOW(),
+                  pickup_otp=${pickupOtp},
                   updated_at=NOW()
               WHERE id=${tripId}::uuid
-                AND driver_id=${userId}::uuid
-                AND current_status='accepted'
-            `).catch(() => {});
-            socket.emit("driver:accept_trip_error", { message: "Driver already has another active trip" });
+            `);
+            await tx.execute(rawSql`
+              UPDATE users
+              SET current_trip_id=${tripId}::uuid
+              WHERE id=${userId}::uuid
+            `);
+            return { ok: true as const };
+          });
+          if (!acceptOutcome.ok) {
+            socket.emit("driver:accept_trip_error", { message: acceptOutcome.message });
             return;
           }
           await appendTripStatus(tripId, "accepted", "driver", "Driver accepted trip via socket");
@@ -936,7 +946,8 @@ export function setupSocket(httpServer: HttpServer) {
       });
 
     } else if (userType === "customer") {
-      customerSockets.set(userId, socket.id);
+      await disconnectDuplicateUserSockets(userId, socket.id).catch(() => {});
+      addSocketPresence("customer", userId, socket.id).catch(() => {});
       console.log(`[SOCKET] Customer ${userId} connected`);
 
       // ── Customer: join trip room for tracking ──────────────────────────────
@@ -1437,17 +1448,18 @@ export function setupSocket(httpServer: HttpServer) {
           reason: "disconnect",
         });
       }
-      driverSockets.delete(userId);
-      customerSockets.delete(userId);
       if (userType === "driver") {
+        removeSocketPresence("driver", userId, socket.id).catch(() => {});
         noteSocketDisconnected({ userId, userType: "driver", reason });
         // Grace period: don't mark offline immediately — reconnect within 90s keeps driver visible.
         // This prevents momentary network blips from removing driver from active dispatch.
         // If driver explicitly called driver:online with isOnline=false, that already updated DB directly.
         const timer = setTimeout(() => {
           pendingOfflineTimers.delete(userId);
-          // Only mark offline if still not reconnected (no entry in driverSockets)
-          if (!driverSockets.has(userId)) {
+          hasSocketPresence("driver", userId).then((hasPresence) => {
+            if (hasPresence) {
+              return;
+            }
             noteSocketBecameInactive(userId);
             rawDb.execute(rawSql`
               UPDATE driver_locations SET is_online=false, updated_at=NOW()
@@ -1457,13 +1469,14 @@ export function setupSocket(httpServer: HttpServer) {
               UPDATE users SET is_online=false WHERE id=${userId}::uuid
             `).catch(() => { });
             console.log(`[SOCKET] Driver ${userId} offline (grace period expired, reason=${reason})`);
-          }
+          }).catch(() => {});
         }, DRIVER_OFFLINE_GRACE_MS);
         pendingOfflineTimers.set(userId, timer);
         console.log(`[SOCKET] Driver ${userId} socket disconnected (reason=${reason}) — grace period started, not offline yet`);
       } else if (userType === "admin") {
         console.log(`[SOCKET] Admin ${userId} disconnected`);
       } else {
+        removeSocketPresence("customer", userId, socket.id).catch(() => {});
         console.log(`[SOCKET] ${userType} ${userId} disconnected`);
       }
     });

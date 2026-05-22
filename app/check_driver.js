@@ -1,7 +1,10 @@
 import { Client } from 'pg';
 import fs from 'fs';
 
-const connectString = 'postgresql://postgres:%23Vamsi%40123@localhost:5432/jago';
+const connectString = process.env.DATABASE_URL;
+if (!connectString) {
+  throw new Error('DATABASE_URL is required');
+}
 
 async function check() {
   const client = new Client({ connectionString: connectString });
@@ -19,10 +22,13 @@ async function check() {
     LIMIT 10;
   `);
   
-  // Force the first driver online with current timestamp and the requested vehicle category
-  if (res.rows.length > 0) {
+  // Optional fixture helper for local debugging only.
+  if (process.env.ENABLE_DRIVER_FIXTURE === 'true' && res.rows.length > 0) {
     const driverId = res.rows[0].id;
-    const vcId = 'ef7b588e-3f84-4c83-96be-b7c561937753'; // From the customer ride request
+    const vcId = process.env.TEST_VEHICLE_CATEGORY_ID;
+    if (!vcId) {
+      throw new Error('TEST_VEHICLE_CATEGORY_ID is required when ENABLE_DRIVER_FIXTURE=true');
+    }
     
     await client.query(`UPDATE users SET is_online = true WHERE id = $1`, [driverId]);
     await client.query(`

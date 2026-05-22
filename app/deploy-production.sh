@@ -1,154 +1,98 @@
 #!/bin/bash
 
-###############################################################################
-#                   AUTOMATED PRODUCTION DEPLOYMENT SCRIPT
-#                          March 24, 2026
-#
-# This script automates the entire deployment process.
-# RUN THIS on your production server.
-#
-# USAGE:
-#   bash deploy-production.sh
-#
-# WHAT IT DOES:
-#   1. Checks prerequisites
-#   2. Pulls latest code from GitHub
-#   3. Installs dependencies
-#   4. Runs database migrations
-#   5. Updates admin credentials
-#   6. Restarts PM2
-#   7. Verifies deployment
-#
-###############################################################################
+set -euo pipefail
 
-set -e  # Exit on any error
+APP_DIR="${APP_DIR:-/var/www/jago}"
+PM2_APP_NAME="${PM2_APP_NAME:-jago-pro}"
+PM2_ECOSYSTEM_FILE="${PM2_ECOSYSTEM_FILE:-ecosystem.config.cjs}"
+ENV_FILE="${ENV_FILE:-$APP_DIR/.env}"
+HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:5000/api/health}"
+BRANCH="${BRANCH:-master}"
+RELEASES_DIR="${RELEASES_DIR:-$APP_DIR/releases}"
+ROLLBACK_LINK="${ROLLBACK_LINK:-$APP_DIR/previous}"
 
-# Updated credentials (March 24, 2026)
-ADMIN_EMAIL="Kiranatmakuri518@gmail.com"
-ADMIN_PASSWORD="Greeshmant@2023"
-ADMIN_NAME="Kiran"
-
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-
-# Step 1: Navigate to app directory
-echo -e "${YELLOW}📁 Step 1: Navigating to app directory...${NC}"
-cd /app
-echo -e "${GREEN}✅ Directory: $(pwd)${NC}"
-echo ""
-
-# Step 2: Pull latest code
-echo -e "${YELLOW}📥 Step 2: Pulling latest code from GitHub...${NC}"
-git pull origin master --quiet
-echo -e "${GREEN}✅ Code updated${NC}"
-echo ""
-
-# Step 3: Install dependencies
-echo -e "${YELLOW}📦 Step 3: Installing dependencies...${NC}"
-npm install
-if [ $? -ne 0 ]; then
-    echo -e "${RED}❌ npm install failed${NC}"
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "Missing required command: $1" >&2
     exit 1
-fi
-echo -e "${GREEN}✅ Dependencies installed${NC}"
-echo ""
+  }
+}
 
-# Step 3.5: Database migrations
-echo -e "${YELLOW}🗄️  Step 3.5: Running database migrations...${NC}"
-npm run migrate
-if [ $? -ne 0 ]; then
-    echo -e "${RED}❌ Database migration failed${NC}"
+require_env_value() {
+  local key="$1"
+  if ! grep -Eq "^${key}=.+" "$ENV_FILE"; then
+    echo "Missing required env key in $ENV_FILE: $key" >&2
     exit 1
-fi
-echo -e "${GREEN}✅ Database migrations completed${NC}"
-echo ""
+  fi
+}
 
-# Step 4: Build application
-echo -e "${YELLOW}🔨 Step 4: Building application...${NC}"
+require_command git
+require_command npm
+require_command node
+require_command pm2
+require_command curl
+
+if [[ ! -d "$APP_DIR" ]]; then
+  echo "APP_DIR does not exist: $APP_DIR" >&2
+  exit 1
+fi
+
+cd "$APP_DIR"
+
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "Production env file not found: $ENV_FILE" >&2
+  exit 1
+fi
+
+for key in DATABASE_URL REDIS_URL GOOGLE_MAPS_API_KEY SOCKET_ALLOWED_ORIGINS RAZORPAY_KEY_ID RAZORPAY_KEY_SECRET RAZORPAY_WEBHOOK_SECRET AUTH_JWT_SECRET APP_BASE_URL; do
+  require_env_value "$key"
+done
+
+mkdir -p "$RELEASES_DIR"
+CURRENT_COMMIT="$(git rev-parse HEAD)"
+STAMP="$(date +%Y%m%d_%H%M%S)"
+BACKUP_DIR="$RELEASES_DIR/$STAMP"
+
+git fetch origin "$BRANCH"
+TARGET_COMMIT="$(git rev-parse "origin/$BRANCH")"
+
+if [[ "$CURRENT_COMMIT" == "$TARGET_COMMIT" ]]; then
+  echo "Already at latest commit: $CURRENT_COMMIT"
+else
+  mkdir -p "$BACKUP_DIR"
+  git archive "$CURRENT_COMMIT" | tar -x -C "$BACKUP_DIR"
+  ln -sfn "$BACKUP_DIR" "$ROLLBACK_LINK"
+  git pull --ff-only origin "$BRANCH"
+fi
+
+npm ci
+npm run check
 npm run build
-if [ $? -ne 0 ]; then
-    echo -e "${RED}❌ Build failed${NC}"
-    exit 1
-fi
-echo -e "${GREEN}✅ Build completed successfully${NC}"
-echo ""
 
-# Step 5: Update Admin Account
-echo -e "${YELLOW}👤 Step 5: Updating admin credentials...${NC}"
-
-# Use the existing update script
-DATABASE_URL="$DATABASE_URL" node scripts/update-admin-quick.cjs
-
-if [ $? -ne 0 ]; then
-    echo -e "${RED}❌ Admin update failed${NC}"
-    exit 1
-fi
-echo ""
-
-# Step 6: Restart server via PM2
-echo -e "${YELLOW}🔄 Step 6: Restarting application via PM2...${NC}"
-
-# Check if process is already running
-if pm2 list | grep -q "jago-api"; then
-    pm2 restart jago-api
-elif pm2 list | grep -q "jago"; then
-    pm2 restart jago
-else
-    # Start new process
-    pm2 start dist/index.js --name "jago-api" --instances max
+if npm run | grep -q " migrate"; then
+  npm run migrate
 fi
 
-sleep 3
-echo -e "${GREEN}✅ PM2 process restarted${NC}"
-echo ""
+pm2 startOrReload "$PM2_ECOSYSTEM_FILE" --env production
 
-# Step 7: Verify server is running
-echo -e "${YELLOW}✓ Step 7: Verifying server health...${NC}"
-sleep 5
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if curl -fsS "$HEALTH_URL" >/dev/null; then
+    echo "Deployment health check passed"
+    exit 0
+  fi
+  sleep 5
+done
 
-# Try local health check
-HEALTH=$(curl -s http://localhost:5000/api/health || echo "error")
+echo "Health check failed after deploy. Rolling back to previous release." >&2
 
-if [[ $HEALTH == *"ok"* ]]; then
-  echo -e "${GREEN}✅ Server health check PASSED${NC}"
-elif [[ $HEALTH == *"status"* ]]; then
-  echo -e "${GREEN}✅ Server is running${NC}"
-else
-  echo -e "${YELLOW}⏳ Server warming up... (server may take another 30-60 seconds)${NC}"
+if [[ -L "$ROLLBACK_LINK" ]]; then
+  PREVIOUS_DIR="$(readlink "$ROLLBACK_LINK")"
+  if [[ -d "$PREVIOUS_DIR" ]]; then
+    rsync -a --delete "$PREVIOUS_DIR"/ "$APP_DIR"/
+    npm ci
+    npm run build
+    pm2 startOrReload "$PM2_ECOSYSTEM_FILE" --env production
+  fi
 fi
-echo ""
 
-echo ""
-
-# Final Summary
-echo "=============================================="
-echo -e "${GREEN}✅ DEPLOYMENT COMPLETE!${NC}"
-echo "=============================================="
-echo ""
-echo "🌐 Access your app:"
-echo "   Admin: https://jagopro.org/admin/auth/login"
-echo "   Customer App: Download from https://jagopro.org/apks/"
-echo "   Driver App: Download from https://jagopro.org/apks/"
-echo ""
-echo "📧 Admin Credentials (UPDATED Mar 24, 2026):"
-echo "   Email:    Kiranatmakuri518@gmail.com"
-echo "   Password: Greeshmant@2023"
-echo ""
-echo "✅ What was deployed:"
-echo "   ✓ Latest code (commit: f0d9a20)"
-echo "   ✓ 2FA disabled"
-echo "   ✓ Admin updated"
-echo "   ✓ Database migrated"
-echo "   ✓ Server restarted"
-echo ""
-echo "⏳ Server warmup time: 30-60 seconds"
-echo "   If login initially fails, wait 1 minute and try again"
-echo ""
-echo "📊 View server logs:"
-echo "   pm2 logs jago-api"
-echo ""
-echo "🎉 Production is now LIVE!"
-echo ""
+exit 1

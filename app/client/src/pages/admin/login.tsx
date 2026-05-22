@@ -39,6 +39,18 @@ const FEATURES = [
 export default function AdminLogin() {
   useAdminBootstrap();
   const [, setLocation] = useLocation();
+  const getAdminDeviceId = () => {
+    try {
+      const key = "jago-admin-device-id";
+      const existing = localStorage.getItem(key);
+      if (existing) return existing;
+      const created = `admin-web-${crypto.randomUUID()}`;
+      localStorage.setItem(key, created);
+      return created;
+    } catch {
+      return "admin-web-fallback";
+    }
+  };
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -121,12 +133,12 @@ export default function AdminLogin() {
     try {
       const res = await fetch("/api/admin/login", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        headers: { "Content-Type": "application/json", "X-Device-Id": getAdminDeviceId() },
+        body: JSON.stringify({ email, password, deviceId: getAdminDeviceId() }),
       });
       const data = await res.json();
       if (res.ok && data?.token) {
-        localStorage.setItem("jago-admin", JSON.stringify({ ...(data.admin || data), token: data.token, expiresAt: data.expiresAt }));
+        localStorage.setItem("jago-admin", JSON.stringify({ ...(data.admin || data), token: data.token, refreshToken: data.refreshToken || null, expiresAt: data.expiresAt }));
         setLocation("/admin/dashboard");
       } else {
         // 2FA disabled - just show error message
@@ -146,12 +158,12 @@ export default function AdminLogin() {
     try {
       const res = await fetch("/api/admin/login/verify-2fa", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, otp: loginOtp }),
+        headers: { "Content-Type": "application/json", "X-Device-Id": getAdminDeviceId() },
+        body: JSON.stringify({ email, otp: loginOtp, deviceId: getAdminDeviceId() }),
       });
       const data = await res.json();
       if (res.ok && data?.token) {
-        localStorage.setItem("jago-admin", JSON.stringify({ ...(data.admin || data), token: data.token, expiresAt: data.expiresAt }));
+        localStorage.setItem("jago-admin", JSON.stringify({ ...(data.admin || data), token: data.token, refreshToken: data.refreshToken || null, expiresAt: data.expiresAt }));
         setLocation("/admin/dashboard");
       } else {
         setError(data.message || "Invalid OTP. Please try again.");

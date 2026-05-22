@@ -31,6 +31,11 @@ class SocketService {
   final _noDriversController = StreamController<Map<String, dynamic>>.broadcast();
   final _newParcelController = StreamController<Map<String, dynamic>>.broadcast();
   final _walletRechargedController = StreamController<Map<String, dynamic>>.broadcast();
+  final _walletUpdatedController = StreamController<Map<String, dynamic>>.broadcast();
+  final _poolNewPassengerController = StreamController<Map<String, dynamic>>.broadcast();
+  final _poolSeatUpdateController = StreamController<Map<String, dynamic>>.broadcast();
+  final _poolPassengerCancelledController = StreamController<Map<String, dynamic>>.broadcast();
+  final _configUpdatedController = StreamController<Map<String, dynamic>>.broadcast();
   final _callIncomingController = StreamController<Map<String, dynamic>>.broadcast();
   final _callOfferController = StreamController<Map<String, dynamic>>.broadcast();
   final _callAnswerController = StreamController<Map<String, dynamic>>.broadcast();
@@ -50,6 +55,11 @@ class SocketService {
   Stream<Map<String, dynamic>> get onNoDrivers => _noDriversController.stream;
   Stream<Map<String, dynamic>> get onNewParcel => _newParcelController.stream;
   Stream<Map<String, dynamic>> get onWalletRecharged => _walletRechargedController.stream;
+  Stream<Map<String, dynamic>> get onWalletUpdated => _walletUpdatedController.stream;
+  Stream<Map<String, dynamic>> get onPoolNewPassenger => _poolNewPassengerController.stream;
+  Stream<Map<String, dynamic>> get onPoolSeatUpdate => _poolSeatUpdateController.stream;
+  Stream<Map<String, dynamic>> get onPoolPassengerCancelled => _poolPassengerCancelledController.stream;
+  Stream<Map<String, dynamic>> get onConfigUpdated => _configUpdatedController.stream;
   Stream<Map<String, dynamic>> get onCallIncoming => _callIncomingController.stream;
   Stream<Map<String, dynamic>> get onCallOffer => _callOfferController.stream;
   Stream<Map<String, dynamic>> get onCallAnswer => _callAnswerController.stream;
@@ -184,7 +194,24 @@ class SocketService {
 
     // Wallet recharged (after Razorpay payment verified)
     _socket!.on('wallet:recharged', (data) {
-      _walletRechargedController.add(Map<String, dynamic>.from(data));
+      final payload = Map<String, dynamic>.from(data);
+      _walletRechargedController.add(payload);
+      _walletUpdatedController.add(payload);
+    });
+    _socket!.on('wallet:updated', (data) {
+      _walletUpdatedController.add(Map<String, dynamic>.from(data));
+    });
+    _socket!.on('pool:new_passenger', (data) {
+      _poolNewPassengerController.add(Map<String, dynamic>.from(data));
+    });
+    _socket!.on('pool:seat_update', (data) {
+      _poolSeatUpdateController.add(Map<String, dynamic>.from(data));
+    });
+    _socket!.on('pool:passenger_cancelled', (data) {
+      _poolPassengerCancelledController.add(Map<String, dynamic>.from(data));
+    });
+    _socket!.on('config:updated', (data) {
+      _configUpdatedController.add(Map<String, dynamic>.from(data));
     });
 
     // ── WebRTC Call Signaling ──────────────────────────────────
@@ -262,7 +289,14 @@ class SocketService {
     }
   }
 
-  void sendLocation({required double lat, required double lng, double heading = 0, double speed = 0}) {
+  void sendLocation({
+    required double lat,
+    required double lng,
+    double heading = 0,
+    double speed = 0,
+    int? remainingDistanceMeters,
+    int? etaSeconds,
+  }) {
     _lastLat = lat;
     _lastLng = lng;
     _lastLocationSentAt = DateTime.now();
@@ -272,6 +306,8 @@ class SocketService {
         'lng': lng,
         'heading': heading,
         'speed': speed,
+        if (remainingDistanceMeters != null) 'remainingDistanceMeters': remainingDistanceMeters,
+        if (etaSeconds != null) 'etaSeconds': etaSeconds,
       });
       return;
     }
@@ -450,6 +486,11 @@ class SocketService {
     _newParcelController.close();
     _noDriversController.close();
     _walletRechargedController.close();
+    _walletUpdatedController.close();
+    _poolNewPassengerController.close();
+    _poolSeatUpdateController.close();
+    _poolPassengerCancelledController.close();
+    _configUpdatedController.close();
     _callIncomingController.close();
     _callOfferController.close();
     _callAnswerController.close();

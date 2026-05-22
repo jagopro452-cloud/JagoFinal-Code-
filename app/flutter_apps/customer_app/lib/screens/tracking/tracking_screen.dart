@@ -19,6 +19,7 @@ import '../call/call_screen.dart';
 import '../chat/trip_chat_sheet.dart';
 
 import '../main_screen.dart';
+// ignore: unused_import
 import '../booking/booking_screen.dart';
 import 'trip_completion_screen.dart';
 
@@ -56,8 +57,6 @@ class _TrackingScreenState extends State<TrackingScreen>
   List<Map<String, dynamic>> _nearbyDrivers = [];
   double _driverHeading = 0;
 
-  bool _isConnected = true;
-  StreamSubscription? _connSub;
   Timer? _pollTimer;
 
   bool _isArriving = false; // "Pilot is about to arrive" flag
@@ -75,9 +74,8 @@ class _TrackingScreenState extends State<TrackingScreen>
     _pulseCtrl =
         AnimationController(vsync: this, duration: const Duration(seconds: 2))
           ..repeat(reverse: true);
-    _connSub = _socket.onConnectionChanged.listen((connected) {
+    _subs.add(_socket.onConnectionChanged.listen((connected) {
       if (mounted) {
-        setState(() => _isConnected = connected);
         if (!connected) {
           _showStatusBanner('Waiting for connection...', Colors.orange);
         } else {
@@ -90,7 +88,7 @@ class _TrackingScreenState extends State<TrackingScreen>
           Future.delayed(const Duration(milliseconds: 2500), _pollStatus);
         }
       }
-    });
+    }));
     _connectSocket();
     _pollStatus();
     _loadCancelReasons();
@@ -126,7 +124,6 @@ class _TrackingScreenState extends State<TrackingScreen>
     }));
 
     _subs.add(_socket.onTripStatus.listen((data) {
-      if (data == null) return;
       try {
         final newStatus = data['status']?.toString();
         if (newStatus == null) return;
@@ -355,42 +352,6 @@ class _TrackingScreenState extends State<TrackingScreen>
     if (!mounted) return;
     setState(() => _status = 'cancelled');
     _showStatusBanner('No pilots nearby. Try again!', const Color(0xFFDC2626));
-  }
-
-  // Retry booking using the same trip's original params
-  void _retryBooking() {
-    final t = _trip;
-    if (t == null) {
-      Navigator.pushAndRemoveUntil(context,
-          MaterialPageRoute(builder: (_) => const MainScreen()), (_) => false);
-      return;
-    }
-    Navigator.pushAndRemoveUntil(
-      context,
-      MaterialPageRoute(
-        builder: (_) => BookingScreen(
-          pickup: t['pickupAddress']?.toString() ??
-              t['pickup_address']?.toString() ??
-              'Pickup',
-          destination: t['destinationAddress']?.toString() ??
-              t['destination_address']?.toString() ??
-              'Destination',
-          pickupLat: double.tryParse(t['pickupLat']?.toString() ?? '') ?? 0.0,
-          pickupLng: double.tryParse(t['pickupLng']?.toString() ?? '') ?? 0.0,
-          destLat:
-              double.tryParse(t['destinationLat']?.toString() ?? '') ?? 0.0,
-          destLng:
-              double.tryParse(t['destinationLng']?.toString() ?? '') ?? 0.0,
-          vehicleCategoryId: t['vehicleCategoryId']?.toString(),
-          vehicleCategoryName: t['vehicleName']?.toString(),
-          category: (t['tripType']?.toString() == 'parcel' ||
-                  t['trip_type']?.toString() == 'parcel')
-              ? 'parcel'
-              : 'ride',
-        ),
-      ),
-      (_) => false,
-    );
   }
 
   Future<void> _startNearbyDriversPolling() async {
@@ -1768,21 +1729,9 @@ class _TrackingScreenState extends State<TrackingScreen>
     );
   }
 
-  Future<String> _getSupportPhone() async {
-    try {
-      final r = await http.get(Uri.parse(ApiConfig.configs));
-      if (r.statusCode == 200) {
-        final data = jsonDecode(r.body);
-        return data['configs']?['support_phone'] ?? '+916303000000';
-      }
-    } catch (_) {}
-    return '+916303000000';
-  }
-
   // ── Premium UI Components ──────────────────────────────────────────────────
 
   Widget _buildPremiumHeader(Map<String, dynamic> statusInfo, String? otp) {
-    final color = statusInfo['color'] as Color;
     final showOtp = otp != null &&
         otp.isNotEmpty &&
         (_status == 'driver_assigned' ||
@@ -2481,10 +2430,6 @@ class _TrackingScreenState extends State<TrackingScreen>
         ],
       ),
     );
-  }
-
-  void _showArrivalBanner() {
-    _showStatusBanner('Your pilot is arrived', const Color(0xFF10B981));
   }
 
   Widget _buildInProgressPanel(Map<String, dynamic> trip) {

@@ -226,6 +226,10 @@ export function getConfigHistory() {
 
 const CONFIG_SYNC_CHANNEL = "engine:config:reload";
 
+function getEngineRedisUrl(): string | null {
+  return (process.env.REDIS_URL || "").trim() || null;
+}
+
 async function broadcastConfigReload(version: string, checksum: string): Promise<void> {
   try {
     const r = await getEngineRedis();
@@ -236,8 +240,15 @@ async function broadcastConfigReload(version: string, checksum: string): Promise
 
 export async function subscribeConfigSync(): Promise<void> {
   try {
+    const redisUrl = getEngineRedisUrl();
+    if (!redisUrl) {
+      if (process.env.NODE_ENV === "production") {
+        console.error("[ALERT-ENGINE] REDIS_URL missing - config sync disabled");
+      }
+      return;
+    }
     const { default: IORedis } = await import("ioredis");
-    const sub = new IORedis(process.env.REDIS_URL || "redis://localhost:6379", {
+    const sub = new IORedis(redisUrl, {
       lazyConnect: true, enableOfflineQueue: false, maxRetriesPerRequest: 0,
       retryStrategy: () => null, connectTimeout: 2000,
     });
@@ -788,8 +799,10 @@ function makeActionToken(actionId: string, zoneKey = "all"): string {
 async function getEngineRedis(): Promise<any | null> {
   if (_engineRedis?.status === "ready") return _engineRedis;
   try {
+    const redisUrl = getEngineRedisUrl();
+    if (!redisUrl) return null;
     const { default: IORedis } = await import("ioredis");
-    _engineRedis = new IORedis(process.env.REDIS_URL || "redis://localhost:6379", {
+    _engineRedis = new IORedis(redisUrl, {
       lazyConnect: true, enableOfflineQueue: false, maxRetriesPerRequest: 0,
       retryStrategy: () => null, connectTimeout: 1500,
     });
@@ -803,7 +816,7 @@ async function getEngineRedis(): Promise<any | null> {
 // alreadyApplied=true  → caller must skip (another pod or this pod already ran it)
 // redisAvailable=false → caller should suppress per_zone actions (cross-pod inconsistency risk)
 // Tries Redis SET NX EX first — aligned TTL = slot window + 60s buffer (no adjacent window overlap).
-// Falls back to in-memory Set when Redis is unavailable.
+// Outside production, falls back to in-memory Set when Redis is unavailable.
 async function checkAndClaimAction(
   actionId: string,
   zoneKey = "all",
@@ -817,9 +830,13 @@ async function checkAndClaimAction(
       appliedActionTokens.add(token);
       return { alreadyApplied: false, redisAvailable: true };
     }
-  } catch { /* fall through to in-memory */ }
+  } catch { /* fall through to production-safe branch below */ }
 
   // Redis unavailable — in-memory fallback (single-instance only)
+  if (process.env.NODE_ENV === "production") {
+    return { alreadyApplied: true, redisAvailable: false };
+  }
+
   if (appliedActionTokens.has(token)) return { alreadyApplied: true, redisAvailable: false };
   appliedActionTokens.add(token);
   if (appliedActionTokens.size > 200) {
@@ -837,10 +854,11 @@ async function checkAndClaimAction(
 async function acquireLeaderLock(): Promise<boolean> {
   try {
     const r = await getEngineRedis();
+    if (!r && process.env.NODE_ENV === "production") return false;
     if (!r) return true; // Redis unavailable — assume single instance, always leader
     const result = await r.set("engine:leader", "1", "EX", LEADER_TTL_S, "NX");
     return result !== null;
-  } catch { return true; }
+  } catch { return process.env.NODE_ENV !== "production"; }
 }
 
 // ── Scope enforcement — prevents accidental global impact from zone rules ─────

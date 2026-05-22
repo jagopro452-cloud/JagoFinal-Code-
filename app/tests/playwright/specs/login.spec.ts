@@ -21,7 +21,7 @@ test.describe("Login", () => {
     await login.requestPasswordReset(runtime.adminEmail);
     await expect(page.getByTestId("forgot-success")).toContainText("Reset OTP sent");
     await page.getByTestId("input-otp").fill("654321");
-    await page.getByTestId("input-new-password").fill("Jago@1234");
+    await page.getByTestId("input-new-password").fill(runtime.adminPassword || "pw-reset-value");
     await page.getByTestId("btn-reset-password").click();
     await expect(page.getByTestId("forgot-success")).toContainText("Password reset completed");
   });

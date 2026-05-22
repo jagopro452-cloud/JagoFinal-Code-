@@ -43,7 +43,6 @@ Future<void> configureAndroidGoogleMaps() async {
       final renderer =
           await mapsImplementation.initializeWithRenderer(AndroidMapRenderer.platformDefault);
       debugPrint('[MAP] Customer Android renderer initialized: $renderer useAndroidViewSurface=${mapsImplementation.useAndroidViewSurface}');
-      await mapsImplementation.warmup();
     } catch (e, st) {
       debugPrint('[MAP] Customer Android renderer init failed: $e\n$st');
     }

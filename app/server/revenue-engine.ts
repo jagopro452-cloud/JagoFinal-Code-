@@ -21,6 +21,10 @@ import { getRevenueConfig } from "./revenue-config";
 const rawDb = db;
 const rawSql = sql;
 
+type SqlExecutor = {
+  execute: (query: any) => Promise<any>;
+};
+
 // ═══════════════════════════════════════════════════════════════════════════════
 //  TYPES
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -125,6 +129,7 @@ export async function applyWalletChange(params: {
   refId?: string | null;
   metadata?: Record<string, unknown>;
   requireSufficientFunds?: boolean;
+  tx?: SqlExecutor;
 }): Promise<WalletChangeResult> {
   const userId = String(params.userId || params.driverId || "");
   if (!userId) throw new Error("userId is required");
@@ -132,6 +137,64 @@ export async function applyWalletChange(params: {
   if (!(amount > 0)) throw new Error("amount must be positive");
 
   await ensureWalletEventsTable();
+
+  if (params.tx) {
+    const lockRes = await params.tx.execute(rawSql`
+      SELECT wallet_balance
+      FROM users
+      WHERE id=${userId}::uuid
+      FOR UPDATE
+    `);
+    if (!lockRes.rows.length) {
+      throw new Error("Wallet owner not found");
+    }
+
+    const currentBalance = parseFloat((lockRes.rows[0] as any)?.wallet_balance || 0);
+    if (params.type === "DEBIT" && params.requireSufficientFunds && currentBalance < amount) {
+      throw new Error("Insufficient wallet balance");
+    }
+
+    const updateRes = params.type === "CREDIT"
+      ? await params.tx.execute(rawSql`
+          UPDATE users
+          SET wallet_balance = wallet_balance + ${amount},
+              updated_at = NOW()
+          WHERE id=${userId}::uuid
+          RETURNING wallet_balance
+        `)
+      : await params.tx.execute(rawSql`
+          UPDATE users
+          SET wallet_balance = wallet_balance - ${amount},
+              updated_at = NOW()
+          WHERE id=${userId}::uuid
+            ${params.requireSufficientFunds ? rawSql`AND wallet_balance >= ${amount}` : rawSql``}
+          RETURNING wallet_balance
+        `);
+
+    if (!updateRes.rows.length) {
+      if (params.type === "DEBIT" && params.requireSufficientFunds) throw new Error("Insufficient wallet balance");
+      throw new Error("Wallet owner not found");
+    }
+
+    const newBalance = parseFloat((updateRes.rows[0] as any)?.wallet_balance || 0);
+    await params.tx.execute(rawSql`
+      INSERT INTO wallet_events (user_id, amount, type, reason, ref_id, metadata)
+      VALUES (
+        ${userId}::uuid,
+        ${amount},
+        ${params.type},
+        ${params.reason},
+        ${params.refId || null},
+        ${JSON.stringify(params.metadata || {})}::jsonb
+      )
+    `);
+    return {
+      userId,
+      amount,
+      type: params.type,
+      newBalance,
+    };
+  }
 
   // Atomic wallet operation: lock row → update balance → insert event log, all in one transaction.
   // SELECT FOR UPDATE prevents concurrent requests from reading stale balance before either UPDATE commits.
@@ -564,8 +627,10 @@ export async function settleRevenue(params: {
   serviceCategory: ServiceCategory;
   serviceLabel?: string;
   customerWalletBalance?: number; // Needed for wallet payment validation
+  tx?: SqlExecutor;
 }): Promise<{ newWalletBalance: number; isLocked: boolean; lockReason?: string }> {
   const { driverId, tripId, fare, paymentMethod, breakdown, serviceCategory, serviceLabel } = params;
+  const executor = params.tx || rawDb;
   const deductAmount = breakdown.total;
   const driverWalletCredit = breakdown.driverEarnings;
   const gstAmount = breakdown.gst;
@@ -578,7 +643,7 @@ export async function settleRevenue(params: {
   const s = await loadRevenueSettings();
   const lockThresholdVal = Math.abs(parseFloat(s.auto_lock_threshold || "-200"));
 
-  const balBeforeR = await rawDb.execute(rawSql`
+  const balBeforeR = await executor.execute(rawSql`
     SELECT wallet_balance
     FROM users WHERE id=${driverId}::uuid LIMIT 1
   `).catch(() => ({ rows: [] as any[] }));
@@ -607,8 +672,9 @@ export async function settleRevenue(params: {
       reason: "trip_settlement_credit",
       refId: tripId,
       metadata: { serviceCategory, paymentMethod: effectivePaymentMethod },
+      tx: params.tx,
     });
-    wUpd = await rawDb.execute(rawSql`
+    wUpd = await executor.execute(rawSql`
       UPDATE users
       SET completed_rides_count = COALESCE(completed_rides_count, 0) + 1
       WHERE id=${driverId}::uuid
@@ -624,8 +690,9 @@ export async function settleRevenue(params: {
       reason: "cash_ride_dues",
       refId: tripId,
       metadata: { serviceCategory, paymentMethod: effectivePaymentMethod },
+      tx: params.tx,
     });
-    wUpd = await rawDb.execute(rawSql`
+    wUpd = await executor.execute(rawSql`
       UPDATE users
       SET completed_rides_count = COALESCE(completed_rides_count, 0) + 1
       WHERE id=${driverId}::uuid
@@ -643,7 +710,7 @@ export async function settleRevenue(params: {
   if (!isOnlinePayment && !isLocked) {
     if (newWalletBalance < -lockThresholdVal) {
       lockReason = `Wallet balance ₹${newWalletBalance.toFixed(2)} is below -₹${lockThresholdVal}. Recharge to unlock.`;
-      await rawDb.execute(rawSql`
+      await executor.execute(rawSql`
         UPDATE users SET is_locked=true, lock_reason=${lockReason}, locked_at=NOW()
         WHERE id=${driverId}::uuid
       `);
@@ -653,7 +720,7 @@ export async function settleRevenue(params: {
 
   // ── GST: credit to company GST wallet ───────────────────────────────────
   if (gstAmount > 0) {
-    await rawDb.execute(rawSql`
+    await executor.execute(rawSql`
       UPDATE company_gst_wallet
       SET balance = balance + ${gstAmount},
           total_collected = total_collected + ${gstAmount},
@@ -666,7 +733,7 @@ export async function settleRevenue(params: {
   // ── Commission settlements audit trail ──────────────────────────────────
   const svcLabel = serviceLabel || serviceCategory || "ride";
   if (commissionOwed > 0) {
-    await rawDb.execute(rawSql`
+    await executor.execute(rawSql`
       INSERT INTO commission_settlements
         (driver_id, trip_id, settlement_type, commission_amount, gst_amount, total_amount,
          direction, balance_before, balance_after, ride_fare, service_type, description)
@@ -678,7 +745,7 @@ export async function settleRevenue(params: {
     `).catch(() => {});
   }
   if (gstAmount > 0) {
-    await rawDb.execute(rawSql`
+    await executor.execute(rawSql`
       INSERT INTO commission_settlements
         (driver_id, trip_id, settlement_type, commission_amount, gst_amount, total_amount,
          direction, balance_before, balance_after, ride_fare, service_type, description)
@@ -695,7 +762,7 @@ export async function settleRevenue(params: {
     : breakdown.model === "commission" ? "commission"
     : breakdown.model === "hybrid" ? "hybrid_fee"
     : "subscription_fee";
-  await rawDb.execute(rawSql`
+  await executor.execute(rawSql`
     INSERT INTO admin_revenue (driver_id, trip_id, amount, revenue_type, breakdown)
     VALUES (${driverId}::uuid, ${tripId}::uuid, ${deductAmount}, ${revenueType}, ${JSON.stringify(breakdown)}::jsonb)
   `).catch(() => {});
@@ -704,7 +771,7 @@ export async function settleRevenue(params: {
   const deductDesc = breakdown.model === "launch_free"
     ? `GST ₹${gstAmount} for ${svcLabel} ${tripId.slice(0, 8)}… (launch period)`
     : `Platform fee (${breakdown.model}) ₹${deductAmount} [comm:₹${breakdown.commission} + GST:₹${gstAmount} + ins:₹${breakdown.insurance}] for ${svcLabel} ${tripId.slice(0, 8)}…`;
-  await rawDb.execute(rawSql`
+  await executor.execute(rawSql`
     INSERT INTO driver_payments (driver_id, amount, payment_type, status, description)
     VALUES (${driverId}::uuid, ${deductAmount}, 'deduction', 'completed', ${deductDesc})
   `).catch(() => {});
@@ -712,13 +779,13 @@ export async function settleRevenue(params: {
   // ── Transaction record ──────────────────────────────────────────────────
   try {
     if (isOnlinePayment) {
-      await rawDb.execute(rawSql`
+      await executor.execute(rawSql`
         INSERT INTO transactions (user_id, account, credit, debit, balance, transaction_type, ref_transaction_id)
         VALUES (${driverId}::uuid, ${"Trip earnings (online " + svcLabel + ")"}, ${driverWalletCredit}, 0, ${newWalletBalance}, ${"trip_earning"}, ${tripId})
         ON CONFLICT (ref_transaction_id, transaction_type) WHERE ref_transaction_id IS NOT NULL DO NOTHING
       `);
     } else {
-      await rawDb.execute(rawSql`
+      await executor.execute(rawSql`
         INSERT INTO transactions (user_id, account, credit, debit, balance, transaction_type, ref_transaction_id)
         VALUES (${driverId}::uuid, ${"Platform fee (cash " + svcLabel + ")"}, 0, ${deductAmount}, ${newWalletBalance}, ${"commission_deduction"}, ${tripId})
         ON CONFLICT (ref_transaction_id, transaction_type) WHERE ref_transaction_id IS NOT NULL DO NOTHING

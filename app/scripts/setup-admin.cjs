@@ -72,14 +72,17 @@ if (!databaseUrl) {
     console.log('✅ admin_login_otp table ready\n');
 
     // Step 4: Get credentials from environment
-    const adminEmail = (process.env.ADMIN_EMAIL || 'admin@jagopro.com').trim().toLowerCase();
-    const adminPassword = process.env.ADMIN_PASSWORD || 'JagoAdmin@2026!';
+    const adminEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+    const adminPassword = process.env.ADMIN_PASSWORD || '';
     const adminName = (process.env.ADMIN_NAME || 'Admin').trim() || 'Admin';
+    if (!adminEmail || !adminPassword) {
+      throw new Error('ADMIN_EMAIL and ADMIN_PASSWORD are required');
+    }
 
     console.log('👤 Admin Credentials:');
     console.log(`   Email: ${adminEmail}`);
     console.log(`   Name: ${adminName}`);
-    console.log(`   Password: ${adminPassword}\n`);
+    console.log('   Password: ***set***\n');
 
     // Step 5: Hash password using bcrypt 12 rounds (OWASP recommended)
     console.log('🔐 Step 4: Hashing password (bcrypt rounds: 12)...');

@@ -29,6 +29,8 @@ class ApiConfig {
   static String get socketUrl => baseUrl;
 
   static String get loginPassword => '$baseUrl/api/app/login-password';
+  static String get forgotPassword => '$baseUrl/api/app/forgot-password';
+  static String get resetPassword => '$baseUrl/api/app/reset-password';
   static String get registerAccount => '$baseUrl/api/app/register';
   static String get refreshSession => '$baseUrl/api/app/auth/refresh';
   static String get logout => '$baseUrl/api/app/logout';

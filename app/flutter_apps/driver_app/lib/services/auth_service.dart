@@ -7,14 +7,22 @@ import '../config/api_config.dart';
 import '../main.dart' show navigatorKey;
 import '../models/user_model.dart';
 import '../screens/splash_screen.dart';
+import 'device_identity_service.dart';
 import 'fcm_service.dart';
 
 class AuthService {
   static const _tokenKey = 'auth_token';
+  static const _refreshTokenKey = 'refresh_token';
   static const _userKey = 'user_data';
   static const _userNameKey = 'user_name';
   static const _userPhoneKey = 'user_phone';
   static const _userIdKey = 'user_id';
+
+  static const Map<String, String> _base = {
+    'Content-Type': 'application/json',
+    'User-Agent': 'JAGOPro-Driver/1.0 (Android)',
+    'Accept': 'application/json',
+  };
 
   static Future<String?> getToken() async {
     final prefs = await SharedPreferences.getInstance();
@@ -26,14 +34,25 @@ class AuthService {
     await prefs.setString(_tokenKey, token.trim());
   }
 
+  static Future<void> saveRefreshToken(String? token) async {
+    final prefs = await SharedPreferences.getInstance();
+    final normalized = token?.trim() ?? '';
+    if (normalized.isEmpty) {
+      await prefs.remove(_refreshTokenKey);
+      return;
+    }
+    await prefs.setString(_refreshTokenKey, normalized);
+  }
+
   static Future<void> saveUser(Map<String, dynamic> userData) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_userKey, jsonEncode(userData));
-    // Save commonly accessed fields separately for quick reads
     final name = userData['fullName'] ?? userData['full_name'] ?? userData['name'] ?? '';
     final phone = userData['phone'] ?? '';
-    // CRITICAL: save user_id — socket_service.dart needs this to connect
-    final id = userData['id']?.toString() ?? userData['userId']?.toString() ?? userData['user_id']?.toString() ?? '';
+    final id = userData['id']?.toString() ??
+        userData['userId']?.toString() ??
+        userData['user_id']?.toString() ??
+        '';
     if (name.toString().isNotEmpty) {
       await prefs.setString(_userNameKey, name.toString());
     } else {
@@ -55,7 +74,17 @@ class AuthService {
     final prefs = await SharedPreferences.getInstance();
     final str = prefs.getString(_userKey);
     if (str == null) return null;
-    return jsonDecode(str);
+    return jsonDecode(str) as Map<String, dynamic>;
+  }
+
+  static String? _extractTripId(dynamic payload) {
+    if (payload is! Map) return null;
+    final raw = payload['id'] ??
+        payload['tripId'] ??
+        payload['trip_id'] ??
+        payload['activeTripId'] ??
+        payload['active_trip_id'];
+    return raw?.toString();
   }
 
   static Future<bool> isLoggedIn() async {
@@ -66,6 +95,7 @@ class AuthService {
   static Future<void> clearLocalSession() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_tokenKey);
+    await prefs.remove(_refreshTokenKey);
     await prefs.remove(_userKey);
     await prefs.remove(_userNameKey);
     await prefs.remove(_userPhoneKey);
@@ -85,13 +115,12 @@ class AuthService {
     if (!refreshProfile) return true;
 
     try {
-      final res = await http.get(
-        Uri.parse(ApiConfig.driverProfile),
-        headers: {
-          ..._base,
-          'Authorization': 'Bearer $token',
-        },
-      ).timeout(const Duration(seconds: 8));
+      final res = await http
+          .get(
+            Uri.parse(ApiConfig.driverProfile),
+            headers: {..._base, 'Authorization': 'Bearer $token'},
+          )
+          .timeout(const Duration(seconds: 8));
 
       if (res.statusCode == 200) {
         if ((res.headers['content-type'] ?? '').contains('application/json')) {
@@ -104,8 +133,7 @@ class AuthService {
       }
 
       if (res.statusCode == 401) {
-        await clearLocalSession();
-        return false;
+        return refreshOnce();
       }
     } on TimeoutException {
       return true;
@@ -116,71 +144,79 @@ class AuthService {
     return true;
   }
 
-  static const Map<String, String> _base = {
-    'Content-Type': 'application/json',
-    'User-Agent': 'JAGOPro-Driver/1.0 (Android)',
-    'Accept': 'application/json',
-  };
-
   static Future<Map<String, String>> getHeaders() async {
     final token = await getToken();
     return {..._base, if (token != null) 'Authorization': 'Bearer $token'};
   }
 
-  static Future<Map<String, dynamic>> sendOtp(String phone, [String userType = 'driver']) async {
-    try {
-      final res = await http.post(
-        Uri.parse(ApiConfig.sendOtp),
-        headers: _base,
-        body: jsonEncode({'phone': phone, 'userType': userType}),
-      ).timeout(const Duration(seconds: 30));
-      if (!(res.headers['content-type'] ?? '').contains('application/json')) {
-        return {'success': false, 'message': 'Server error. Please try again.'};
-      }
-      return jsonDecode(res.body) as Map<String, dynamic>;
-    } on TimeoutException {
-      return {'success': false, 'message': 'Request timed out. Check your connection.'};
-    } catch (e) {
-      return {'success': false, 'message': 'Network error. Check your connection.'};
-    }
-  }
-
-  static Future<Map<String, dynamic>> verifyOtp(String phone, String otp, [String userType = 'driver']) async {
-    try {
-      final res = await http.post(
-        Uri.parse(ApiConfig.verifyOtp),
-        headers: _base,
-        body: jsonEncode({'phone': phone, 'otp': otp, 'userType': userType}),
-      ).timeout(const Duration(seconds: 30));
-      if (!(res.headers['content-type'] ?? '').contains('application/json')) {
-        return {'success': false, 'message': 'Server error. Please try again.'};
-      }
-      final data = jsonDecode(res.body) as Map<String, dynamic>;
-      if (res.statusCode == 200 && data['token'] != null) {
-        await saveToken(data['token']);
-        await saveUser(data['user'] ?? data);
-        // Save FCM token to server after login
-        FcmService().onLoginSuccess().catchError((_) {});
-      }
-      return data;
-    } on TimeoutException {
-      return {'success': false, 'message': 'Request timed out. Check your connection.'};
-    } catch (e) {
-      return {'success': false, 'message': 'Network error. Check your connection.'};
-    }
-  }
-
   static Future<void> logout() async {
     try {
+      final prefs = await SharedPreferences.getInstance();
+      final refreshToken = prefs.getString(_refreshTokenKey)?.trim() ?? '';
+      final deviceId = await DeviceIdentityService.getDeviceId();
       final headers = await getHeaders();
-      await http.post(Uri.parse(ApiConfig.logout), headers: headers)
-          .timeout(const Duration(seconds: 30));
+      await http
+          .post(
+            Uri.parse(ApiConfig.logout),
+            headers: {...headers, 'X-Device-Id': deviceId},
+            body: jsonEncode({
+              if (refreshToken.isNotEmpty) 'refreshToken': refreshToken,
+            }),
+          )
+          .timeout(
+            const Duration(seconds: 30),
+          );
     } catch (_) {}
     await clearLocalSession();
   }
 
-  /// Call when server returns 401 — clears session and redirects to login.
-  static Future<void> handle401() async {
+  static Future<bool> refreshOnce() {
+    return _refreshSession();
+  }
+
+  static Future<String?> getActiveTripId() async {
+    try {
+      final headers = await getHeaders();
+      final res = await http
+          .get(Uri.parse(ApiConfig.driverActiveTrip), headers: headers)
+          .timeout(const Duration(seconds: 8));
+      if (res.statusCode != 200 ||
+          !(res.headers['content-type'] ?? '').contains('application/json')) {
+        return null;
+      }
+
+      final body = jsonDecode(res.body);
+      if (body is! Map<String, dynamic>) return null;
+      return _extractTripId(body['trip']) ??
+          _extractTripId(body['activeTrip']) ??
+          _extractTripId(body);
+    } on TimeoutException {
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<bool> hasActiveTripSession() async {
+    final tripId = await getActiveTripId();
+    return tripId != null && tripId.isNotEmpty;
+  }
+
+  static Future<bool> safeLogout() async {
+    if (await hasActiveTripSession()) {
+      return false;
+    }
+    await logout();
+    return true;
+  }
+
+  static Future<void> handle401({
+    String source = 'driver_app',
+    bool allowDuringActiveTrip = false,
+  }) async {
+    if (allowDuringActiveTrip && await hasActiveTripSession()) {
+      return;
+    }
     await clearLocalSession();
     navigatorKey.currentState?.pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => const SplashScreen()),
@@ -191,10 +227,11 @@ class AuthService {
   static Future<UserModel?> getProfile() async {
     try {
       final headers = await getHeaders();
-      final res = await http.get(Uri.parse(ApiConfig.driverProfile), headers: headers)
+      final res = await http
+          .get(Uri.parse(ApiConfig.driverProfile), headers: headers)
           .timeout(const Duration(seconds: 30));
       if (res.statusCode == 200) {
-        return UserModel.fromJson(jsonDecode(res.body));
+        return UserModel.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
       }
     } on TimeoutException {
       return null;
@@ -202,50 +239,45 @@ class AuthService {
     return null;
   }
 
-  static Future<Map<String, dynamic>> loginWithPassword(String phone, String password) async {
+  static Future<Map<String, dynamic>> loginWithPassword(
+    String phone,
+    String password,
+  ) async {
     try {
-      final res = await http.post(Uri.parse(ApiConfig.loginPassword),
-        headers: _base,
-        body: jsonEncode({'phone': phone, 'password': password, 'userType': 'driver'}))
-          .timeout(const Duration(seconds: 30));
-      if (!(res.headers['content-type'] ?? '').contains('application/json')) {
-        return {'success': false, 'message': 'Server error. Please try again.'};
-      }
-      final data = jsonDecode(res.body);
-      if (res.statusCode == 200 && data['token'] != null) {
-        await saveToken(data['token']);
-        await saveUser(data['user'] ?? data);
-        FcmService().onLoginSuccess().catchError((_) {});
-      }
-      return data;
-    } on TimeoutException {
-      return {'success': false, 'message': 'Request timed out. Check your connection.'};
-    } catch (e) {
-      return {'success': false, 'message': 'Network error. Check your connection.'};
-    }
-  }
-
-  /// Verify a Firebase Phone Auth ID token with our server.
-  static Future<Map<String, dynamic>> verifyFirebaseToken(String idToken, String phone, [String userType = 'driver']) async {
-    try {
-      final res = await http.post(Uri.parse(ApiConfig.verifyFirebaseToken),
-        headers: _base,
-        body: jsonEncode({'firebaseIdToken': idToken, 'phone': phone, 'userType': userType}))
+      final deviceId = await DeviceIdentityService.getDeviceId();
+      final res = await http
+          .post(
+            Uri.parse(ApiConfig.loginPassword),
+            headers: {..._base, 'X-Device-Id': deviceId},
+            body: jsonEncode({
+              'phone': phone,
+              'password': password,
+              'userType': 'driver',
+              'deviceId': deviceId,
+            }),
+          )
           .timeout(const Duration(seconds: 30));
       if (!(res.headers['content-type'] ?? '').contains('application/json')) {
         return {'success': false, 'message': 'Server error. Please try again.'};
       }
       final data = jsonDecode(res.body) as Map<String, dynamic>;
       if (res.statusCode == 200 && data['token'] != null) {
-        await saveToken(data['token']);
-        await saveUser(data['user'] ?? data);
+        await saveToken(data['token'].toString());
+        await saveRefreshToken(data['refreshToken']?.toString());
+        await saveUser((data['user'] ?? data) as Map<String, dynamic>);
         FcmService().onLoginSuccess().catchError((_) {});
       }
       return data;
     } on TimeoutException {
-      return {'success': false, 'message': 'Request timed out. Check your connection.'};
-    } catch (e) {
-      return {'success': false, 'message': 'Network error. Check your connection.'};
+      return {
+        'success': false,
+        'message': 'Request timed out. Check your connection.',
+      };
+    } catch (_) {
+      return {
+        'success': false,
+        'message': 'Network error. Check your connection.',
+      };
     }
   }
 
@@ -260,80 +292,128 @@ class AuthService {
     String? referralCode,
   }) async {
     try {
-      final body = <String, dynamic>{'phone': phone, 'password': password, 'fullName': fullName, 'userType': 'driver'};
+      final deviceId = await DeviceIdentityService.getDeviceId();
+      final body = <String, dynamic>{
+        'phone': phone,
+        'password': password,
+        'fullName': fullName,
+        'userType': 'driver',
+        'deviceId': deviceId,
+      };
       if (email != null && email.isNotEmpty) body['email'] = email;
       if (referralCode != null && referralCode.trim().isNotEmpty) {
         body['referralCode'] = referralCode.trim().toUpperCase();
       }
-      final res = await http.post(Uri.parse(ApiConfig.registerAccount),
-        headers: _base,
-        body: jsonEncode(body))
+      final res = await http
+          .post(
+            Uri.parse(ApiConfig.registerAccount),
+            headers: {..._base, 'X-Device-Id': deviceId},
+            body: jsonEncode(body),
+          )
           .timeout(const Duration(seconds: 30));
       if (!(res.headers['content-type'] ?? '').contains('application/json')) {
         return {'success': false, 'message': 'Server error. Please try again.'};
       }
-      final data = jsonDecode(res.body);
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
       if (res.statusCode == 200 && data['token'] != null) {
-        await saveToken(data['token']);
-        await saveUser(data['user'] ?? data);
+        await saveToken(data['token'].toString());
+        await saveRefreshToken(data['refreshToken']?.toString());
+        await saveUser((data['user'] ?? data) as Map<String, dynamic>);
         FcmService().onLoginSuccess().catchError((_) {});
       }
       return data;
     } on TimeoutException {
-      return {'success': false, 'message': 'Request timed out. Check your connection.'};
-    } catch (e) {
-      return {'success': false, 'message': 'Network error. Check your connection.'};
+      return {
+        'success': false,
+        'message': 'Request timed out. Check your connection.',
+      };
+    } catch (_) {
+      return {
+        'success': false,
+        'message': 'Network error. Check your connection.',
+      };
     }
   }
 
   static Future<Map<String, dynamic>> forgotPassword(String phone) async {
     try {
-      final res = await http.post(Uri.parse(ApiConfig.forgotPassword),
-        headers: _base,
-        body: jsonEncode({'phone': phone, 'userType': 'driver'}))
+      final res = await http
+          .post(
+            Uri.parse(ApiConfig.forgotPassword),
+            headers: _base,
+            body: jsonEncode({'phone': phone, 'userType': 'driver'}),
+          )
           .timeout(const Duration(seconds: 30));
       if (!(res.headers['content-type'] ?? '').contains('application/json')) {
         return {'success': false, 'message': 'Server error. Please try again.'};
       }
-      return jsonDecode(res.body);
+      return jsonDecode(res.body) as Map<String, dynamic>;
     } on TimeoutException {
-      return {'success': false, 'message': 'Request timed out. Check your connection.'};
-    } catch (e) {
-      return {'success': false, 'message': 'Network error. Check your connection.'};
+      return {
+        'success': false,
+        'message': 'Request timed out. Check your connection.',
+      };
+    } catch (_) {
+      return {
+        'success': false,
+        'message': 'Network error. Check your connection.',
+      };
     }
   }
 
-  static Future<Map<String, dynamic>> resetPassword(String phone, String otp, String newPassword) async {
-    try {
-      final res = await http.post(Uri.parse(ApiConfig.resetPassword),
-        headers: _base,
-        body: jsonEncode({'phone': phone, 'otp': otp, 'newPassword': newPassword, 'userType': 'driver'}))
-          .timeout(const Duration(seconds: 30));
-      if (!(res.headers['content-type'] ?? '').contains('application/json')) {
-        return {'success': false, 'message': 'Server error. Please try again.'};
-      }
-      return jsonDecode(res.body);
-    } on TimeoutException {
-      return {'success': false, 'message': 'Request timed out. Check your connection.'};
-    } catch (e) {
-      return {'success': false, 'message': 'Network error. Check your connection.'};
-    }
+  static Future<Map<String, dynamic>> resetPassword(
+    String phone,
+    String otp,
+    String newPassword,
+  ) async {
+    return {
+      'success': false,
+      'message': 'OTP password reset is disabled. Contact support.',
+      'code': 'AUTH_OTP_DISABLED',
+    };
   }
 
-  static Future<Map<String, dynamic>> resetPasswordWithFirebase(String firebaseIdToken, String phone, String newPassword) async {
-    try {
-      final res = await http.post(Uri.parse(ApiConfig.resetPasswordFirebase),
-        headers: _base,
-        body: jsonEncode({'firebaseIdToken': firebaseIdToken, 'phone': phone, 'newPassword': newPassword, 'userType': 'driver'}))
-          .timeout(const Duration(seconds: 30));
-      if (!(res.headers['content-type'] ?? '').contains('application/json')) {
-        return {'success': false, 'message': 'Server error. Please try again.'};
+  static Future<bool> _refreshSession({bool clearOnFailure = true}) async {
+    final prefs = await SharedPreferences.getInstance();
+    final refreshToken = prefs.getString(_refreshTokenKey)?.trim() ?? '';
+    if (refreshToken.isEmpty) {
+      if (clearOnFailure) {
+        await clearLocalSession();
       }
-      return jsonDecode(res.body);
-    } on TimeoutException {
-      return {'success': false, 'message': 'Request timed out. Check your connection.'};
-    } catch (e) {
-      return {'success': false, 'message': 'Network error. Check your connection.'};
+      return false;
     }
+
+    try {
+      final deviceId = await DeviceIdentityService.getDeviceId();
+      final res = await http
+          .post(
+            Uri.parse(ApiConfig.refreshSession),
+            headers: {..._base, 'X-Device-Id': deviceId},
+            body: jsonEncode({
+              'refreshToken': refreshToken,
+              'deviceId': deviceId,
+            }),
+          )
+          .timeout(const Duration(seconds: 20));
+      if (!(res.headers['content-type'] ?? '').contains('application/json')) {
+        if (clearOnFailure) {
+          await clearLocalSession();
+        }
+        return false;
+      }
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && data['token'] != null) {
+        await saveToken(data['token'].toString());
+        await saveRefreshToken(data['refreshToken']?.toString());
+        return true;
+      }
+    } on TimeoutException {
+      return false;
+    } catch (_) {}
+
+    if (clearOnFailure) {
+      await clearLocalSession();
+    }
+    return false;
   }
 }

@@ -1,7 +1,8 @@
 import axios from 'axios';
 
 async function testGoogle(headers: any, desc: string) {
-  const apiKey = 'AIzaSyDj3UNBM04zhLbnKrYQa_8WQ9anNXhOcY4';
+  const apiKey = process.env.GOOGLE_MAPS_API_KEY;
+  if (!apiKey) throw new Error('GOOGLE_MAPS_API_KEY is required');
   const query = 'bengaluru';
   const url = `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${query}&key=${apiKey}&components=country:in`;
 

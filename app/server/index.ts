@@ -28,7 +28,10 @@ try {
   const env = parseEnv();
   validateProductionReadiness(env);
 } catch (startupErr: any) {
-  console.error("[startup] Config warning (non-fatal):", startupErr.message);
+  console.error("[startup] Invalid production configuration:", startupErr.message);
+  if (process.env.NODE_ENV === "production") {
+    process.exit(1);
+  }
 }
 
 const app = express();
@@ -217,9 +220,18 @@ async function loadRuntimeConfigFromDb() {
 
 async function setupSocketRedisAdapter() {
   try {
+    const redisUrl = (process.env.REDIS_URL || "").trim();
+    if (!redisUrl) {
+      const message = "REDIS_URL is required for the Socket.IO Redis adapter";
+      if (process.env.NODE_ENV === "production") {
+        throw new Error(message);
+      }
+      log(`[Socket.IO] ${message}; using in-memory adapter outside production`);
+      return;
+    }
+
     const { createAdapter } = await import("@socket.io/redis-adapter");
     const { default: IORedis } = await import("ioredis");
-    const redisUrl = process.env.REDIS_URL || "redis://localhost:6379";
     const pubClient = new IORedis(redisUrl, {
       lazyConnect: true,
       enableOfflineQueue: true,
@@ -243,6 +255,9 @@ async function setupSocketRedisAdapter() {
     socketIo.adapter(createAdapter(pubClient, subClient));
     log("[Socket.IO] Redis adapter connected");
   } catch (error: any) {
+    if (process.env.NODE_ENV === "production") {
+      throw error;
+    }
     log(`[Socket.IO] Redis unavailable, using in-memory adapter: ${error.message}`);
   }
 }
@@ -441,8 +456,9 @@ const port = parseInt(process.env.PORT || "5000", 10);
     log("[server] API routes registered OK");
   } catch (e: any) {
     bootstrapError = `route_registration_failed:${e.message}`;
-    console.error("[routes] Failed to register routes (server stays alive):", e.message);
+    console.error("[routes] Failed to register routes:", e.message);
     sendAlert({ level: "critical", source: "routes", message: "Failed to register API routes", details: String(e.message || e) }).catch(() => { });
+    return;
   }
 
   // ─── STEP 3: Static files ───
@@ -464,16 +480,32 @@ const port = parseInt(process.env.PORT || "5000", 10);
     bootstrapError = `migration_failed:${e.message}`;
     console.error("[db] Drizzle migration failed:", e.message);
     sendAlert({ level: "critical", source: "migrations", message: "Drizzle migrations failed", details: e.message }).catch(() => {});
+    return;
   }
 
   // ─── STEP 5: Apply custom hardening migration ───
   try {
     await applySqlMigrationsFromDir(path.join(currentDir, "migrations"));
   } catch (e: any) {
-    log(`[migration] production SQL migrations failed (non-fatal): ${e.message}`);
+    bootstrapError = `sql_migration_failed:${e.message}`;
+    log(`[migration] production SQL migrations failed: ${e.message}`);
+    if (process.env.NODE_ENV === "production") {
+      sendAlert({ level: "critical", source: "migrations", message: "SQL migrations failed", details: e.message }).catch(() => {});
+      return;
+    }
   }
 
   // ─── STEP 6: Mark server ready — health probe passes from here ───
+  try {
+    setupSocket(httpServer);
+    await setupSocketRedisAdapter();
+  } catch (e: any) {
+    bootstrapError = `socket_init_failed:${e.message}`;
+    console.error("[socket] Failed to initialize Socket.IO:", e.message);
+    sendAlert({ level: "critical", source: "socket", message: "Socket.IO initialization failed", details: String(e.message || e) }).catch(() => {});
+    return;
+  }
+
   bootstrapReady = true;
   bootstrapError = null;
   console.log(`BOOT READY port=${port}`);
@@ -496,21 +528,11 @@ const port = parseInt(process.env.PORT || "5000", 10);
   }, 3000);
 
   // ─── BACKGROUND INITIALIZATION (non-blocking) ───
-  setupSocket(httpServer);
-
   (async () => {
     try {
       await loadRuntimeConfigFromDb();
     } catch (e: any) {
       log(`[config] Could not load DB settings (non-fatal): ${e.message}`);
-    }
-  })();
-
-  (async () => {
-    try {
-      await setupSocketRedisAdapter();
-    } catch (err: any) {
-      log(`[Socket.IO] Redis adapter initialization failed: ${err.message}`);
     }
   })();
 

@@ -25,6 +25,21 @@ log "=============================================="
 log " JAGO Platform - DigitalOcean Setup"
 log "=============================================="
 
+require_secret() {
+  local key="$1"
+  local prompt="$2"
+  local current_value="${!key}"
+  if [ -n "$current_value" ]; then
+    return 0
+  fi
+  echo ""
+  warn "$prompt"
+  echo -n "$key: "
+  read -r current_value
+  [ -z "$current_value" ] && err "$key is required."
+  export "$key=$current_value"
+}
+
 # ── Ask for DATABASE_URL if not already set ──────────────────
 if [ -z "$DATABASE_URL" ] && [ -f "/var/www/jago/.env" ]; then
   DB_FROM_ENV=$(grep "^DATABASE_URL=" /var/www/jago/.env 2>/dev/null | cut -d= -f2-)
@@ -79,8 +94,8 @@ if [ -d "/var/www/jago/.git" ]; then
   log "Repo exists - pulling latest..."
   cd /var/www/jago
   git fetch origin
-  git reset --hard origin/master
-  git clean -fd
+  git checkout master
+  git pull --ff-only origin master || err "Fast-forward pull failed. Resolve local changes manually before deploying."
 else
   git clone https://github.com/jagopro452-cloud/jago.git /var/www/jago
 fi
@@ -89,16 +104,20 @@ cd /var/www/jago
 # ── 7. Write .env ────────────────────────────────────────────
 log "[7/9] Writing .env..."
 OPS_KEY="jago-ops-$(openssl rand -hex 8)"
+require_secret "ADMIN_EMAIL" "Enter the production admin email address."
+require_secret "ADMIN_PASSWORD" "Enter a strong production admin password."
+require_secret "ADMIN_RESET_KEY" "Enter a unique admin reset key."
+require_secret "GOOGLE_MAPS_API_KEY" "Enter the production Google Maps API key."
 cat > /var/www/jago/.env << ENVEOF
 NODE_ENV=production
 PORT=5000
 DATABASE_URL=${DATABASE_URL}
-ADMIN_EMAIL=kiranatmakuri518@gmail.com
-ADMIN_PASSWORD=JagoAdmin@2026!
+ADMIN_EMAIL=${ADMIN_EMAIL}
+ADMIN_PASSWORD=${ADMIN_PASSWORD}
 ADMIN_NAME=Admin
-ADMIN_RESET_KEY=JagoReset2026
+ADMIN_RESET_KEY=${ADMIN_RESET_KEY}
 OPS_API_KEY=${OPS_KEY}
-GOOGLE_MAPS_API_KEY=AIzaSyBJIuefXlqcKNsIssYHQP6lpIWQ3ih4_Z8
+GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY}
 RAZORPAY_KEY_ID=
 RAZORPAY_KEY_SECRET=
 RAZORPAY_WEBHOOK_SECRET=
@@ -174,8 +193,8 @@ echo ""
 echo -e "${CYAN}Server IP   :${NC}  $SERVER_IP"
 echo -e "${CYAN}App URL     :${NC}  http://$SERVER_IP"
 echo -e "${CYAN}Admin Panel :${NC}  http://$SERVER_IP/admin"
-echo -e "${CYAN}Admin Email :${NC}  kiranatmakuri518@gmail.com"
-echo -e "${CYAN}Admin Pass  :${NC}  JagoAdmin@2026!"
+echo -e "${CYAN}Admin Email :${NC}  ${ADMIN_EMAIL}"
+echo -e "${CYAN}Admin Pass  :${NC}  [hidden]"
 echo ""
 echo -e "${YELLOW}--- STEP A: Point DNS (Cloudflare/GoDaddy) ---${NC}"
 echo "  jagopro.org  A record  ->  $SERVER_IP"

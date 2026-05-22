@@ -1,4 +1,4 @@
-import express from "express";
+﻿import express from "express";
 import type { Express, Request, Response, NextFunction } from "express";
 import { log } from "./index";
 import { getFirebaseAdminAsync, notifyDriverNewRide, notifyDriverNewParcel, notifyCustomerDriverAccepted, notifyCustomerDriverArrived, notifyCustomerTripCompleted, notifyTripCancelled, sendFcmNotification } from "./fcm";
@@ -39,6 +39,18 @@ import {
   clearTripWaypoints,
 } from "./ai";
 import { isTrue, isFalse, parseEnv } from "./config/env";
+import {
+  authenticateAppAccessToken,
+  issueAppSession,
+  refreshAppSession,
+  revokeAppSession,
+} from "./auth/app-session";
+import {
+  authenticateAdminAccessToken,
+  issueAdminSession as issueAdminJwtSession,
+  refreshAdminSession,
+  revokeAdminSession,
+} from "./auth/admin-session";
 import {
   startDispatch,
   onDriverAccepted,
@@ -177,6 +189,7 @@ import {
   getTripStatusForCustomer,
   boostrFareOffer,
 } from "./hardening-routes";
+import { processOutboxBatch } from "./outbox";
 
 // -- Multer upload setup -------------------------------------------------------
 const uploadsDir = path.join(process.cwd(), "public", "uploads");
@@ -280,11 +293,11 @@ function formatDbError(err: any): string {
   }
 }
 
-/** dbCatch � logs DB errors instead of silently swallowing them. Use in place of .catch(dbCatch("db")). */
+/** dbCatch ï¿½ logs DB errors instead of silently swallowing them. Use in place of .catch(dbCatch("db")). */
 function dbCatch(label: string) {
   return (err: any) => { console.error(`[db:${label}]`, formatDbError(err)); };
 }
-/** dbCatchRows � logs DB read errors and returns empty rows fallback. */
+/** dbCatchRows ï¿½ logs DB read errors and returns empty rows fallback. */
 function dbCatchRows(label: string): (err: any) => { rows: any[] } {
   return (err: any) => { console.error(`[db:${label}]`, formatDbError(err)); return { rows: [] as any[] }; };
 }
@@ -335,8 +348,8 @@ function pointInPolygon(lat: number, lng: number, ring: number[][]): boolean {
 }
 
 /** Auto-detect which DB zone a lat/lng falls inside. Returns zone UUID or null.
- *  Pass 1: polygon (GeoJSON) � exact boundary check.
- *  Pass 2: radius fallback � if zone has center lat/lng set, check haversine distance = radius_km.
+ *  Pass 1: polygon (GeoJSON) ï¿½ exact boundary check.
+ *  Pass 2: radius fallback ï¿½ if zone has center lat/lng set, check haversine distance = radius_km.
  */
 async function detectZoneId(lat: number, lng: number): Promise<string | null> {
   if (!lat || !lng) return null;
@@ -377,19 +390,19 @@ function computeEtaMinutes(distanceKm: number, avgSpeedKmph = 25): number {
   return Math.max(1, Math.round((distanceKm / avgSpeedKmph) * 60));
 }
 
-/** safeFloat � parses to float with a mandatory fallback, preventing NaN in fare calculations. */
+/** safeFloat ï¿½ parses to float with a mandatory fallback, preventing NaN in fare calculations. */
 function safeFloat(value: any, fallback: number): number {
   const n = parseFloat(value);
   return isFinite(n) ? n : fallback;
 }
 
-/** safeInteger � parses to integer with a mandatory fallback, preventing NaN. */
+/** safeInteger ï¿½ parses to integer with a mandatory fallback, preventing NaN. */
 function safeInteger(value: any, fallback: number): number {
   const n = parseInt(String(value), 10);
   return isFinite(n) ? n : fallback;
 }
 
-/** validateCoordinate � validates latitude or longitude is within valid bounds. */
+/** validateCoordinate ï¿½ validates latitude or longitude is within valid bounds. */
 function validateCoordinate(value: any, isLatitude = true): number | null {
   const n = parseFloat(value);
   if (!isFinite(n)) return null;
@@ -397,7 +410,7 @@ function validateCoordinate(value: any, isLatitude = true): number | null {
   return n >= min && n <= max ? n : null;
 }
 
-/** validateLatLng � validates a lat/lng pair; throws on invalid. */
+/** validateLatLng ï¿½ validates a lat/lng pair; throws on invalid. */
 function validateLatLng(lat: any, lng: any): { lat: number; lng: number } {
   const validLat = validateCoordinate(lat, true);
   const validLng = validateCoordinate(lng, false);
@@ -407,7 +420,7 @@ function validateLatLng(lat: any, lng: any): { lat: number; lng: number } {
   return { lat: validLat, lng: validLng };
 }
 
-/** validateMoneyAmount � validates amount is non-negative and within reasonable bounds. */
+/** validateMoneyAmount ï¿½ validates amount is non-negative and within reasonable bounds. */
 function validateMoneyAmount(value: any, maxAmount = 999999999): number {
   const n = parseFloat(value);
   if (!isFinite(n) || n < 0 || n > maxAmount) {
@@ -416,7 +429,7 @@ function validateMoneyAmount(value: any, maxAmount = 999999999): number {
   return n;
 }
 
-/** validateEnumValue � validates value is in allowed set. */
+/** validateEnumValue ï¿½ validates value is in allowed set. */
 function validateEnumValue(value: any, allowed: string[]): string {
   const s = String(value || "").trim();
   if (!allowed.includes(s)) {
@@ -496,7 +509,7 @@ function numberOrUndefined(value: unknown): number | undefined {
 }
 
 
-// Login rate limiter � max 5 attempts per 15 minutes per IP
+// Login rate limiter ï¿½ max 5 attempts per 15 minutes per IP
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5,
@@ -506,7 +519,7 @@ const loginLimiter = rateLimit({
   validate: { xForwardedForHeader: false },
 });
 
-// OTP rate limiter � max 10 requests per hour per IP (extra protection beyond per-phone DB check)
+// OTP rate limiter ï¿½ max 10 requests per hour per IP (extra protection beyond per-phone DB check)
 const otpLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 10,
@@ -516,7 +529,7 @@ const otpLimiter = rateLimit({
   validate: { xForwardedForHeader: false },
 });
 
-// App API general rate limiter � max 300 requests per minute per IP
+// App API general rate limiter ï¿½ max 300 requests per minute per IP
 const appLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 300,
@@ -526,7 +539,7 @@ const appLimiter = rateLimit({
   validate: { xForwardedForHeader: false },
 });
 
-// Nearby-drivers rate limiter � max 30 requests per minute per IP (prevents driver tracking abuse)
+// Nearby-drivers rate limiter ï¿½ max 30 requests per minute per IP (prevents driver tracking abuse)
 const nearbyDriversLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 30,
@@ -554,7 +567,7 @@ const paymentOrderLimiter = rateLimit({
   validate: { xForwardedForHeader: false },
 });
 
-// Admin data creation rate limiter � max 30 creates per hour per admin (prevents abuse)
+// Admin data creation rate limiter ï¿½ max 30 creates per hour per admin (prevents abuse)
 const adminDataLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 30,
@@ -575,7 +588,7 @@ const AI_ASSISTANT_SERVICE_URL = (process.env.AI_ASSISTANT_SERVICE_URL || "").re
 if (!VOICE_BOOKING_ENABLED) {
   console.log("[VOICE] Experimental voice booking is disabled; external AI assistant dependency removed from production path.");
 } else if (AI_ASSISTANT_SERVICE_URL.includes('localhost') && process.env.NODE_ENV === 'production') {
-  console.warn("[WARN] AI_ASSISTANT_SERVICE_URL points to localhost in production. Voice-intent AI microservice will be SKIPPED � set AI_ASSISTANT_SERVICE_URL env var to enable it.");
+  console.warn("[WARN] AI_ASSISTANT_SERVICE_URL points to localhost in production. Voice-intent AI microservice will be SKIPPED ï¿½ set AI_ASSISTANT_SERVICE_URL env var to enable it.");
 }
 
 // -- Claude AI voice intent parser --------------------------------------------
@@ -630,7 +643,7 @@ Vehicle type rules:
 Language support:
 - Telugu: kavali=need, pampali=send, ride=ride, parcel=parcel
 - Hindi: chahiye=need, bhejo=send, savari=ride
-- Mixed/Hinglish is normal � handle it
+- Mixed/Hinglish is normal ï¿½ handle it
 
 Special: if pickup is clearly the current user location (like "here", "current location", "yahan", "ikada") ? return pickup=null (app uses GPS).
 If no clear destination ? return destination=null.
@@ -681,7 +694,7 @@ async function parseVoiceIntentOrchestrated(text: string): Promise<{ parsed: any
   if (!VOICE_BOOKING_ENABLED) {
     return { parserSource: "monolith-fallback", parsed: parseVoiceIntent(text) };
   }
-  // 1. Try external AI microservice � skip if it's the default localhost (not deployed)
+  // 1. Try external AI microservice ï¿½ skip if it's the default localhost (not deployed)
   const isExternalService = AI_ASSISTANT_SERVICE_URL && !AI_ASSISTANT_SERVICE_URL.includes('localhost');
   if (isExternalService) try {
     const r = await fetch(`${AI_ASSISTANT_SERVICE_URL}/internal/voice/intent`, {
@@ -707,7 +720,7 @@ async function parseVoiceIntentOrchestrated(text: string): Promise<{ parsed: any
     }
   } catch (_) { } // end external microservice block
 
-  // 2. Claude AI (Haiku) � fast, cheap, understands Telugu/Hindi/all Indian languages
+  // 2. Claude AI (Haiku) ï¿½ fast, cheap, understands Telugu/Hindi/all Indian languages
   const claudeParsed = await parseVoiceIntentWithClaude(text);
   if (claudeParsed) {
     return { parserSource: "claude-ai", parsed: claudeParsed };
@@ -717,7 +730,7 @@ async function parseVoiceIntentOrchestrated(text: string): Promise<{ parsed: any
   return { parserSource: "monolith-fallback", parsed: parseVoiceIntent(text) };
 }
 const runtimeEnv = parseEnv();
-// In production 2FA is ON by default � disable only with ADMIN_2FA_REQUIRED=false
+// In production 2FA is ON by default ï¿½ disable only with ADMIN_2FA_REQUIRED=false
 const requireAdminTwoFactor = runtimeEnv.NODE_ENV === "production"
   ? !isFalse(runtimeEnv.ADMIN_2FA_REQUIRED)
   : isTrue(runtimeEnv.ADMIN_2FA_REQUIRED);
@@ -728,15 +741,26 @@ function extractBearerToken(req: Request): string | null {
   return auth.slice("Bearer ".length).trim() || null;
 }
 
-async function issueAdminSession(adminId: string) {
-  const sessionToken = `${adminId}:${crypto.randomBytes(32).toString("hex")}`;
-  const expiresAt = new Date(Date.now() + ADMIN_SESSION_TTL_HOURS * 60 * 60 * 1000);
+function getAdminDeviceId(req: Request) {
+  return String(req.body?.deviceId || req.get("x-device-id") || `admin-${crypto.randomUUID()}`).trim();
+}
+
+async function issueAdminSession(adminId: string, req: Request) {
+  const session = await issueAdminJwtSession(adminId, {
+    deviceId: getAdminDeviceId(req),
+    ipAddress: req.ip,
+    userAgent: req.get("user-agent") || null,
+  });
   await rawDb.execute(rawSql`
     UPDATE admins
-    SET auth_token=${sessionToken}, auth_token_expires_at=${expiresAt.toISOString()}, last_login_at=NOW()
+    SET last_login_at=NOW()
     WHERE id=${adminId}::uuid
-  `);
-  return { sessionToken, expiresAt };
+  `).catch(dbCatch("db"));
+  return {
+    sessionToken: session.accessToken,
+    refreshToken: session.refreshToken,
+    expiresAt: new Date(session.accessTokenExpiresAt),
+  };
 }
 
 function requireAdminRole(allowedRoles: string[]) {
@@ -763,14 +787,17 @@ async function requireAdminAuth(req: Request, res: Response, next: NextFunction)
   const token = extractBearerToken(req);
   if (!token) return res.status(401).json({ message: "Admin authorization required" });
   try {
+    const session = await authenticateAdminAccessToken(token);
+    if (!session) return res.status(401).json({ message: "Admin session expired. Please login again." });
     const r = await rawDb.execute(rawSql`
       SELECT id, name, email, role, is_active FROM admins
-      WHERE auth_token=${token} AND is_active=true
-        AND (auth_token_expires_at IS NULL OR auth_token_expires_at > NOW())
+      WHERE id=${session.adminId}::uuid
+        AND is_active=true
       LIMIT 1
     `);
     if (!r.rows.length) return res.status(401).json({ message: "Admin session expired. Please login again." });
     (req as any).adminUser = camelize(r.rows[0]);
+    (req as any).adminSession = session;
     next();
   } catch (_e: any) {
     res.status(401).json({ message: "Admin authentication failed" });
@@ -779,11 +806,11 @@ async function requireAdminAuth(req: Request, res: Response, next: NextFunction)
 
 async function ensureAdminExists() {
   const adminEmail = (process.env.ADMIN_EMAIL || "").trim().toLowerCase();
-  if (!adminEmail) { console.error("[SECURITY] ADMIN_EMAIL env var not set � skipping admin sync."); return; }
+  if (!adminEmail) { console.error("[SECURITY] ADMIN_EMAIL env var not set ï¿½ skipping admin sync."); return; }
   const adminName = (process.env.ADMIN_NAME || "Admin").trim() || "Admin";
   const adminPassword = process.env.ADMIN_PASSWORD;
   if (!adminPassword) {
-    console.error("[SECURITY] ADMIN_PASSWORD env var not set � skipping admin password sync. Set ADMIN_PASSWORD in .do/app.yaml or .env");
+    console.error("[SECURITY] ADMIN_PASSWORD env var not set ï¿½ skipping admin password sync. Set ADMIN_PASSWORD in .do/app.yaml or .env");
     return;
   }
 
@@ -800,20 +827,53 @@ async function ensureAdminExists() {
         password VARCHAR(191) NOT NULL,
         role VARCHAR(50) NOT NULL DEFAULT 'admin',
         is_active BOOLEAN NOT NULL DEFAULT true,
-        auth_token TEXT,
-        auth_token_expires_at TIMESTAMP,
         last_login_at TIMESTAMP,
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
   } catch (e: any) { console.error("[admin] create admins table:", formatDbError(e)); }
 
+  try {
+    await rawDb.execute(rawSql`
+      CREATE TABLE IF NOT EXISTS admin_sessions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        admin_id UUID NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+        token TEXT NOT NULL UNIQUE,
+        device_id TEXT NOT NULL,
+        ip_address TEXT,
+        user_agent TEXT,
+        expires_at TIMESTAMP NOT NULL,
+        revoked BOOLEAN NOT NULL DEFAULT false,
+        revoked_at TIMESTAMP,
+        last_active_at TIMESTAMP DEFAULT NOW(),
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await rawDb.execute(rawSql`
+      CREATE TABLE IF NOT EXISTS admin_refresh_tokens (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        admin_id UUID NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+        session_id UUID NOT NULL REFERENCES admin_sessions(id) ON DELETE CASCADE,
+        token TEXT NOT NULL UNIQUE,
+        device_id TEXT NOT NULL,
+        ip_address TEXT,
+        user_agent TEXT,
+        expires_at TIMESTAMP NOT NULL,
+        revoked BOOLEAN NOT NULL DEFAULT false,
+        revoked_at TIMESTAMP,
+        replaced_by_token TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+  } catch (e: any) { console.error("[admin] create session tables:", formatDbError(e)); }
+
   // -- Self-heal: add missing columns that may not exist on older deployments --
-  await rawDb.execute(rawSql`ALTER TABLE admins ADD COLUMN IF NOT EXISTS auth_token TEXT`).catch(dbCatch("db"));
-  await rawDb.execute(rawSql`ALTER TABLE admins ADD COLUMN IF NOT EXISTS auth_token_expires_at TIMESTAMP`).catch(dbCatch("db"));
   await rawDb.execute(rawSql`ALTER TABLE admins ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP`).catch(dbCatch("db"));
   await rawDb.execute(rawSql`ALTER TABLE admins ADD COLUMN IF NOT EXISTS role VARCHAR(50) NOT NULL DEFAULT 'admin'`).catch(dbCatch("db"));
   await rawDb.execute(rawSql`ALTER TABLE admins ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true`).catch(dbCatch("db"));
+  await rawDb.execute(rawSql`DROP INDEX IF EXISTS idx_admins_auth_token`).catch(dbCatch("db"));
+  await rawDb.execute(rawSql`ALTER TABLE admins DROP COLUMN IF EXISTS auth_token_expires_at`).catch(dbCatch("db"));
+  await rawDb.execute(rawSql`ALTER TABLE admins DROP COLUMN IF EXISTS auth_token`).catch(dbCatch("db"));
 
   try {
     await rawDb.execute(rawSql`
@@ -827,7 +887,10 @@ async function ensureAdminExists() {
       )
     `);
   } catch (_) { }
-  try { await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_admins_auth_token ON admins(auth_token)`); } catch (_) { }
+  try { await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_admin_sessions_token ON admin_sessions(token)`); } catch (_) { }
+  try { await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_admin_sessions_admin_id ON admin_sessions(admin_id)`); } catch (_) { }
+  try { await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_admin_refresh_tokens_token ON admin_refresh_tokens(token)`); } catch (_) { }
+  try { await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_admin_refresh_tokens_session_id ON admin_refresh_tokens(session_id)`); } catch (_) { }
   try { await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_admin_login_otp_admin_created ON admin_login_otp(admin_id, created_at DESC)`); } catch (_) { }
 
   // -- Step 2: Seed / sync admin account using rawDb (never uses Drizzle ORM table refs)
@@ -856,7 +919,7 @@ async function ensureAdminExists() {
         }
         console.log(`[admin] Migrated admin ? ${adminEmail}, password synced`);
       } else {
-        // No admin at all � create one
+        // No admin at all ï¿½ create one
         const createHash = await hashPassword(adminPassword);
         await rawDb.execute(rawSql`
           INSERT INTO admins (name, email, password, role, is_active)
@@ -866,7 +929,7 @@ async function ensureAdminExists() {
         console.log(`[admin] Admin created: ${adminEmail}`);
       }
     } else {
-      // Admin exists � password sync ONLY on explicit restart flag to prevent overwriting user changes
+      // Admin exists ï¿½ password sync ONLY on explicit restart flag to prevent overwriting user changes
       // By default, users can change their password and it will persist across restarts
       // Keep local/dev admin credentials aligned with .env so login verification
       // does not fail because of a stale password left in the database.
@@ -881,7 +944,7 @@ async function ensureAdminExists() {
         console.log(`[admin-bootstrap] Password hash generated: ${hash.substring(0, 20)}...`);
         const updateResult = await rawDb.execute(rawSql`
           UPDATE admins 
-          SET password=${hash}, is_active=true, auth_token=NULL, auth_token_expires_at=NULL 
+          SET password=${hash}, is_active=true
           WHERE LOWER(email)=${adminEmail}
           RETURNING id, email, password
         `);
@@ -894,7 +957,7 @@ async function ensureAdminExists() {
         }
       } else {
         // Ensure admin is marked as active but DO NOT override password
-        await rawDb.execute(rawSql`UPDATE admins SET is_active=true, auth_token=NULL, auth_token_expires_at=NULL WHERE LOWER(email)=${adminEmail}`);
+        await rawDb.execute(rawSql`UPDATE admins SET is_active=true WHERE LOWER(email)=${adminEmail}`);
         console.log(`[admin] Admin ensured active: ${adminEmail} (password NOT overridden)`);
       }
     }
@@ -907,7 +970,7 @@ async function ensureOperationalSchema() {
   try {
     await rawDb.execute(rawSql`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
 
-    // -- Core auth tables � must always exist even if Drizzle migrations haven't run --
+    // -- Core auth tables ï¿½ must always exist even if Drizzle migrations haven't run --
     await rawDb.execute(rawSql`
       CREATE TABLE IF NOT EXISTS admins (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -916,8 +979,6 @@ async function ensureOperationalSchema() {
         password VARCHAR(191) NOT NULL,
         role VARCHAR(50) NOT NULL DEFAULT 'admin',
         is_active BOOLEAN NOT NULL DEFAULT true,
-        auth_token TEXT,
-        auth_token_expires_at TIMESTAMP,
         last_login_at TIMESTAMP,
         created_at TIMESTAMP DEFAULT NOW()
       )
@@ -977,6 +1038,33 @@ async function ensureOperationalSchema() {
       WHERE user_type = 'driver' AND verification_status = 'approved' AND onboard_date IS NULL;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS completed_rides_count INTEGER NOT NULL DEFAULT 0;
 
+      CREATE TABLE IF NOT EXISTS outbox_events (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        type TEXT NOT NULL,
+        payload JSONB NOT NULL,
+        processed BOOLEAN NOT NULL DEFAULT false,
+        processing BOOLEAN NOT NULL DEFAULT false,
+        failed BOOLEAN NOT NULL DEFAULT false,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at TIMESTAMP,
+        processing_started_at TIMESTAMP,
+        processed_at TIMESTAMP,
+        last_error TEXT,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_outbox_events_pending
+        ON outbox_events (processed, processing, failed, next_attempt_at, created_at);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_driver_one_active_trip
+        ON trip_requests (driver_id)
+        WHERE driver_id IS NOT NULL
+          AND current_status IN ('driver_assigned','accepted','arrived','on_the_way','payment_pending');
+
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_one_active_trip
+        ON trip_requests (customer_id)
+        WHERE current_status IN ('searching','driver_assigned','accepted','arrived','on_the_way','payment_pending');
+
       -- Dynamic Platform Services Table
       CREATE TABLE IF NOT EXISTS platform_services (
         id SERIAL PRIMARY KEY,
@@ -1003,12 +1091,12 @@ async function ensureOperationalSchema() {
       await rawDb.execute(rawSql`
         INSERT INTO platform_services (service_key, service_name, service_status, revenue_model, commission_rate, sort_order, icon, color, service_category)
         VALUES 
-          ('bike_ride', 'Bike Ride', 'active', 'commission', 15.0, 1, '🏍️', '#2F7BFF', 'rides'),
-          ('parcel_delivery', 'Parcel Delivery', 'active', 'commission', 18.0, 2, '📦', '#10B981', 'parcel'),
-          ('auto_ride', 'Auto Ride', 'active', 'commission', 12.0, 3, '🛺', '#F59E0B', 'rides'),
-          ('mini_car', 'Mini Car', 'active', 'commission', 10.0, 4, '🚗', '#2563EB', 'rides'),
-          ('sedan', 'Sedan Car', 'active', 'commission', 10.0, 5, '🚕', '#4F46E5', 'rides'),
-          ('suv', 'SUV Car', 'active', 'commission', 10.0, 6, '🚙', '#7C3AED', 'rides')
+          ('bike_ride', 'Bike Ride', 'active', 'commission', 15.0, 1, 'ðŸï¸', '#2F7BFF', 'rides'),
+          ('parcel_delivery', 'Parcel Delivery', 'active', 'commission', 18.0, 2, 'ðŸ“¦', '#10B981', 'parcel'),
+          ('auto_ride', 'Auto Ride', 'active', 'commission', 12.0, 3, 'ðŸ›º', '#F59E0B', 'rides'),
+          ('mini_car', 'Mini Car', 'active', 'commission', 10.0, 4, 'ðŸš—', '#2563EB', 'rides'),
+          ('sedan', 'Sedan Car', 'active', 'commission', 10.0, 5, 'ðŸš•', '#4F46E5', 'rides'),
+          ('suv', 'SUV Car', 'active', 'commission', 10.0, 6, 'ðŸš™', '#7C3AED', 'rides')
       `);
     }
 
@@ -2025,21 +2113,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // Protect admin APIs except auth recovery routes.
   app.use("/api/admin", async (req, res, next) => {
-    const publicPaths = new Set(["/login", "/login/verify-2fa", "/forgot-password", "/reset-password", "/emergency-reset"]);
+    const publicPaths = new Set(["/login", "/login/verify-2fa", "/auth/refresh", "/forgot-password", "/reset-password", "/emergency-reset"]);
     if (publicPaths.has(req.path)) return next();
     const token = extractBearerToken(req);
     if (!token) return res.status(401).json({ message: "Admin authorization required" });
     try {
+      const session = await authenticateAdminAccessToken(token);
+      if (!session) return res.status(401).json({ message: "Admin session expired. Please login again." });
       const r = await rawDb.execute(rawSql`
         SELECT id, name, email, role, is_active
         FROM admins
-        WHERE auth_token=${token}
+        WHERE id=${session.adminId}::uuid
           AND is_active=true
-          AND (auth_token_expires_at IS NULL OR auth_token_expires_at > NOW())
         LIMIT 1
       `);
       if (!r.rows.length) return res.status(401).json({ message: "Admin session expired. Please login again." });
       (req as any).adminUser = camelize(r.rows[0]);
+      (req as any).adminSession = session;
       next();
     } catch (_e: any) {
       res.status(401).json({ message: "Admin authentication failed" });
@@ -2057,7 +2147,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // Public env/config diagnostic — reports which critical keys are configured.
+  // Public env/config diagnostic â€” reports which critical keys are configured.
   // Returns booleans only (never exposes values). Safe to expose publicly.
   app.get("/api/health/env", async (_req, res) => {
     const has = (k: string) => !!(process.env[k] && process.env[k]!.trim());
@@ -2167,14 +2257,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ pong: true });
   });
 
-  // Dispatch diagnostic — surfaces why nearby drivers were included/excluded
+  // Dispatch diagnostic â€” surfaces why nearby drivers were included/excluded
   // Query params: includeEligible (default true), includeRawData, simulate, radiusKm
   app.get("/api/admin/dispatch-diag/:tripId", requireAdminAuth, async (req, res) => {
     try {
       const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       const tripId = String(req.params.tripId || "");
       if (!uuidRe.test(tripId)) {
-        return res.status(400).json({ message: "Invalid tripId — expected UUID" });
+        return res.status(400).json({ message: "Invalid tripId â€” expected UUID" });
       }
       const q = req.query;
       const parseBool = (v: any, def: boolean) =>
@@ -2255,7 +2345,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!keyId || !keySecret) return res.json({ status: "not_configured", keyId: false, keySecret: false });
       const Razorpay = _require("razorpay");
       const rzp = new Razorpay({ key_id: keyId, key_secret: keySecret, timeout: 10000 });
-      // Fetch a minimal list � just to test connectivity & key validity
+      // Fetch a minimal list ï¿½ just to test connectivity & key validity
       const result = await Promise.race([
         rzp.orders.all({ count: 1 }),
         new Promise<never>((_, rej) => setTimeout(() => rej(new Error("Razorpay API timeout after 10s")), 10000))
@@ -2287,7 +2377,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       await ensureAdminExists();
       const adminEmail = (process.env.ADMIN_EMAIL || "").trim().toLowerCase();
       if (!adminEmail) {
-        return res.json({ success: true, message: "DB schema bootstrapped. ADMIN_EMAIL not set � admin not synced.", admin: null });
+        return res.json({ success: true, message: "DB schema bootstrapped. ADMIN_EMAIL not set ï¿½ admin not synced.", admin: null });
       }
       const r = await rawDb.execute(rawSql`SELECT id, email, is_active, LEFT(password,4) as pw_hint FROM admins WHERE LOWER(email)=${adminEmail} LIMIT 1`);
       const adminRow: any = r.rows[0];
@@ -2338,17 +2428,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         {
           name: "Mini Pool", type: "car", vehicle_type: "pool_mini", icon: "/vehicles/pool_mini.svg",
           base_fare: 40, fare_per_km: 9, minimum_fare: 55, waiting_charge_per_min: 1, total_seats: 3, is_carpool: true,
-          description: "Upto 3 riders � Shared mini cab � Save 35%"
+          description: "Upto 3 riders ï¿½ Shared mini cab ï¿½ Save 35%"
         },
         {
           name: "Sedan Pool", type: "car", vehicle_type: "pool_sedan", icon: "/vehicles/pool_sedan.svg",
           base_fare: 50, fare_per_km: 10, minimum_fare: 70, waiting_charge_per_min: 1, total_seats: 4, is_carpool: true,
-          description: "Upto 4 riders � Shared sedan � Save 35%"
+          description: "Upto 4 riders ï¿½ Shared sedan ï¿½ Save 35%"
         },
         {
           name: "SUV Pool", type: "car", vehicle_type: "pool_suv", icon: "/vehicles/pool_suv.svg",
           base_fare: 60, fare_per_km: 12, minimum_fare: 80, waiting_charge_per_min: 1.5, total_seats: 6, is_carpool: true,
-          description: "Upto 6 riders � Shared SUV � Save 30%"
+          description: "Upto 6 riders ï¿½ Shared SUV ï¿½ Save 30%"
         },
         {
           name: "Car Pool", type: "car", vehicle_type: "carpool", icon: "/vehicles/carpool.svg",
@@ -2358,27 +2448,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         {
           name: "Bike Delivery", type: "motor_bike", vehicle_type: "bike_parcel", icon: "/vehicles/parcel_bike.svg",
           base_fare: 70, fare_per_km: 8, minimum_fare: 70, waiting_charge_per_min: 0.5, service_type: "parcel",
-          description: "Upto 10 kg � 0.3 CBM � Small packages, documents"
+          description: "Upto 10 kg ï¿½ 0.3 CBM ï¿½ Small packages, documents"
         },
         {
           name: "3-Wheeler / Auto", type: "auto", vehicle_type: "auto_parcel", icon: "/vehicles/parcel_auto.svg",
           base_fare: 140, fare_per_km: 12, minimum_fare: 140, waiting_charge_per_min: 1, service_type: "parcel",
-          description: "Upto 150 kg � 1.5 CBM � Medium goods, household items"
+          description: "Upto 150 kg ï¿½ 1.5 CBM ï¿½ Medium goods, household items"
         },
         {
           name: "Tata Ace", type: "car", vehicle_type: "tata_ace", icon: "/vehicles/tata_ace.svg",
           base_fare: 350, fare_per_km: 18, minimum_fare: 350, waiting_charge_per_min: 2, service_type: "parcel",
-          description: "Upto 750 kg � 6 CBM � Furniture, appliances, bulk goods"
+          description: "Upto 750 kg ï¿½ 6 CBM ï¿½ Furniture, appliances, bulk goods"
         },
         {
           name: "Bolero Pickup", type: "car", vehicle_type: "bolero_pickup", icon: "/vehicles/bolero.svg",
           base_fare: 500, fare_per_km: 22, minimum_fare: 500, waiting_charge_per_min: 2.5, service_type: "parcel",
-          description: "Upto 1500 kg � 10 CBM � Heavy goods, office shifting"
+          description: "Upto 1500 kg ï¿½ 10 CBM ï¿½ Heavy goods, office shifting"
         },
         {
           name: "Tata 407 / Tempo", type: "car", vehicle_type: "tempo_407", icon: "/vehicles/tempo_407.svg",
           base_fare: 800, fare_per_km: 28, minimum_fare: 800, waiting_charge_per_min: 3, service_type: "parcel",
-          description: "Upto 2500 kg � 20 CBM � Large loads, factory goods, full shifting"
+          description: "Upto 2500 kg ï¿½ 20 CBM ï¿½ Large loads, factory goods, full shifting"
         },
       ];
 
@@ -2444,7 +2534,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // Referrals: add paid_at column if missing
       await rawDb.execute(rawSql`ALTER TABLE referrals ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ`).catch(dbCatch("db"));
 
-      // B2B companies: unify schema � add columns needed by app registration flow
+      // B2B companies: unify schema ï¿½ add columns needed by app registration flow
       await rawDb.execute(rawSql`
         ALTER TABLE b2b_companies ADD COLUMN IF NOT EXISTS owner_id UUID;
         ALTER TABLE b2b_companies ADD COLUMN IF NOT EXISTS contact_name VARCHAR(255);
@@ -2534,7 +2624,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         });
       }
 
-      // -- 3. Platform services � do NOT override admin toggles on restart ------
+      // -- 3. Platform services ï¿½ do NOT override admin toggles on restart ------
       // (removed auto-activate: admin inactive settings must be preserved)
 
       // -- 4. Surge pricing rules (peak hours) ---------------------------------
@@ -2581,7 +2671,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         parcels_model: 'commission',   // default: commission for parcel
         cargo_model: 'commission',
         intercity_model: 'commission',
-        // Launch campaign � 30-day free period for every new driver
+        // Launch campaign ï¿½ 30-day free period for every new driver
         launch_campaign_enabled: 'true',
       };
       for (const [key, value] of Object.entries(revenueSettings)) {
@@ -2596,19 +2686,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const plans = [
         {
           name: "Daily Pass", price: 29, duration_days: 1, max_rides: 10, plan_type: "driver",
-          features: "10 rides/day � ?5 platform fee/ride � No commission"
+          features: "10 rides/day ï¿½ ?5 platform fee/ride ï¿½ No commission"
         },
         {
           name: "Weekly Pass", price: 149, duration_days: 7, max_rides: 70, plan_type: "driver",
-          features: "70 rides/week � ?5 platform fee/ride � No commission � Save 27%"
+          features: "70 rides/week ï¿½ ?5 platform fee/ride ï¿½ No commission ï¿½ Save 27%"
         },
         {
           name: "Monthly Pass", price: 499, duration_days: 30, max_rides: 300, plan_type: "driver",
-          features: "300 rides/month � ?5 platform fee/ride � No commission � Save 43%"
+          features: "300 rides/month ï¿½ ?5 platform fee/ride ï¿½ No commission ï¿½ Save 43%"
         },
         {
           name: "Pro Monthly", price: 799, duration_days: 30, max_rides: 500, plan_type: "driver",
-          features: "500 rides/month � ?3 platform fee/ride � Priority dispatch � Save 55%"
+          features: "500 rides/month ï¿½ ?3 platform fee/ride ï¿½ Priority dispatch ï¿½ Save 55%"
         },
       ];
       const insertedPlans: any[] = [];
@@ -2645,13 +2735,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // GET /api/ops/seed-test-accounts?key=... � creates 4 customers + 10 drivers for testing
+  // GET /api/ops/seed-test-accounts?key=... ï¿½ creates 4 customers + 10 drivers for testing
   app.get("/api/ops/seed-test-accounts", async (req, res) => {
+    if (process.env.NODE_ENV === "production") {
+      return res.status(410).json({ message: "Test account seeding is disabled in production" });
+    }
     const resetKey = process.env.ADMIN_RESET_KEY || process.env.OPS_API_KEY;
     const provided = String(req.query.key || req.headers["x-ops-key"] || "").trim();
     if (!resetKey || provided !== resetKey) return res.status(403).json({ message: "Invalid key" });
     try {
-      const pwHash = await hashPassword("Test@123");
+      const seedPassword = String(process.env.SEED_TEST_ACCOUNT_PASSWORD || "").trim();
+      if (!seedPassword) {
+        return res.status(400).json({ message: "SEED_TEST_ACCOUNT_PASSWORD is required outside production" });
+      }
+      const pwHash = await hashPassword(seedPassword);
       // Fetch vehicle categories for driver assignment
       const vcRes = await rawDb.execute(rawSql`SELECT id, name FROM vehicle_categories ORDER BY created_at ASC`);
       const vcRows = vcRes.rows as any[];
@@ -2727,9 +2824,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       res.json({
         success: true,
-        message: "Test accounts ready. Login with phone + password Test@123",
-        customers: createdCustomers.map(c => ({ name: c.name, phone: c.phone, password: 'Test@123', status: c.status })),
-        drivers: createdDrivers.map(d => ({ name: d.name, phone: d.phone, password: 'Test@123', vehicle: d.vc, vNum: d.vNum, status: d.status })),
+        message: "Test accounts ready. Login with phone + configured seed password.",
+        customers: createdCustomers.map(c => ({ name: c.name, phone: c.phone, passwordConfigured: true, status: c.status })),
+        drivers: createdDrivers.map(d => ({ name: d.name, phone: d.phone, passwordConfigured: true, vehicle: d.vc, vNum: d.vNum, status: d.status })),
       });
     } catch (e: any) { res.status(500).json({ success: false, message: safeErrMsg(e) }); }
   });
@@ -2775,7 +2872,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // Live vehicle tracking � use actual driver telemetry instead of synthetic positions
+  // Live vehicle tracking ï¿½ use actual driver telemetry instead of synthetic positions
   app.get("/api/live-tracking", requireAdminAuth, async (_req, res) => {
     try {
       const { db: ltDb } = await import("./db");
@@ -3436,7 +3533,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // Update admin record
       const result = await rawDb.execute(rawSql`
         UPDATE admins 
-        SET password=${hash}, is_active=true, auth_token=NULL, auth_token_expires_at=NULL
+        SET password=${hash}, is_active=true
         WHERE LOWER(email)=${adminEmail}
         RETURNING id, email, password, is_active
       `);
@@ -3486,7 +3583,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // Auth � with rate limiting and bcrypt password verification
+  // Auth ï¿½ with rate limiting and bcrypt password verification
   app.post("/api/admin/login", loginLimiter, async (req, res) => {
     try {
       const { email, password } = req.body;
@@ -3509,7 +3606,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         admin = await lookupAdmin(email);
       } catch (dbErr: any) {
         if (String(dbErr.message).toLowerCase().includes("does not exist")) {
-          console.warn("[admin-login] admins table missing � running bootstrap then retrying...");
+          console.warn("[admin-login] admins table missing ï¿½ running bootstrap then retrying...");
           await ensureAdminExists();
           admin = await lookupAdmin(email);
         } else {
@@ -3523,7 +3620,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (requireAdminTwoFactor) {
         const adminPhone = runtimeEnv.ADMIN_PHONE;
         if (!adminPhone) {
-          // 2FA is required but no delivery target � block login with clear message
+          // 2FA is required but no delivery target ï¿½ block login with clear message
           return res.status(503).json({ message: "Admin 2FA is enabled but ADMIN_PHONE is not configured. Contact system administrator." });
         }
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -3552,18 +3649,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(202).json(response);
       }
 
-      let session: { sessionToken: string; expiresAt: Date };
+      let session: { sessionToken: string; refreshToken: string; expiresAt: Date };
       try {
-        session = await issueAdminSession(admin.id);
+        session = await issueAdminSession(admin.id, req);
       } catch (sessionErr: any) {
-        // Self-heal if auth_token_expires_at or other columns were added after table was first created
+        // Self-heal if auth/session schema changed after the table was first created
         if (String(sessionErr.message).toLowerCase().includes("does not exist")) {
-          console.warn("[admin-login] Missing column � running schema self-heal then retrying...");
+          console.warn("[admin-login] Missing column ï¿½ running schema self-heal then retrying...");
           await ensureAdminExists();
           // Re-query admin after self-heal
           const requeriedAdmin = await lookupAdmin(email);
           if (!requeriedAdmin) throw sessionErr;
-          session = await issueAdminSession(requeriedAdmin.id);
+          session = await issueAdminSession(requeriedAdmin.id, req);
         } else {
           throw sessionErr;
         }
@@ -3571,6 +3668,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json({
         admin: { id: admin.id, name: admin.name, email: admin.email, role: admin.role },
         token: session.sessionToken,
+        refreshToken: session.refreshToken,
         expiresAt: session.expiresAt.toISOString(),
       });
     } catch (e: any) {
@@ -3603,10 +3701,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!otpR.rows.length) return res.status(400).json({ message: "Invalid or expired OTP" });
 
       await rawDb.execute(rawSql`UPDATE admin_login_otp SET is_used=true WHERE id=${(otpR.rows[0] as any).id}::uuid`);
-      const { sessionToken, expiresAt } = await issueAdminSession(admin.id);
+      const { sessionToken, refreshToken, expiresAt } = await issueAdminSession(admin.id, req);
       res.json({
         admin: { id: admin.id, name: admin.name, email: admin.email, role: admin.role },
         token: sessionToken,
+        refreshToken,
         expiresAt: expiresAt.toISOString(),
       });
     } catch (e: any) {
@@ -3614,16 +3713,42 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.post("/api/admin/logout", (req, res) => {
+  app.post("/api/admin/auth/refresh", async (req, res) => {
+    try {
+      const refreshToken = String(req.body?.refreshToken || "").trim();
+      const deviceId = getAdminDeviceId(req);
+      if (!refreshToken || !deviceId) {
+        return res.status(400).json({ success: false, message: "Refresh token and device ID are required" });
+      }
+      const session = await refreshAdminSession(refreshToken, {
+        deviceId,
+        ipAddress: req.ip,
+        userAgent: req.get("user-agent") || null,
+      });
+      if (!session) {
+        return res.status(401).json({ success: false, message: "Admin session expired. Please login again." });
+      }
+      return res.json({
+        success: true,
+        token: session.accessToken,
+        refreshToken: session.refreshToken,
+        expiresAt: session.accessTokenExpiresAt,
+      });
+    } catch (e: any) {
+      return res.status(500).json({ success: false, message: safeErrMsg(e) });
+    }
+  });
+
+  app.post("/api/admin/logout", async (req, res) => {
     const token = extractBearerToken(req);
+    const refreshToken = String(req.body?.refreshToken || "").trim() || null;
     if (token) {
-      rawDb.execute(rawSql`UPDATE admins SET auth_token=NULL, auth_token_expires_at=NULL WHERE auth_token=${token}`)
-        .catch(dbCatch("db"));
+      await revokeAdminSession(token, refreshToken).catch(dbCatch("db"));
     }
     res.json({ success: true });
   });
 
-  // -- ADMIN: Forgot Password � send OTP to email ----------------------------
+  // -- ADMIN: Forgot Password ï¿½ send OTP to email ----------------------------
   app.post("/api/admin/forgot-password", async (req, res) => {
     try {
       const { email } = req.body;
@@ -3639,12 +3764,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (process.env.NODE_ENV === 'production' || !isDevOtpResponseEnabled) {
         res.json({ success: true, message: "Password reset OTP sent to your email." });
       } else {
-        res.json({ success: true, message: "Password reset OTP sent (dev mode � check console).", otp, dev: true });
+        res.json({ success: true, message: "Password reset OTP sent (dev mode ï¿½ check console).", otp, dev: true });
       }
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // -- ADMIN: Reset Password � verify OTP and set new password ---------------
+  // -- ADMIN: Reset Password ï¿½ verify OTP and set new password ---------------
   app.post("/api/admin/reset-password", async (req, res) => {
     try {
       const { email, otp, newPassword } = req.body;
@@ -3674,7 +3799,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const hash = await hashPassword(password);
       const r = await rawDb.execute(rawSql`
-        UPDATE admins SET password=${hash}, is_active=true, auth_token=NULL, auth_token_expires_at=NULL
+        UPDATE admins SET password=${hash}, is_active=true
         WHERE LOWER(email)=${email.trim().toLowerCase()}
       `);
       res.json({ success: true, message: "Admin password reset successfully. You can now login." });
@@ -3735,9 +3860,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       p === "/ping" ||  // simple test endpoint
       p.startsWith("/diag/") ||  // diagnostic endpoints
       p.startsWith("/ops/") ||  // requireOpsKey
-      p.startsWith("/app/") ||  // mobile app routes � each has authApp
+      p.startsWith("/app/") ||  // mobile app routes ï¿½ each has authApp
       p.startsWith("/admin/") ||  // global admin middleware at line 1101
-      p.startsWith("/driver/") ||  // mobile driver routes � each has authApp
+      p.startsWith("/driver/") ||  // mobile driver routes ï¿½ each has authApp
       p.startsWith("/webhook")       // payment callbacks (Razorpay, etc.)
     ) return next();
     // Everything else is a legacy admin route ? require admin auth
@@ -4034,7 +4159,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/zones", requireAdminAuth, async (req, res) => {
     try {
       if (req.body.coordinates !== undefined && !validateZoneCoordinates(req.body.coordinates)) {
-        return res.status(400).json({ message: "Invalid zone coordinates � must be a valid GeoJSON Polygon or MultiPolygon" });
+        return res.status(400).json({ message: "Invalid zone coordinates ï¿½ must be a valid GeoJSON Polygon or MultiPolygon" });
       }
       const zone = await storage.createZone(req.body);
       res.status(201).json(zone);
@@ -4046,7 +4171,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.put("/api/zones/:id", requireAdminAuth, async (req, res) => {
     try {
       if (req.body.coordinates !== undefined && !validateZoneCoordinates(req.body.coordinates)) {
-        return res.status(400).json({ message: "Invalid zone coordinates � must be a valid GeoJSON Polygon or MultiPolygon" });
+        return res.status(400).json({ message: "Invalid zone coordinates ï¿½ must be a valid GeoJSON Polygon or MultiPolygon" });
       }
       const zone = await storage.updateZone(String(req.params.id), req.body);
       if (!zone) return res.status(404).json({ message: "Zone not found" });
@@ -4059,7 +4184,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.patch("/api/zones/:id", requireAdminAuth, async (req, res) => {
     try {
       if (req.body.coordinates !== undefined && !validateZoneCoordinates(req.body.coordinates)) {
-        return res.status(400).json({ message: "Invalid zone coordinates � must be a valid GeoJSON Polygon or MultiPolygon" });
+        return res.status(400).json({ message: "Invalid zone coordinates ï¿½ must be a valid GeoJSON Polygon or MultiPolygon" });
       }
       const zone = await storage.updateZone(String(req.params.id), req.body);
       if (!zone) return res.status(404).json({ message: "Zone not found" });
@@ -4273,7 +4398,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // PUT /api/admin/pricing/vehicles/:id � update vehicle pricing in both vehicle_categories + trip_fares
+  // PUT /api/admin/pricing/vehicles/:id ï¿½ update vehicle pricing in both vehicle_categories + trip_fares
   app.put("/api/admin/pricing/vehicles/:id", requireAdminRole(["admin", "superadmin"]), async (req, res) => {
     try {
       const { id } = req.params;
@@ -4298,7 +4423,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const hc = parseFloat(String(helperCharge));
 
       // Update vehicle_categories primary pricing (name + icon were previously
-      // collected into `updateParts` but never applied to the UPDATE query —
+      // collected into `updateParts` but never applied to the UPDATE query â€”
       // admin edits to name/icon silently failed. Fixed with parameterized fragments.)
       const vcUpdated = await rawDb.execute(rawSql`
         UPDATE vehicle_categories
@@ -4338,7 +4463,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // PATCH /api/admin/pricing/vehicles/:id/availability � toggle vehicle availability
+  // PATCH /api/admin/pricing/vehicles/:id/availability ï¿½ toggle vehicle availability
   app.patch("/api/admin/pricing/vehicles/:id/availability", requireAdminRole(["admin", "superadmin"]), async (req, res) => {
     try {
       const { isActive } = req.body;
@@ -4351,7 +4476,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // GET /api/admin/pricing/settings � get GST rate, launch campaign, commission settings
+  // GET /api/admin/pricing/settings ï¿½ get GST rate, launch campaign, commission settings
   app.get("/api/admin/pricing/settings", requireAdminRole(["admin", "superadmin"]), async (_req, res) => {
     try {
       const r = await rawDb.execute(rawSql`SELECT key_name, value FROM revenue_model_settings ORDER BY key_name`);
@@ -4367,7 +4492,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // PUT /api/admin/pricing/settings � update one or more pricing settings
+  // PUT /api/admin/pricing/settings ï¿½ update one or more pricing settings
   app.put("/api/admin/pricing/settings", requireAdminRole(["admin", "superadmin"]), async (req, res) => {
     try {
       const updates = req.body as Record<string, string>;
@@ -4396,7 +4521,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // --- Admin: Commission Settlement Endpoints --------------------------------
 
-  // GET /api/admin/commission-settlements � all settlement rows, filterable
+  // GET /api/admin/commission-settlements ï¿½ all settlement rows, filterable
   app.get("/api/admin/commission-settlements", requireAdminRole(["admin", "superadmin"]), async (req, res) => {
     try {
       const { driverId, type, direction, page = '1', limit = '50' } = req.query as Record<string, string>;
@@ -4419,7 +4544,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // GET /api/admin/commission-settlements/drivers � per-driver pending balance summary
+  // GET /api/admin/commission-settlements/drivers ï¿½ per-driver pending balance summary
   app.get("/api/admin/commission-settlements/drivers", requireAdminRole(["admin", "superadmin"]), async (req, res) => {
     try {
       const rows = await rawDb.execute(rawSql`
@@ -4441,7 +4566,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // POST /api/admin/commission-settlements/drivers/:driverId/settle � admin manually settles partial/full amount
+  // POST /api/admin/commission-settlements/drivers/:driverId/settle ï¿½ admin manually settles partial/full amount
   app.post("/api/admin/commission-settlements/drivers/:driverId/settle", requireAdminRole(["admin", "superadmin"]), async (req, res) => {
     try {
       const { driverId } = req.params;
@@ -5664,7 +5789,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json(camelize(r.rows[0]));
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
-  // PATCH: toggle is_active only � safe partial update (does not wipe other fields)
+  // PATCH: toggle is_active only ï¿½ safe partial update (does not wipe other fields)
   app.patch("/api/surge-pricing/:id", requireAdminAuth, async (req, res) => {
     try {
       const { isActive, is_active } = req.body;
@@ -5935,7 +6060,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // Business settings � bulk update
+  // Business settings ï¿½ bulk update
   app.put("/api/business-settings", requireAdminAuth, async (req, res) => {
     try {
       const settings = req.body as Record<string, string>;
@@ -5947,7 +6072,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // Business Pages � GET by settings_type
+  // Business Pages ï¿½ GET by settings_type
   app.get("/api/business-pages", async (req, res) => {
     try {
       const type = (req.query.type as string) || "pages_settings";
@@ -5956,7 +6081,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // Business Pages � upsert single setting
+  // Business Pages ï¿½ upsert single setting
   app.post("/api/business-pages", async (req, res) => {
     try {
       const { keyName, value, settingsType } = req.body;
@@ -6027,7 +6152,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // Customer Wallet top-up / deduct (admin operation � adjusts users.wallet_balance)
+  // Customer Wallet top-up / deduct (admin operation ï¿½ adjusts users.wallet_balance)
   app.post("/api/customer-wallet/topup", requireAdminAuth, async (req, res) => {
     try {
       const { userId, amount, type } = req.body;
@@ -6047,7 +6172,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // Notifications send � broadcasts real FCM push to all matching user devices
+  // Notifications send ï¿½ broadcasts real FCM push to all matching user devices
   app.post("/api/notifications/send", requireAdminAuth, async (req, res) => {
     try {
       const { title, message, target = "all", userType = "all" } = req.body;
@@ -6067,7 +6192,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const recipientCount = fcmRows.length;
 
-      // Fire FCM pushes (non-blocking � best effort)
+      // Fire FCM pushes (non-blocking ï¿½ best effort)
       let deliveredCount = 0;
       if (fcmRows.length > 0) {
         const pushPromises = fcmRows.map(async (r: any) => {
@@ -6217,7 +6342,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // --- Module-Based Revenue Config ---------------------------------------------
-  // GET /api/app/revenue-config � used by both apps to determine commission/subscription
+  // GET /api/app/revenue-config ï¿½ used by both apps to determine commission/subscription
   app.get("/api/app/revenue-config", authApp, async (_req, res) => {
     try {
       const rows = await rawDb.execute(rawSql`SELECT * FROM service_revenue_config ORDER BY module_name`);
@@ -6236,7 +6361,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // GET /api/admin/module-revenue � admin read all module configs
+  // GET /api/admin/module-revenue ï¿½ admin read all module configs
   app.get("/api/admin/module-revenue", requireAdminAuth, async (_req, res) => {
     try {
       const rows = await rawDb.execute(rawSql`SELECT * FROM service_revenue_config ORDER BY module_name`);
@@ -6244,7 +6369,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // PUT /api/admin/module-revenue/:module � admin update one module
+  // PUT /api/admin/module-revenue/:module ï¿½ admin update one module
   app.put("/api/admin/module-revenue/:module", requireAdminAuth, async (req, res) => {
     try {
       const module = req.params.module as string;
@@ -6399,7 +6524,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // Deduct platform fee per ride (called after ride completion � legacy endpoint)
+  // Deduct platform fee per ride (called after ride completion ï¿½ legacy endpoint)
   app.post("/api/driver-wallet/:id/deduct", requireAdminAuth, async (req, res) => {
     try {
       const id = String(req.params.id);
@@ -6509,13 +6634,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (caller.id !== id) return res.status(403).json({ message: "Forbidden: you can only settle your own wallet" });
       const { razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
       if (!razorpayOrderId || !razorpayPaymentId || !razorpaySignature) return res.status(400).json({ message: "Missing payment details" });
-      // SECURITY: Idempotency � reject if this payment was already processed
+      // SECURITY: Idempotency ï¿½ reject if this payment was already processed
       const alreadyDone = await rawDb.execute(rawSql`
         SELECT id FROM commission_settlements WHERE razorpay_payment_id=${razorpayPaymentId} LIMIT 1
       `).catch(() => ({ rows: [] as any[] }));
       if (alreadyDone.rows.length) return res.status(409).json({ message: "Payment already processed", alreadySettled: true });
       const { keySecret } = await getRazorpayKeys();
-      if (!keySecret) return res.status(503).json({ message: "Payment verification not configured � contact support" });
+      if (!keySecret) return res.status(503).json({ message: "Payment verification not configured ï¿½ contact support" });
       // Timing-safe HMAC verification
       const expectedSig = crypto.createHmac("sha256", keySecret).update(`${razorpayOrderId}|${razorpayPaymentId}`).digest("hex");
       const sigValid = expectedSig.length === razorpaySignature.length &&
@@ -6535,7 +6660,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const prevTotal = parseFloat(bal.total_pending_balance ?? '0') || 0;
       const prevCommission = parseFloat(bal.pending_commission_balance ?? '0') || 0;
       const prevGst = parseFloat(bal.pending_gst_balance ?? '0') || 0;
-      // Amount from DB � never trust client-sent amount
+      // Amount from DB ï¿½ never trust client-sent amount
       const pendingRec = await rawDb.execute(rawSql`
         SELECT amount FROM driver_payments WHERE razorpay_order_id=${razorpayOrderId} AND driver_id=${id}::uuid AND status='pending' LIMIT 1
       `);
@@ -6596,7 +6721,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
            ${razorpayOrderId}, ${razorpayPaymentId}, 'completed',
            ${'Commission payment via Razorpay. Commission: ?' + commReduction.toFixed(2) + ', GST: ?' + gstReduction.toFixed(2)})
       `).catch((e: any) => console.error('[SETTLE-CS]', e.message));
-      // driver_payments already marked completed atomically above � no duplicate INSERT needed
+      // driver_payments already marked completed atomically above ï¿½ no duplicate INSERT needed
 
       res.json({
         success: true,
@@ -6716,7 +6841,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!['approved', 'denied', 'pending'].includes(status)) {
         return res.status(400).json({ message: "Invalid status" });
       }
-      // SECURITY: Atomic transition � only approve if currently 'pending' to prevent double-credit.
+      // SECURITY: Atomic transition ï¿½ only approve if currently 'pending' to prevent double-credit.
       // If admin clicks approve twice, second request finds status!='pending' and returns 0 rows ? 409.
       const whereClause = status === 'approved'
         ? rawSql`WHERE id=${id}::uuid AND status='pending'`   // guard: can only approve once
@@ -7147,7 +7272,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           `).catch(() => ({ rows: [] as any[] }));
           const balance = parseFloat((walletR.rows[0] as any)?.wallet_balance || '0');
           return res.status(402).json({
-            message: `Insufficient wallet balance. Required: ₹${totalFare.toFixed(0)}, available: ₹${balance.toFixed(0)}`,
+            message: `Insufficient wallet balance. Required: â‚¹${totalFare.toFixed(0)}, available: â‚¹${balance.toFixed(0)}`,
           });
         }
       }
@@ -7231,7 +7356,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // Call Logs � real data from call_logs table
+  // Call Logs ï¿½ real data from call_logs table
   app.get("/api/call-logs", async (req, res) => {
     try {
       const status = (req.query.status as string) || "all";
@@ -7666,7 +7791,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // --- Female Matching Algorithm � Driver Pool ----------------------------------
+  // --- Female Matching Algorithm ï¿½ Driver Pool ----------------------------------
   // GET matching algorithm stats
   app.get("/api/matching/stats", async (_req, res) => {
     try {
@@ -8070,278 +8195,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // -----------------------------------------------------------------------
-  // ��  MOBILE APP APIs � Driver App + Customer App                       ��
+  // ï¿½ï¿½  MOBILE APP APIs ï¿½ Driver App + Customer App                       ï¿½ï¿½
   // -----------------------------------------------------------------------
-
-  // -- OTP SEND (Firebase Only) ----------------------------------------------
-  // Mobile apps use Firebase Phone Auth on-device. The server keeps only a
-  // lightweight request marker for rate limiting / telemetry and never sends SMS.
-  app.post("/api/app/send-otp", otpLimiter, async (req, res) => {
-    return res.status(410).json({
-      success: false,
-      code: "AUTH_OTP_REMOVED",
-      message: "OTP login has been removed. Use mobile number and password.",
-    });
-    try {
-      const { phone, userType = "customer" } = req.body;
-      if (!phone) return res.status(400).json({ message: "Phone required" });
-      const phoneStr = phone.toString().replace(/\D/g, "");
-      if (phoneStr.length < 10) return res.status(400).json({ message: "Invalid phone number" });
-
-      // Rate limiting: max 5 OTPs per phone per hour
-      const recentCount = await rawDb.execute(rawSql`
-        SELECT COUNT(*) as cnt FROM otp_logs WHERE phone=${phoneStr} AND created_at > NOW() - INTERVAL '1 hour'
-      `);
-      if (parseInt((recentCount.rows[0] as any)?.cnt || "0") >= 5) {
-        return res.status(429).json({ message: "Too many OTP requests. Try again after 1 hour." });
-      }
-
-      await rawDb.execute(rawSql`
-        INSERT INTO otp_logs (phone, otp, user_type, created_at, expires_at)
-        VALUES (${phoneStr}, ${'firebase'}, ${userType}, NOW(), NOW() + INTERVAL '10 minutes')
-        ON CONFLICT DO NOTHING
-      `).catch(dbCatch("db"));
-      console.log(`[OTP] ${phoneStr.slice(-4).padStart(phoneStr.length, '*')} -> Firebase`);
-      return res.json({ success: true, provider: 'firebase', message: 'Use Firebase OTP for verification.' });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
-  });
-
-  // -- OTP VERIFY + LOGIN / REGISTER ----------------------------------------
-  app.post("/api/app/verify-otp", otpLimiter, async (req, res) => {
-    return res.status(410).json({
-      success: false,
-      code: "AUTH_OTP_REMOVED",
-      message: "OTP verification has been removed. Use mobile number and password.",
-    });
-    try {
-      const { phone, otp, userType = "customer", name, referralCode } = req.body;
-      if (!phone || !otp) return res.status(400).json({ message: "Phone and OTP required" });
-      const phoneStr = phone.toString().replace(/\D/g, "");
-      if (phoneStr.length < 10) return res.status(400).json({ message: "Invalid phone number" });
-
-      // Per-phone OTP brute force protection (max_attempts from otp_settings, default 3)
-      const otpCfg = await rawDb.execute(rawSql`SELECT max_attempts FROM otp_settings LIMIT 1`)
-        .catch(() => ({ rows: [] as any[] }));
-      const maxAttempts = parseInt((otpCfg.rows[0] as any)?.max_attempts ?? '3', 10);
-      const failedAttempts = await rawDb.execute(rawSql`
-        SELECT COUNT(*) AS cnt FROM otp_logs
-        WHERE phone=${phoneStr} AND is_used=false AND created_at > NOW() - INTERVAL '15 minutes'
-          AND attempt_count >= ${maxAttempts}
-        LIMIT 1
-      `).catch(() => ({ rows: [{ cnt: 0 }] as any[] }));
-      const recentFails = parseInt((failedAttempts.rows[0] as any)?.cnt || '0', 10);
-      if (recentFails >= 1) {
-        return res.status(429).json({ message: "Too many failed OTP attempts. Please request a new OTP after 15 minutes." });
-      }
-
-      // Check OTP
-      const otpRow = await rawDb.execute(rawSql`
-        SELECT * FROM otp_logs WHERE phone=${phoneStr} AND otp=${otp} AND is_used=false AND expires_at > NOW()
-        ORDER BY created_at DESC LIMIT 1
-      `);
-      if (!otpRow.rows.length) {
-        // Increment failed attempt counter
-        await rawDb.execute(rawSql`
-          UPDATE otp_logs SET attempt_count = COALESCE(attempt_count, 0) + 1
-          WHERE phone=${phoneStr} AND is_used=false AND expires_at > NOW()
-        `).catch(dbCatch("db"));
-        return res.status(400).json({ message: "Invalid or expired OTP" });
-      }
-
-      // Mark used
-      await rawDb.execute(rawSql`UPDATE otp_logs SET is_used=true WHERE id=${(otpRow.rows[0] as any).id}::uuid`);
-
-      // Find or create user
-      let userRes = await rawDb.execute(rawSql`SELECT * FROM users WHERE phone=${phoneStr} AND user_type=${userType} LIMIT 1`);
-      let user: any;
-      let isNew = false;
-
-      if (!userRes.rows.length) {
-        // Register new user
-        isNew = true;
-        const fullName = name || `User_${phone.slice(-4)}`;
-        const newUser = await rawDb.execute(rawSql`
-          INSERT INTO users (full_name, phone, user_type, is_active, wallet_balance)
-          VALUES (${fullName}, ${phoneStr}, ${userType}, true, 0)
-          RETURNING *
-        `);
-        await rawDb.execute(rawSql`UPDATE users SET referral_code=${'JAGOPRO' + phoneStr.slice(-6)} WHERE phone=${phoneStr} AND user_type=${userType}`).catch(dbCatch("db"));
-        user = camelize(newUser.rows[0]);
-      } else {
-        user = camelize(userRes.rows[0]);
-        if (!user.isActive) return res.status(403).json({ message: "Account deactivated. Contact support." });
-      }
-
-      // Generate secure auth token (30-day expiry)
-      const token = `${user.id}:${crypto.randomBytes(32).toString("hex")}`;
-      const tokenExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-      // Store auth token in users.auth_token (NOT in fcm_token � that's for Firebase)
-      await rawDb.execute(rawSql`UPDATE users SET auth_token=${token}, auth_token_expires_at=${tokenExpiry}, last_login_at=NOW() WHERE id=${user.id}::uuid`);
-
-      // If driver, get wallet info
-      let walletBalance = 0;
-      let isLocked = false;
-      if (userType === "driver") {
-        const walletR = await rawDb.execute(rawSql`SELECT wallet_balance, is_locked, is_online FROM users WHERE id=${user.id}::uuid`);
-        if (walletR.rows.length) {
-          walletBalance = parseFloat((walletR.rows[0] as any).wallet_balance || 0);
-          isLocked = (walletR.rows[0] as any).is_locked || false;
-        }
-      }
-
-      res.json({
-        success: true,
-        isNew,
-        token,
-        user: {
-          id: user.id,
-          fullName: user.fullName,
-          phone: user.phone,
-          email: user.email || null,
-          userType: user.userType,
-          profilePhoto: user.profilePhoto || null,
-          rating: parseFloat(user.rating || "5.0"),
-          isActive: user.isActive,
-          walletBalance,
-          isLocked,
-        }
-      });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
-  });
-
-  // -- FIREBASE TOKEN VERIFICATION -------------------------------------------
-  app.post("/api/app/verify-firebase-token", async (req, res) => {
-    return res.status(410).json({
-      success: false,
-      code: "FIREBASE_AUTH_REMOVED",
-      message: "Firebase Phone Auth has been removed. Use password login.",
-    });
-    try {
-      const { firebaseIdToken, phone, userType = "customer" } = req.body;
-      if (!firebaseIdToken) return res.status(400).json({ message: "Firebase ID token required" });
-      if (!['customer', 'driver'].includes(userType)) return res.status(400).json({ message: "Invalid user type" });
-
-      let phoneStr = "";
-
-      // Try Firebase Admin SDK first (needs service account key � reads from DB or env)
-      const { getFirebaseAdminAsync } = await import("./fcm.js");
-      const adminInst = await getFirebaseAdminAsync();
-      if (adminInst) {
-        const decoded = await adminInst.auth().verifyIdToken(firebaseIdToken);
-        const firebasePhone = (decoded.phone_number || "").replace(/\D/g, "").slice(-10);
-        const clientPhone = (phone?.toString() || "").replace(/\D/g, "").slice(-10);
-        phoneStr = firebasePhone || clientPhone;
-        if (clientPhone && firebasePhone && clientPhone !== firebasePhone) {
-          return res.status(400).json({ message: "Phone number mismatch. Please retry login." });
-        }
-      } else {
-        // Fallback: verify token via Firebase REST API (only needs Web API key � no service account needed)
-        // Try the Web API key from env var first, then fall back to the known app key
-        const webApiKey = process.env.FIREBASE_WEB_API_KEY || '';
-        let restVerified = false;
-        let restLookupMessage = "";
-        const allowUnsafeFallback = String(
-          process.env.ALLOW_UNVERIFIED_FIREBASE_PHONE_FALLBACK || "true",
-        ).toLowerCase() === "true";
-        if (webApiKey) try {
-          const lookupRes = await fetch(
-            `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${webApiKey}`,
-            { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ idToken: firebaseIdToken }) }
-          );
-          if (lookupRes.ok) {
-            const lookupData = (await lookupRes.json()) as any;
-            const firebaseUser = lookupData.users?.[0];
-            if (firebaseUser) {
-              const firebasePhone = (firebaseUser.phoneNumber || "").replace(/\D/g, "").slice(-10);
-              const clientPhone = (phone?.toString() || "").replace(/\D/g, "").slice(-10);
-              phoneStr = firebasePhone || clientPhone;
-              if (clientPhone && firebasePhone && clientPhone !== firebasePhone) {
-                return res.status(400).json({ message: "Phone number mismatch. Please retry login." });
-              }
-              restVerified = true;
-            }
-          } else {
-            const lookupError = await lookupRes.json().catch(() => null) as any;
-            restLookupMessage = lookupError?.error?.message || "Firebase REST lookup failed";
-          }
-        } catch (restErr: any) {
-          restLookupMessage = restErr?.message || "Firebase REST lookup failed";
-        }
-
-        // Final fallback: Firebase verified on-device — trust the phone number the app sent.
-        // We no longer require a server SMS or send-otp marker for Firebase-only auth.
-        if (!restVerified) {
-          const clientPhone = (phone?.toString() || "").replace(/\D/g, "").slice(-10);
-          if (!clientPhone || clientPhone.length < 10) {
-            return res.status(400).json({ message: "Phone number required for login. Please try again." });
-          }
-          if (!allowUnsafeFallback) {
-            return res.status(503).json({
-              message: webApiKey
-                ? `Firebase token verification failed. ${restLookupMessage || "Please check Firebase Phone Auth, API key restrictions, and SHA certificates."}`
-                : "Firebase server verification is not configured. Add FIREBASE_WEB_API_KEY or Firebase Admin credentials on the server.",
-              code: "FIREBASE_SERVER_CONFIG_MISSING",
-            });
-          }
-          phoneStr = clientPhone;
-          console.warn(`[AUTH] Unsafe Firebase phone fallback used for ${clientPhone.slice(-4).padStart(10, '*')}`);
-        }
-      }
-
-      if (!phoneStr || phoneStr.length < 10) {
-        return res.status(400).json({ message: "Could not determine phone number from token" });
-      }
-
-      // Find or create user
-      let userRes = await rawDb.execute(rawSql`SELECT * FROM users WHERE phone=${phoneStr} AND user_type=${userType} LIMIT 1`);
-      let user: any;
-      let isNew = false;
-      if (!userRes.rows.length) {
-        isNew = true;
-        const fullName = `User_${phoneStr.slice(-4)}`;
-        const newUser = await rawDb.execute(rawSql`
-          INSERT INTO users (full_name, phone, user_type, is_active, wallet_balance)
-          VALUES (${fullName}, ${phoneStr}, ${userType}, true, 0)
-          RETURNING *
-        `);
-        await rawDb.execute(rawSql`UPDATE users SET referral_code=${'JAGOPRO' + phoneStr.slice(-6)} WHERE phone=${phoneStr} AND user_type=${userType}`).catch(dbCatch("db"));
-        user = camelize(newUser.rows[0]);
-      } else {
-        user = camelize(userRes.rows[0]);
-        if (!user.isActive) return res.status(403).json({ message: "Account deactivated. Contact support." });
-      }
-
-      const token = `${user.id}:${crypto.randomBytes(32).toString("hex")}`;
-      const tokenExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-      await rawDb.execute(rawSql`UPDATE users SET auth_token=${token}, auth_token_expires_at=${tokenExpiry}, last_login_at=NOW() WHERE id=${user.id}::uuid`);
-
-      let walletBalance = 0;
-      let isLocked = false;
-      if (userType === "driver") {
-        const walletR = await rawDb.execute(rawSql`SELECT wallet_balance, is_locked FROM users WHERE id=${user.id}::uuid`);
-        if (walletR.rows.length) {
-          walletBalance = parseFloat((walletR.rows[0] as any).wallet_balance || 0);
-          isLocked = (walletR.rows[0] as any).is_locked || false;
-        }
-      }
-
-      res.json({
-        success: true, isNew, token,
-        user: {
-          id: user.id, fullName: user.fullName, phone: user.phone,
-          email: user.email || null, userType: user.userType,
-          profilePhoto: user.profilePhoto || null,
-          rating: parseFloat(user.rating || "5.0"),
-          isActive: user.isActive, walletBalance, isLocked,
-        }
-      });
-    } catch (e: any) {
-      if (e.code && String(e.code).startsWith("auth/")) {
-        return res.status(401).json({ message: "Invalid or expired Firebase token. Please retry." });
-      }
-      res.status(500).json({ message: safeErrMsg(e) });
-    }
-  });
 
   // -- PASSWORD-BASED REGISTER -----------------------------------------------
   app.post("/api/app/register", loginLimiter, async (req, res) => {
@@ -8372,15 +8227,32 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const refCode = 'JAGOPRO' + phoneStr.slice(-6);
       await rawDb.execute(rawSql`UPDATE users SET referral_code=${refCode} WHERE phone=${phoneStr} AND user_type=${userType}`).catch(dbCatch("db"));
       const user = camelize(insertRes.rows[0]) as any;
-      const token = `${user.id}:${crypto.randomBytes(32).toString("hex")}`;
-      const tokenExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-      await rawDb.execute(rawSql`UPDATE users SET auth_token=${token}, auth_token_expires_at=${tokenExpiry} WHERE id=${user.id}::uuid`);
+      const deviceId = String(req.body?.deviceId || req.get("x-device-id") || `cust-${crypto.randomUUID()}`).trim();
+      const session = await issueAppSession(user.id, user.userType, {
+        deviceId,
+        ipAddress: req.ip,
+        userAgent: req.get("user-agent") || null,
+      });
       await createPendingReferral({
         referralCode: req.body.referralCode,
         referredUserId: user.id,
         referralType: userType,
       }).catch(dbCatch("db"));
-      res.json({ success: true, isNew: true, token, user: { id: user.id, fullName: user.fullName, phone: user.phone, email: user.email || null, userType: user.userType, verificationStatus: user.verificationStatus, walletBalance: 0 } });
+      res.json({
+        success: true,
+        isNew: true,
+        token: session.accessToken,
+        refreshToken: session.refreshToken,
+        user: {
+          id: user.id,
+          fullName: user.fullName,
+          phone: user.phone,
+          email: user.email || null,
+          userType: user.userType,
+          verificationStatus: user.verificationStatus,
+          walletBalance: 0,
+        },
+      });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -8399,11 +8271,31 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!user.passwordHash) return res.status(400).json({ message: "Password not set. Please request a password reset." });
       const match = await verifyPassword(password, user.passwordHash);
       if (!match) return res.status(401).json({ message: "Incorrect password. Please try again." });
-      const token = `${user.id}:${crypto.randomBytes(32).toString("hex")}`;
-      const tokenExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-      await rawDb.execute(rawSql`UPDATE users SET auth_token=${token}, auth_token_expires_at=${tokenExpiry} WHERE id=${user.id}::uuid`);
+      const deviceId = String(req.body?.deviceId || req.get("x-device-id") || `cust-${crypto.randomUUID()}`).trim();
+      const session = await issueAppSession(user.id, user.userType, {
+        deviceId,
+        ipAddress: req.ip,
+        userAgent: req.get("user-agent") || null,
+      });
       const walletBalance = safeFloat(user.walletBalance, 0);
-      res.json({ success: true, token, user: { id: user.id, fullName: user.fullName, phone: user.phone, email: user.email || null, userType: user.userType, verificationStatus: user.verificationStatus, profilePhoto: user.profilePhoto || null, rating: safeFloat(user.rating, 5.0), isActive: user.isActive, walletBalance, isLocked: user.isLocked || false } });
+      res.json({
+        success: true,
+        token: session.accessToken,
+        refreshToken: session.refreshToken,
+        user: {
+          id: user.id,
+          fullName: user.fullName,
+          phone: user.phone,
+          email: user.email || null,
+          userType: user.userType,
+          verificationStatus: user.verificationStatus,
+          profilePhoto: user.profilePhoto || null,
+          rating: safeFloat(user.rating, 5.0),
+          isActive: user.isActive,
+          walletBalance,
+          isLocked: user.isLocked || false,
+        },
+      });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -8425,89 +8317,44 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // -- RESET PASSWORD (verify OTP + set new password) ------------------------
-  app.post("/api/app/reset-password", async (req, res) => {
-    return res.status(410).json({
-      success: false,
-      code: "AUTH_OTP_REMOVED",
-      message: "OTP password reset has been removed. Use support-assisted password reset.",
-    });
+  app.post("/api/app/auth/refresh", async (req, res) => {
     try {
-      const { phone, otp, newPassword, userType = "customer" } = req.body;
-      if (!phone || !otp || !newPassword) return res.status(400).json({ message: "Phone, OTP and new password are required" });
-      const phoneStr = phone.toString().replace(/\D/g, "");
-      if (phoneStr.length < 10) return res.status(400).json({ message: "Invalid phone number" });
-      if (newPassword.length < 6) return res.status(400).json({ message: "Password must be at least 6 characters" });
-      const userRes = await rawDb.execute(rawSql`SELECT * FROM users WHERE phone=${phoneStr} AND user_type=${userType} AND reset_otp=${otp} AND reset_otp_expiry > NOW() LIMIT 1`);
-       if (!userRes.rows.length) return res.status(400).json({ message: "Invalid or expired OTP. Please try again." });
-      const passwordHash = await hashPassword(newPassword);
-      await rawDb.execute(rawSql`UPDATE users SET password_hash=${passwordHash}, reset_otp=NULL, reset_otp_expiry=NULL WHERE phone=${phoneStr} AND user_type=${userType}`);
-      res.json({ success: true, message: "Password reset successfully. Please login with your new password." });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+      const refreshToken = String(req.body?.refreshToken || "").trim();
+      const deviceId = String(req.body?.deviceId || req.get("x-device-id") || "").trim();
+      if (!refreshToken || !deviceId) {
+        return res.status(400).json({ success: false, code: "INVALID_INPUT", message: "Refresh token and device ID are required" });
+      }
+      const session = await refreshAppSession(refreshToken, {
+        deviceId,
+        ipAddress: req.ip,
+        userAgent: req.get("user-agent") || null,
+      });
+      if (!session) {
+        return res.status(401).json({ success: false, code: "INVALID_REFRESH_TOKEN", message: "Refresh session expired. Please login again." });
+      }
+      return res.json({
+        success: true,
+        token: session.accessToken,
+        refreshToken: session.refreshToken,
+      });
+    } catch (e: any) {
+      return res.status(500).json({ success: false, code: "SERVER_ERROR", message: safeErrMsg(e) });
+    }
   });
 
-  // -- Reset password via Firebase token (SMS-free flow) --------------------
-  app.post("/api/app/reset-password-firebase", async (req, res) => {
-    return res.status(410).json({
-      success: false,
-      code: "FIREBASE_AUTH_REMOVED",
-      message: "Firebase password reset has been removed. Request a password reset through support.",
-    });
-    try {
-      const { firebaseIdToken, phone, newPassword, userType = "customer" } = req.body;
-      if (!firebaseIdToken || !phone || !newPassword) {
-        return res.status(400).json({ message: "Firebase token, phone and new password are required" });
-      }
-      if (newPassword.length < 6) return res.status(400).json({ message: "Password must be at least 6 characters" });
-      const phoneStr = phone.toString().replace(/\D/g, "").slice(-10);
-      if (phoneStr.length < 10) return res.status(400).json({ message: "Invalid phone number" });
-
-      // Verify Firebase token
-      let firebasePhone = "";
-      const { getFirebaseAdminAsync } = await import("./fcm.js");
-      const adminInst = await getFirebaseAdminAsync();
-      if (adminInst) {
-        const decoded = await adminInst.auth().verifyIdToken(firebaseIdToken);
-        firebasePhone = (decoded.phone_number || "").replace(/\D/g, "").slice(-10);
-      } else {
-        const webApiKey = process.env.FIREBASE_WEB_API_KEY;
-        if (!webApiKey) return res.status(503).json({ message: "Firebase not configured. Contact support." });
-        const lookupRes = await fetch(
-          `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${webApiKey}`,
-          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ idToken: firebaseIdToken }) }
-        );
-        if (!lookupRes.ok) return res.status(401).json({ message: "Invalid or expired Firebase token." });
-        const lookupData = (await lookupRes.json()) as any;
-        firebasePhone = (lookupData.users?.[0]?.phoneNumber || "").replace(/\D/g, "").slice(-10);
-      }
-      if (!firebasePhone) return res.status(401).json({ message: "Could not verify phone from Firebase token." });
-      if (firebasePhone !== phoneStr) return res.status(400).json({ message: "Phone number mismatch." });
-
-      // Check user exists
-      const userRes = await rawDb.execute(rawSql`SELECT id FROM users WHERE phone=${phoneStr} AND user_type=${userType} LIMIT 1`);
-      if (!userRes.rows.length) return res.status(404).json({ message: "User not found." });
-
-      const passwordHash = await hashPassword(newPassword);
-      await rawDb.execute(rawSql`UPDATE users SET password_hash=${passwordHash}, reset_otp=NULL, reset_otp_expiry=NULL WHERE phone=${phoneStr} AND user_type=${userType}`);
-      res.json({ success: true, message: "Password reset successfully. Please login with your new password." });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
-  });
-
-  // -- AUTH MIDDLEWARE (simple token check) ---------------------------------
+  // -- AUTH MIDDLEWARE (JWT + session validation) ---------------------------
   async function authApp(req: Request, res: Response, next: NextFunction) {
     try {
-      const token = req.headers.authorization?.replace("Bearer ", "");
+      const token = extractBearerToken(req);
       if (!token) return res.status(401).json({ message: "No token provided" });
-      const parts = token.split(":");
-      if (parts.length < 2) return res.status(401).json({ message: "Invalid token format" });
-      const userId = parts[0];
-      // Validate full token against stored auth_token in DB and check expiry
+      const session = await authenticateAppAccessToken(token);
+      if (!session) return res.status(401).json({ message: "Session expired or invalid. Please login again." });
       const userR = await rawDb.execute(rawSql`
-        SELECT * FROM users WHERE id=${userId}::uuid AND is_active=true AND auth_token=${token}
-          AND (auth_token_expires_at IS NULL OR auth_token_expires_at > NOW()) LIMIT 1
+        SELECT * FROM users WHERE id=${session.userId}::uuid AND is_active=true LIMIT 1
       `);
       if (!userR.rows.length) return res.status(401).json({ message: "Session expired or invalid. Please login again." });
       (req as any).currentUser = camelize(userR.rows[0]);
+      (req as any).sessionContext = session;
       next();
     } catch (e: any) { res.status(401).json({ message: "Auth failed" }); }
   }
@@ -8516,23 +8363,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // If a token is present we attach currentUser, but we do not block the request.
   async function optionalAuthApp(req: Request, _res: Response, next: NextFunction) {
     try {
-      const token = req.headers.authorization?.replace("Bearer ", "");
+      const token = extractBearerToken(req);
       if (!token) {
         next();
         return;
       }
-      const parts = token.split(":");
-      if (parts.length < 2) {
-        next();
-        return;
-      }
-      const userId = parts[0];
-      const userR = await rawDb.execute(rawSql`
-        SELECT * FROM users WHERE id=${userId}::uuid AND is_active=true AND auth_token=${token}
-          AND (auth_token_expires_at IS NULL OR auth_token_expires_at > NOW()) LIMIT 1
-      `);
-      if (userR.rows.length) {
+      const session = await authenticateAppAccessToken(token);
+      if (session) {
+        const userR = await rawDb.execute(rawSql`
+          SELECT * FROM users WHERE id=${session.userId}::uuid AND is_active=true LIMIT 1
+        `);
+        if (userR.rows.length) {
         (req as any).currentUser = camelize(userR.rows[0]);
+          (req as any).sessionContext = session;
+        }
       }
     } catch (_) {
       // Mapping and config flows should keep working even if auth is stale.
@@ -8540,7 +8384,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     next();
   }
 
-  // Role-specific guards � always used after authApp
+  // Role-specific guards ï¿½ always used after authApp
   function requireDriver(req: Request, res: Response, next: NextFunction) {
     const user = (req as any).currentUser;
     if (user?.userType !== "driver") return res.status(403).json({ message: "Driver access required" });
@@ -8567,11 +8411,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (validSpeed < 0) throw new Error("Speed cannot be negative");
       if (validHeading < 0 || validHeading > 360) throw new Error("Heading must be 0-360");
 
-      // isOnline defaults to true � if you're sending location, you are online.
+      // isOnline defaults to true ï¿½ if you're sending location, you are online.
       // Fallback chain: body.isOnline ? true (never false here; going offline is via online-status endpoint)
       const effectiveOnline = isOnline !== undefined ? Boolean(isOnline) : true;
 
-      // Upsert location � always include updated_at=NOW() in both INSERT and ON CONFLICT
+      // Upsert location ï¿½ always include updated_at=NOW() in both INSERT and ON CONFLICT
       await rawDb.execute(rawSql`
         INSERT INTO driver_locations (driver_id, lat, lng, heading, speed, is_online, updated_at)
         VALUES (${driver.id}::uuid, ${coords.lat}, ${coords.lng}, ${validHeading}, ${validSpeed}, ${effectiveOnline}, NOW())
@@ -8599,8 +8443,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         // Check verification status FIRST
         const verR = await rawDb.execute(rawSql`SELECT verification_status, rejection_note FROM users WHERE id=${driver.id}::uuid`);
         const vs = (verR.rows[0] as any)?.verification_status;
-        if (!['approved', 'verified', 'pending'].includes(vs)) {
-          console.log(`[DRIVER_STATUS] Driver ${driver.id} (status: ${vs}) - Allowing regardless of verification status for test`);
+        if (!['approved', 'verified'].includes(vs)) {
+          return res.status(403).json({
+            message: vs === 'pending'
+              ? "Driver verification is still pending. You can go online after approval."
+              : "Driver verification is required before going online.",
+            code: "DRIVER_NOT_APPROVED",
+            verificationStatus: vs || null,
+          });
         }
         // Check if driver has selected a revenue model
         const modelR = await rawDb.execute(rawSql`SELECT revenue_model, model_selected_at FROM users WHERE id=${driver.id}::uuid`);
@@ -8610,7 +8460,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             // Auto-heal: driver has a revenue model set (e.g. by admin) but model_selected_at was never recorded  backfill it
             await rawDb.execute(rawSql`UPDATE users SET model_selected_at=NOW() WHERE id=${driver.id}::uuid`);
           } else {
-            console.log(`[DRIVER_STATUS] Driver ${driver.id} - No model selected, but ALLOWING for test`);
+            return res.status(403).json({
+              message: "Please select a revenue model before going online.",
+              code: "REVENUE_MODEL_REQUIRED",
+            });
           }
         }
         // Subscription-like models require an active plan before going online
@@ -8624,12 +8477,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           if (!inFreePeriod) {
             const subR = await rawDb.execute(rawSql`SELECT id, end_date FROM driver_subscriptions WHERE driver_id=${driver.id}::uuid AND is_active=true AND end_date > NOW() ORDER BY end_date DESC LIMIT 1`);
             if (!subR.rows.length) {
-              console.log(`[DRIVER_STATUS] Driver ${driver.id} - Subscription expired, but ALLOWING for test`);
+              return res.status(403).json({
+                message: "Active subscription required to go online.",
+                code: "SUBSCRIPTION_REQUIRED",
+              });
             }
           }
         }
 
-        // Check document expiry � insurance, RC, PUC must be valid
+        // Check document expiry ï¿½ insurance, RC, PUC must be valid
         const docExpR = await rawDb.execute(rawSql`
           SELECT doc_type, expiry_date FROM driver_documents
           WHERE driver_id=${driver.id}::uuid
@@ -8641,26 +8497,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         if (docExpR.rows.length) {
           const expDoc = docExpR.rows[0] as any;
           const docLabel = expDoc.doc_type === 'rc' ? 'Vehicle RC' : expDoc.doc_type === 'insurance' ? 'Vehicle Insurance' : 'Pollution Certificate (PUC)';
-          // return res.status(403).json({
-          //   message: `Your ${docLabel} has expired (${expDoc.expiry_date}). Please upload an updated document to go online.`,
-          //   documentExpired: true,
-          //   docType: expDoc.doc_type,
-          // });
-          console.log(`[DRIVER_STATUS] Driver ${driver.id} - Documents expired (${expDoc.doc_type}), but ALLOWING for test`);
+          return res.status(403).json({
+            message: `Your ${docLabel} has expired (${expDoc.expiry_date}). Please upload an updated document to go online.`,
+            code: "DOCUMENT_EXPIRED",
+            documentExpired: true,
+            docType: expDoc.doc_type,
+          });
         }
-        // Check wallet lock (applies to both models � negative balance)
+        // Check wallet lock (applies to both models ï¿½ negative balance)
         const walletR = await rawDb.execute(rawSql`SELECT is_locked, wallet_balance, lock_reason FROM users WHERE id=${driver.id}::uuid`);
         const w = walletR.rows[0] as any;
         const currentBalance = parseFloat(w?.wallet_balance || 0);
         // Also fetch the auto-lock threshold from settings
         const thresholdR = await rawDb.execute(rawSql`SELECT value FROM revenue_model_settings WHERE key_name='auto_lock_threshold' LIMIT 1`);
         const lockThreshold = parseFloat((thresholdR.rows[0] as any)?.value || "-100");
-        // Block if explicitly locked
-        // if (w?.is_locked) return res.status(403).json({
-        //   message: w.lock_reason || "Account locked. Please recharge wallet to go online.",
-        //   isLocked: true, walletBalance: currentBalance
-        // });
-        if (w?.is_locked) console.log(`[DRIVER_STATUS] Driver ${driver.id} - Locked (${w.lock_reason}), but ALLOWING for test`);
+        if (w?.is_locked) return res.status(403).json({
+          message: w.lock_reason || "Account locked. Please recharge wallet to go online.",
+          code: "ACCOUNT_LOCKED",
+          isLocked: true,
+          walletBalance: currentBalance,
+        });
         // Block if wallet is below threshold (auto-lock that wasn't yet written)
         if (currentBalance < lockThreshold) {
           const lockMsg = `Wallet balance ?${currentBalance.toFixed(2)} is below minimum threshold ?${lockThreshold}. Recharge wallet to go online.`;
@@ -8713,7 +8569,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const lng = req.body.lng;
       const hasValidCoords = lat != null && lng != null && isFinite(Number(lat)) && isFinite(Number(lng)) && (Number(lat) !== 0 || Number(lng) !== 0);
       await rawDb.execute(rawSql`UPDATE users SET is_online=${isOnline} WHERE id=${driver.id}::uuid`);
-      // UPSERT driver_locations � only update lat/lng if we have a real GPS fix; never write 0,0
+      // UPSERT driver_locations ï¿½ only update lat/lng if we have a real GPS fix; never write 0,0
       if (hasValidCoords) {
         await rawDb.execute(rawSql`
           INSERT INTO driver_locations (driver_id, lat, lng, is_online, updated_at)
@@ -8971,11 +8827,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
               LIMIT 1
             `);
         if (!subR.rows.length) {
-              // return res.status(403).json({
-              //   message: "Active subscription required to accept rides. Please subscribe to continue.",
-              //   code: "SUBSCRIPTION_REQUIRED",
-              // });
-              console.log(`[DRIVER_ACCEPT] Driver ${driver.id} - Subscription missing, but ALLOWING for test`);
+              return res.status(403).json({
+                message: "Active subscription required to accept rides. Please subscribe to continue.",
+                code: "SUBSCRIPTION_REQUIRED",
+              });
             }
           }
         }
@@ -8983,86 +8838,92 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       // -- Account lock check ------------------------------------------------
       if (driver.is_locked || driver.isLocked) {
-        // return res.status(403).json({
-        //   message: driver.lock_reason || driver.lockReason || "Account locked. Please clear pending dues to accept rides.",
-        //   code: "ACCOUNT_LOCKED",
-        // });
-        console.log(`[DRIVER_ACCEPT] Driver ${driver.id} - Locked, but ALLOWING for test`);
+        return res.status(403).json({
+          message: driver.lock_reason || driver.lockReason || "Account locked. Please clear pending dues to accept rides.",
+          code: "ACCOUNT_LOCKED",
+        });
       }
 
-      // Generate pickup OTP
       const otp = Math.floor(1000 + Math.random() * 9000).toString();
-
-      // Atomically claim trip � busy check embedded in WHERE to prevent TOCTOU race:
-      // if driver already has an active trip this UPDATE returns 0 rows.
-      const r = await rawDb.execute(rawSql`
-        UPDATE trip_requests
-        SET current_status='accepted', driver_accepted_at=NOW(), driver_arriving_at=NOW(), pickup_otp=${otp}, driver_id=${driver.id}::uuid
-        WHERE id=${tripId}::uuid
-          AND current_status IN ('searching','driver_assigned')
-          AND (driver_id IS NULL OR driver_id=${driver.id}::uuid)
-        RETURNING *
-      `);
-      console.log(`[DRIVER_ACCEPT] Claiming trip ${tripId} for driver ${driver.id}`);
-      if (!r.rows.length) {
-        // Fallback: Check what the real status is, in case it was hijacked or already completed
-        const exists = await rawDb.execute(rawSql`SELECT * FROM trip_requests WHERE id=${tripId}::uuid`);
-        if (!exists.rows.length) {
-          return res.status(404).json({ message: "Cannot accept trip: Not found", code: "TRIP_NOT_FOUND" });
+      const acceptOutcome = await rawDb.transaction(async (tx) => {
+        const driverLock = await tx.execute(rawSql`
+          SELECT id, current_trip_id
+          FROM users
+          WHERE id=${driver.id}::uuid
+          FOR UPDATE
+        `);
+        if (!driverLock.rows.length) {
+          return { ok: false as const, code: "DRIVER_NOT_FOUND", message: "Driver account not found" };
         }
-        const info = exists.rows[0] as any;
-        if (info.current_status === 'accepted') {
-          if (info.driver_id === driver.id) {
-            // WE ALREADY CLAIMED THIS SUCCESSFULLY (socket updated it before falling back here)
-            // Just populate r.rows and proceed.
-            r.rows = [info];
-          } else {
-            return res.status(409).json({ message: "Trip already accepted by another driver", code: "TRIP_ALREADY_TAKEN" });
+        const driverRow = driverLock.rows[0] as any;
+        if (driverRow.current_trip_id && String(driverRow.current_trip_id) !== tripId) {
+          return { ok: false as const, code: "DRIVER_BUSY", message: "Driver already has another active trip" };
+        }
+
+        const tripLock = await tx.execute(rawSql`
+          SELECT *
+          FROM trip_requests
+          WHERE id=${tripId}::uuid
+          FOR UPDATE
+        `);
+        if (!tripLock.rows.length) {
+          return { ok: false as const, code: "TRIP_NOT_FOUND", message: "Cannot accept trip: Not found" };
+        }
+        const tripInfo = tripLock.rows[0] as any;
+        if (!["searching", "driver_assigned"].includes(String(tripInfo.current_status || ""))) {
+          if (tripInfo.current_status === "cancelled") {
+            return { ok: false as const, code: "TRIP_CANCELLED", message: "Trip was cancelled by customer" };
           }
-        } else {
-          if (info.current_status === 'cancelled') {
-            return res.status(409).json({ message: "Trip was cancelled by customer", code: "TRIP_CANCELLED" });
+          if (tripInfo.current_status === "accepted" && String(tripInfo.driver_id || "") !== driver.id) {
+            return { ok: false as const, code: "TRIP_ALREADY_TAKEN", message: "Trip already accepted by another driver" };
           }
-          return res.status(409).json({
-            message: "Cannot accept trip in status: " + info.current_status,
+          return {
+            ok: false as const,
             code: "INVALID_TRIP_STATUS",
+            message: `Cannot accept trip in status: ${tripInfo.current_status}`,
+          };
+        }
+        if (tripInfo.driver_id && String(tripInfo.driver_id) !== driver.id) {
+          return { ok: false as const, code: "TRIP_ALREADY_TAKEN", message: "Trip already accepted by another driver" };
+        }
+
+        const accepted = await tx.execute(rawSql`
+          UPDATE trip_requests
+          SET current_status='accepted',
+              driver_accepted_at=NOW(),
+              driver_arriving_at=NOW(),
+              pickup_otp=${otp},
+              driver_id=${driver.id}::uuid,
+              updated_at=NOW()
+          WHERE id=${tripId}::uuid
+          RETURNING *
+        `);
+        await tx.execute(rawSql`
+          UPDATE users
+          SET current_trip_id=${tripId}::uuid
+          WHERE id=${driver.id}::uuid
+        `);
+        return { ok: true as const, trip: accepted.rows[0] as any };
+      });
+      console.log(`[DRIVER_ACCEPT] Claiming trip ${tripId} for driver ${driver.id}`);
+      if (!acceptOutcome.ok) {
+        if (acceptOutcome.code === "DRIVER_BUSY") {
+          onDriverRejected(tripId, driver.id).catch((err: any) => {
+            console.error("[DISPATCH] reject after driver busy:", err.message);
           });
         }
+        return res.status(
+          acceptOutcome.code === "TRIP_NOT_FOUND" ? 404
+            : acceptOutcome.code === "DRIVER_NOT_FOUND" ? 404
+              : 409,
+        ).json({ message: acceptOutcome.message, code: acceptOutcome.code });
       }
 
-      // Reserve the driver atomically. If another accept already attached this driver to a different trip,
-      // release this claim immediately so one driver cannot own two trips at once.
-      const driverClaim = await rawDb.execute(rawSql`
-        UPDATE users
-        SET current_trip_id=${tripId}::uuid
-        WHERE id=${driver.id}::uuid
-          AND (current_trip_id IS NULL OR current_trip_id=${tripId}::uuid)
-        RETURNING current_trip_id
-      `);
-      if (!driverClaim.rows.length) {
-        await rawDb.execute(rawSql`
-          UPDATE trip_requests
-          SET current_status='searching',
-              driver_id=NULL,
-              pickup_otp=NULL,
-              driver_accepted_at=NULL,
-              driver_arriving_at=NULL,
-              rejected_driver_ids = array_append(COALESCE(rejected_driver_ids,'{}'), ${driver.id}::uuid)
-          WHERE id=${tripId}::uuid
-            AND driver_id=${driver.id}::uuid
-            AND current_status='accepted'
-        `).catch(dbCatch("db"));
-        onDriverRejected(tripId, driver.id).catch((err: any) => {
-          console.error('[DISPATCH] accept rollback onDriverRejected error:', err.message);
-        });
-        return res.status(409).json({ message: "Driver already has another active trip", code: "DRIVER_BUSY" });
-      }
-
-      // Notify dispatch engine � clears timers and notifies other drivers
-      // Notify dispatch engine – clears timers and notifies other drivers
+      // Notify dispatch engine ï¿½ clears timers and notifies other drivers
+      // Notify dispatch engine â€“ clears timers and notifies other drivers
       onDriverAccepted(tripId, driver.id);
 
-      const tripData = camelize(r.rows[0]) as any;
+      const tripData = camelize(acceptOutcome.trip) as any;
       const driverVehicleR = await rawDb.execute(rawSql`
         SELECT dd.vehicle_number, dd.vehicle_model, vc.name as vehicle_category
         FROM driver_details dd
@@ -9096,7 +8957,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       await appendTripStatus(tripData.id, 'driver_assigned', 'driver', 'Driver accepted trip');
       await logRideLifecycleEvent(tripData.id, 'driver_assigned', driver.id, 'driver', { pickupOtp: otp });
 
-      // ?? Socket: notify customer � driver accepted, show pilot details
+      // ?? Socket: notify customer ï¿½ driver accepted, show pilot details
       if (io) {
         io.to(`user:${tripData.customerId}`).emit("trip:accepted", {
           tripId: tripData.id,
@@ -9148,10 +9009,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       if (!tripId || !uuidRe.test(tripId)) return res.json({ success: true });
 
-      // Clear current_trip_id on this driver (defensive � should not be set for searching trips)
+      // Clear current_trip_id on this driver (defensive ï¿½ should not be set for searching trips)
       await rawDb.execute(rawSql`UPDATE users SET current_trip_id=NULL WHERE id=${driver.id}::uuid AND current_trip_id=${tripId}::uuid`);
 
-      // Record rejection � keep trip in 'searching', clear driver_id assignment if any
+      // Record rejection ï¿½ keep trip in 'searching', clear driver_id assignment if any
       const tripRes = await rawDb.execute(rawSql`
         UPDATE trip_requests
         SET current_status='searching', driver_id=NULL,
@@ -9163,7 +9024,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       `);
 
       if (tripRes.rows.length) {
-        // Notify dispatch engine � immediately moves to next driver in queue
+        // Notify dispatch engine ï¿½ immediately moves to next driver in queue
         onDriverRejected(tripId, driver.id).catch((err: any) => {
           console.error('[DISPATCH] onDriverRejected error:', err.message);
           // Fallback: legacy re-assignment if dispatch engine not tracking this trip
@@ -9196,28 +9057,40 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       if (!tripId || !uuidRe.test(tripId)) return res.status(400).json({ message: "Invalid trip ID" });
       if (!otp || String(otp).trim().length < 4) return res.status(400).json({ message: "Pickup OTP required" });
-      const r = await rawDb.execute(rawSql`
-        SELECT *, (SELECT full_name FROM users WHERE id=customer_id) as customer_name,
-          (SELECT phone FROM users WHERE id=customer_id) as customer_phone
-        FROM trip_requests WHERE id=${tripId}::uuid
-          AND driver_id=${driver.id}::uuid
-          AND current_status = 'arrived'
-      `);
-      if (!r.rows.length) return res.status(404).json({ message: "Trip not found" });
-      const trip = r.rows[0] as any;
-      if (trip.pickup_otp !== otp) return res.status(400).json({ message: "Wrong OTP. Please check with sender." });
-      // OTP expiry: valid for 40 minutes from when driver accepted the trip
-      if (trip.driver_accepted_at) {
-        const acceptedAt = new Date(trip.driver_accepted_at).getTime();
-        if (Date.now() - acceptedAt > 40 * 60 * 1000) {
-          return res.status(400).json({ message: "OTP has expired. Please ask customer to regenerate." });
+      const startOutcome = await rawDb.transaction(async (tx) => {
+        const r = await tx.execute(rawSql`
+          SELECT *, (SELECT full_name FROM users WHERE id=customer_id) as customer_name,
+            (SELECT phone FROM users WHERE id=customer_id) as customer_phone
+          FROM trip_requests
+          WHERE id=${tripId}::uuid
+            AND driver_id=${driver.id}::uuid
+          FOR UPDATE
+        `);
+        if (!r.rows.length) return { ok: false as const, status: 404, message: "Trip not found" };
+        const trip = r.rows[0] as any;
+        if (trip.current_status !== "arrived") {
+          return { ok: false as const, status: 409, message: `Cannot start trip in status: ${trip.current_status}` };
         }
-      }
-      const updated = await rawDb.execute(rawSql`
-        UPDATE trip_requests SET current_status='on_the_way', ride_started_at=NOW()
-        WHERE id=${tripId}::uuid RETURNING *
-      `);
-      const updatedTrip = camelize(updated.rows[0]);
+        if (trip.pickup_otp !== otp) return { ok: false as const, status: 400, message: "Wrong OTP. Please check with sender." };
+        if (trip.driver_accepted_at) {
+          const acceptedAt = new Date(trip.driver_accepted_at).getTime();
+          if (Date.now() - acceptedAt > 40 * 60 * 1000) {
+            return { ok: false as const, status: 400, message: "OTP has expired. Please ask customer to regenerate." };
+          }
+        }
+        const updated = await tx.execute(rawSql`
+          UPDATE trip_requests
+          SET current_status='on_the_way',
+              ride_started_at=COALESCE(ride_started_at, NOW()),
+              updated_at=NOW()
+          WHERE id=${tripId}::uuid
+          RETURNING *
+        `);
+        return { ok: true as const, trip, updatedTrip: camelize(updated.rows[0]) as any };
+      });
+      if (!startOutcome.ok) return res.status(startOutcome.status).json({ message: startOutcome.message });
+      const trip = startOutcome.trip;
+      const updatedTrip = startOutcome.updatedTrip;
       await appendTripStatus(tripId, 'trip_started', 'driver', 'Pickup OTP verified');
       await logRideLifecycleEvent(tripId, 'trip_started', driver.id, 'driver', { via: 'verify-pickup-otp' });
 
@@ -9291,83 +9164,63 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const driver = (req as any).currentUser;
       const { tripId } = req.body;
-      console.log(`[API] /api/app/driver/arrived — driverId=${driver.id}, tripId=${tripId}, body=${JSON.stringify(req.body)}`);
-
       if (!tripId) {
-        console.log(`[API] /api/app/driver/arrived — ERROR: tripId required`);
         return res.status(400).json({ message: "tripId required" });
       }
 
-      console.log(`[API] /api/app/driver/arrived — Checking trip status before update`);
-      const checkBefore = await rawDb.execute(rawSql`SELECT current_status, driver_id FROM trip_requests WHERE id=${tripId}::uuid`);
-      const beforeRow = checkBefore.rows[0] as any;
-      console.log(`[API] /api/app/driver/arrived — Current DB status: ${beforeRow?.current_status}, driver_id: ${beforeRow?.driver_id}`);
-
-      const updR = await rawDb.execute(rawSql`
-        UPDATE trip_requests SET current_status='arrived'
-        WHERE id=${tripId}::uuid AND driver_id=${driver.id}::uuid
-          AND current_status IN ('accepted','driver_assigned')
-        RETURNING id, pickup_otp, customer_id
-      `);
-      console.log(`[API] /api/app/driver/arrived — Update result: ${updR.rows.length} rows affected`);
-
-      if (!updR.rows.length) {
-        const check = await rawDb.execute(rawSql`SELECT current_status FROM trip_requests WHERE id=${tripId}::uuid`);
-        const st = (check.rows[0] as any)?.current_status;
-        console.log(`[API] /api/app/driver/arrived — ERROR: Cannot update status. Current status: ${st}, driver match: ${beforeRow?.driver_id === driver.id}`);
-        if (!st) {
-          console.log(`[API] /api/app/driver/arrived — Trip not found`);
-          return res.status(404).json({ message: "Trip not found", code: "TRIP_NOT_FOUND" });
+      const arrivedOutcome = await rawDb.transaction(async (tx) => {
+        const tripState = await tx.execute(rawSql`
+          SELECT t.current_status, t.driver_id
+          FROM trip_requests t
+          WHERE t.id=${tripId}::uuid
+          FOR UPDATE
+        `);
+        const beforeRow = tripState.rows[0] as any;
+        if (!beforeRow) {
+          return { ok: false as const, status: 404, body: { message: "Trip not found", code: "TRIP_NOT_FOUND" } };
         }
-        console.log(`[API] /api/app/driver/arrived — Invalid status for arrived: ${st}`);
-        if (st === 'arrived' && beforeRow?.driver_id === driver.id) {
-          const fullTrip = await rawDb.execute(rawSql`
+        const st = String(beforeRow.current_status || "");
+        if (String(beforeRow.driver_id || "") !== driver.id) {
+          return {
+            ok: false as const,
+            status: 409,
+            body: { message: "This trip is already assigned to another driver", code: "TRIP_OWNERSHIP_MISMATCH", currentStatus: st },
+          };
+        }
+        if (st === "arrived") {
+          const fullTrip = await tx.execute(rawSql`
             SELECT t.*, c.full_name as customer_name, c.phone as customer_phone
             FROM trip_requests t
             LEFT JOIN users c ON c.id = t.customer_id
-            WHERE t.id=${tripId}::uuid LIMIT 1
+            WHERE t.id=${tripId}::uuid
+            LIMIT 1
           `);
           const tripData = fullTrip.rows.length ? camelize(fullTrip.rows[0]) : null;
           const existingOtp = (tripData as any)?.pickupOtp || (tripData as any)?.pickup_otp || "";
-          return res.json({ success: true, pickupOtp: existingOtp, trip: tripData, idempotent: true });
+          return { ok: false as const, status: 200, body: { success: true, pickupOtp: existingOtp, trip: tripData, idempotent: true } };
         }
-        if ((st === 'accepted' || st === 'driver_assigned') && beforeRow?.driver_id !== driver.id) {
-          return res.status(409).json({
-            message: "This trip is already assigned to another driver",
-            code: "TRIP_OWNERSHIP_MISMATCH",
-            currentStatus: st,
-          });
+        if (!["accepted", "driver_assigned"].includes(st)) {
+          const code =
+            st === "on_the_way" ? "TRIP_ALREADY_STARTED"
+              : st === "completed" ? "TRIP_ALREADY_COMPLETED"
+                : st === "cancelled" ? "TRIP_CANCELLED"
+                  : "INVALID_TRIP_STATUS";
+          return { ok: false as const, status: 409, body: { message: `Cannot mark arrived in status: ${st}`, code, currentStatus: st } };
         }
-        if (st === 'on_the_way') {
-          return res.status(409).json({
-            message: "Ride already started. Refreshing latest trip state.",
-            code: "TRIP_ALREADY_STARTED",
-            currentStatus: st,
-          });
-        }
-        if (st === 'completed') {
-          return res.status(409).json({
-            message: "Trip already completed.",
-            code: "TRIP_ALREADY_COMPLETED",
-            currentStatus: st,
-          });
-        }
-        if (st === 'cancelled') {
-          return res.status(409).json({
-            message: "Trip was cancelled.",
-            code: "TRIP_CANCELLED",
-            currentStatus: st,
-          });
-        }
-        return res.status(409).json({
-          message: `Cannot mark arrived in status: ${st}`,
-          code: "INVALID_TRIP_STATUS",
-          currentStatus: st,
-        });
+        const updR = await tx.execute(rawSql`
+          UPDATE trip_requests
+          SET current_status='arrived',
+              updated_at=NOW()
+          WHERE id=${tripId}::uuid
+          RETURNING id, pickup_otp, customer_id
+        `);
+        return { ok: true as const, updatedRow: updR.rows[0] as any };
+      });
+      if (!arrivedOutcome.ok) {
+        return res.status(arrivedOutcome.status).json(arrivedOutcome.body);
       }
 
-      const updatedRow = updR.rows[0] as any;
-      console.log(`[API] /api/app/driver/arrived — Successfully updated to arrived, pickup_otp: ${updatedRow.pickup_otp}`);
+      const updatedRow = arrivedOutcome.updatedRow;
 
       // Get pickup OTP + passenger info + customer FCM token
       const r = await rawDb.execute(rawSql`
@@ -9379,17 +9232,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       `);
       const tripRow = r.rows[0] as any;
       const otp = tripRow?.pickup_otp;
-      console.log(`[API] /api/app/driver/arrived — Retrieved trip details: otp=${otp}, customer_id=${tripRow?.customer_id}, is_for_someone_else=${tripRow?.is_for_someone_else}`);
 
       try {
       await appendTripStatus(tripId, 'driver_arriving', 'driver', 'Driver reached pickup');
       await logRideLifecycleEvent(tripId, 'driver_arriving', driver.id, 'driver');
-      console.log(`[API] /api/app/driver/arrived — Logged trip status and lifecycle event`);
 
-      // ?? Notify customer � driver arrived, show OTP
+      // ?? Notify customer ï¿½ driver arrived, show OTP
       const custDevRes = await rawDb.execute(rawSql`SELECT fcm_token FROM user_devices WHERE user_id=${tripRow.customer_id}::uuid`);
       const custFcmToken = (custDevRes.rows[0] as any)?.fcm_token || null;
-      console.log(`[API] /api/app/driver/arrived — Customer FCM token: ${custFcmToken ? 'found' : 'not found'}`);
 
       notifyCustomerDriverArrived({
         fcmToken: custFcmToken,
@@ -9397,20 +9247,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         otp: otp || "",
         tripId,
       }).catch(dbCatch("db"));
-      console.log(`[API] /api/app/driver/arrived — Sent FCM notification to customer`);
 
-      // ?? If booked for someone else � send OTP as SMS to passenger phone
+      // ?? If booked for someone else ï¿½ send OTP as SMS to passenger phone
       if (tripRow?.is_for_someone_else && tripRow?.passenger_phone) {
-        console.log(`[API] /api/app/driver/arrived — Sending OTP SMS to passenger: ${tripRow.passenger_phone}`);
         sendCustomSms(tripRow.passenger_phone,
           `JAGO Pro: Your ride OTP is ${otp}. Share with driver ${driver.fullName || ''} to start. Ref: ${tripId.slice(-6).toUpperCase()}`
         ).catch(dbCatch("db"));
       }
-      // ?? For parcel � remind sender with pickup OTP via SMS
+      // ?? For parcel ï¿½ remind sender with pickup OTP via SMS
       if (tripRow?.trip_type === 'parcel' || tripRow?.trip_type === 'delivery') {
         const senderPhone = tripRow.customer_phone;
         if (senderPhone) {
-          console.log(`[API] /api/app/driver/arrived — Sending OTP SMS to sender for parcel: ${senderPhone}`);
           sendCustomSms(senderPhone,
           `JAGO Pro Parcel: Driver ${driver.fullName || ''} arrived. Pickup OTP: ${otp}. Share to hand over parcel.`
         ).catch(dbCatch("db"));
@@ -9418,14 +9265,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       if (io && tripRow?.customer_id) {
-        console.log(`[API] /api/app/driver/arrived — Emitting socket events to customer and trip room`);
         io.to(`user:${tripRow.customer_id}`).emit("trip:status_update", { tripId, status: "arrived", otp, uiState: 'driver_arriving', trip: camelize(tripRow) });
         io.to(`trip:${tripId}`).emit("trip:status_update", { tripId, status: "arrived", otp, uiState: 'driver_arriving', trip: camelize(tripRow) });
       }
-
-      console.log(`[API] /api/app/driver/arrived — SUCCESS: Responding with pickupOtp=${otp}`);
       } catch (sideEffectErr: any) {
-        console.log(`[API] /api/app/driver/arrived â€” Non-blocking side effect error: ${safeErrMsg(sideEffectErr)}`);
+        console.warn(`[API] driver/arrived side effect error: ${safeErrMsg(sideEffectErr)}`);
       }
 
       // Return full trip data to ensure client has all coordinates
@@ -9437,10 +9281,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       `);
       const tripData = fullTrip.rows.length ? camelize(fullTrip.rows[0]) : null;
       res.json({ success: true, pickupOtp: otp, trip: tripData });
-    } catch (e: any) {
-      console.log(`[API] /api/app/driver/arrived — ERROR: ${safeErrMsg(e)}`);
-      res.status(500).json({ message: safeErrMsg(e) });
-    }
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
   // -- DRIVER: Start trip (arrived ? on_the_way) ----------------------------
@@ -9450,30 +9291,41 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const { tripId, pickupOtp } = req.body;
       const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       if (!tripId || !uuidRe.test(tripId)) return res.status(400).json({ message: "Invalid trip ID" });
-      const tripInfo = await rawDb.execute(rawSql`
-        SELECT current_status, pickup_otp, trip_type FROM trip_requests
-        WHERE id=${tripId}::uuid AND driver_id=${driver.id}::uuid
-      `);
-      if (!tripInfo.rows.length) return res.status(404).json({ message: "Trip not found" });
-      const tripRow = tripInfo.rows[0] as any;
-      if (tripRow.current_status !== 'arrived') {
-        return res.status(400).json({ message: `Cannot start trip in status: ${tripRow.current_status}` });
-      }
-      if (!pickupOtp || !String(pickupOtp).trim()) {
-        return res.status(400).json({ message: "Pickup OTP is required" });
-      }
-      if (tripRow.pickup_otp && pickupOtp !== tripRow.pickup_otp) {
-        return res.status(400).json({ message: "Invalid OTP" });
-      }
-      const startR = await rawDb.execute(rawSql`
-        UPDATE trip_requests SET current_status='on_the_way', ride_started_at=COALESCE(ride_started_at, NOW())
-        WHERE id=${tripId}::uuid AND driver_id=${driver.id}::uuid
-        RETURNING id
-      `);
-      if (!startR.rows.length) return res.status(400).json({ message: "Trip update failed � driver mismatch or trip already moved" });
+      const startOutcome = await rawDb.transaction(async (tx) => {
+        const tripInfo = await tx.execute(rawSql`
+          SELECT current_status, pickup_otp, trip_type
+          FROM trip_requests
+          WHERE id=${tripId}::uuid AND driver_id=${driver.id}::uuid
+          FOR UPDATE
+        `);
+        if (!tripInfo.rows.length) return { ok: false as const, status: 404, message: "Trip not found" };
+        const tripRow = tripInfo.rows[0] as any;
+        if (tripRow.current_status !== "arrived") {
+          return { ok: false as const, status: 400, message: `Cannot start trip in status: ${tripRow.current_status}` };
+        }
+        if (!pickupOtp || !String(pickupOtp).trim()) {
+          return { ok: false as const, status: 400, message: "Pickup OTP is required" };
+        }
+        if (tripRow.pickup_otp && pickupOtp !== tripRow.pickup_otp) {
+          return { ok: false as const, status: 400, message: "Invalid OTP" };
+        }
+        const startR = await tx.execute(rawSql`
+          UPDATE trip_requests
+          SET current_status='on_the_way',
+              ride_started_at=COALESCE(ride_started_at, NOW()),
+              updated_at=NOW()
+          WHERE id=${tripId}::uuid AND driver_id=${driver.id}::uuid
+          RETURNING id
+        `);
+        if (!startR.rows.length) {
+          return { ok: false as const, status: 400, message: "Trip update failed - driver mismatch or trip already moved" };
+        }
+        return { ok: true as const, tripType: String(tripRow.trip_type || "") };
+      });
+      if (!startOutcome.ok) return res.status(startOutcome.status).json({ message: startOutcome.message });
       await appendTripStatus(tripId, 'trip_started', 'driver', 'Trip started from driver app');
       await logRideLifecycleEvent(tripId, 'trip_started', driver.id, 'driver', { via: 'start-trip' });
-      // ?? Heatmap: confirmed pickup demand signal � fetch pickup coords from trip
+      // ?? Heatmap: confirmed pickup demand signal ï¿½ fetch pickup coords from trip
       rawDb.execute(rawSql`SELECT pickup_lat, pickup_lng, trip_type FROM trip_requests WHERE id=${tripId}::uuid LIMIT 1`)
         .then(r2 => {
           const t2 = r2.rows[0] as any;
@@ -9592,26 +9444,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const gstPaise = Math.round(farePaise * rideGstRatePct / 10000);
       const gstAmount = gstPaise / 100;
 
-      const r = await rawDb.execute(rawSql`
-        UPDATE trip_requests
-        SET current_status='completed', ride_ended_at=NOW(),
-            actual_fare=${fare}, actual_distance=${parseFloat(actualDistance) || parseFloat(tripRow.estimated_distance) || 0},
-            tips=${tipsVal}, payment_status=CASE WHEN payment_status IN ('paid_online','wallet_paid','partial_payment') THEN payment_status ELSE 'paid' END,
-            ride_full_fare=${rideFullFare}, user_discount=${userDiscount},
-            user_payable=${userPayable}, gst_amount=${gstAmount},
-            vehicle_type_name=${vehicleTypeName},
-            seats_booked=${seatsBooked}, seat_price=${seatPrice}
-        WHERE id=${tripId}::uuid AND driver_id=${driver.id}::uuid
-          AND current_status = 'on_the_way'
-        RETURNING *
-      `);
-      if (!r.rows.length) {
-        const exists = await rawDb.execute(rawSql`SELECT current_status FROM trip_requests WHERE id=${tripId}::uuid AND driver_id=${driver.id}::uuid`);
-        const s = (exists.rows[0] as any)?.current_status;
-        if (!s) return res.status(404).json({ message: "Trip not found" });
-        return res.status(400).json({ message: `Cannot complete trip in status: ${s}. Ride must be on_the_way.` });
-      }
-
       // -- Revenue: Calculate breakdown + settle (unified engine) --------------
       const tripServiceType = (tripRow.trip_type || tripRow.type || 'normal');
       const serviceCategory: any =
@@ -9627,133 +9459,179 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const driverWalletCredit = breakdown.driverEarnings;
       const launchFreeApplied = breakdown.model === 'launch_free';
 
-      // Save pricing fields on trip
-      await rawDb.execute(rawSql`
-        UPDATE trip_requests
-        SET commission_amount=${deductAmount},
-            driver_wallet_credit=${driverWalletCredit},
-            driver_fare=${driverWalletCredit},
-            customer_fare=${userPayable}
-        WHERE id=${tripId}::uuid
-      `);
-
-      // Customer wallet pre-check for wallet?cash fallback
-      const paymentMethod = (tripRow.payment_method || 'cash').toLowerCase();
-      let customerWalletBalance: number | undefined;
-      if (paymentMethod === 'wallet' && tripRow.customer_id) {
-        try {
-          const cwRes = await rawDb.execute(rawSql`SELECT wallet_balance FROM users WHERE id=${tripRow.customer_id}::uuid`);
-          customerWalletBalance = parseFloat((cwRes.rows[0] as any)?.wallet_balance || '0');
-        } catch (_) { }
-      }
-
-      // Settle: driver wallet, commission_settlements, GST wallet, admin_revenue, auto-lock
-      if (deductAmount > 0) {
-        await settleRevenue({
-          driverId: driver.id,
-          tripId,
-          fare,
-          paymentMethod: paymentMethod as any,
-          breakdown,
-          serviceCategory,
-          serviceLabel: tripServiceType || 'ride',
-          customerWalletBalance,
-        });
-      }
-
-      // -- Customer wallet deduction: use userPayable (discounted amount) ----
       const tripPaymentMethod = tripRow.payment_method || 'cash';
       const tripCustomerId = tripRow.customer_id;
       let walletPendingAmount = 0; // amount still owed after wallet attempt
       let walletPaidAmount = 0;    // amount successfully deducted from wallet
-      if (tripPaymentMethod === 'wallet' && tripCustomerId) {
-        try {
-          // ATOMIC: Single UPDATE prevents race condition � balance can never go negative
-          const fullDeductR = await rawDb.execute(rawSql`
-            UPDATE users SET wallet_balance = wallet_balance - ${userPayable}
-            WHERE id=${tripCustomerId}::uuid AND wallet_balance >= ${userPayable}
+      const completionOutcome = await rawDb.transaction(async (tx) => {
+        const lockedTrip = await tx.execute(rawSql`
+          SELECT tr.*
+          FROM trip_requests tr
+          WHERE tr.id=${tripId}::uuid
+            AND tr.driver_id=${driver.id}::uuid
+          FOR UPDATE
+        `);
+        if (!lockedTrip.rows.length) {
+          return { ok: false as const, status: 404, message: "Trip not found" };
+        }
+        const currentTrip = lockedTrip.rows[0] as any;
+        if (currentTrip.current_status !== "on_the_way") {
+          return { ok: false as const, status: 400, message: `Cannot complete trip in status: ${currentTrip.current_status}. Ride must be in progress.` };
+        }
+
+        const paymentMethod = String(currentTrip.payment_method || "cash").toLowerCase();
+        let customerWalletBalance: number | undefined;
+        if (paymentMethod === "wallet" && tripCustomerId) {
+          const cwRes = await tx.execute(rawSql`
+            SELECT wallet_balance
+            FROM users
+            WHERE id=${tripCustomerId}::uuid
+            FOR UPDATE
+          `);
+          customerWalletBalance = parseFloat((cwRes.rows[0] as any)?.wallet_balance || "0");
+        }
+
+        const r = await tx.execute(rawSql`
+          UPDATE trip_requests
+          SET current_status='completed',
+              ride_ended_at=NOW(),
+              actual_fare=${fare},
+              actual_distance=${parseFloat(actualDistance) || parseFloat(tripRow.estimated_distance) || 0},
+              tips=${tipsVal},
+              payment_status=CASE WHEN payment_status IN ('paid_online','wallet_paid','partial_payment') THEN payment_status ELSE 'paid' END,
+              ride_full_fare=${rideFullFare},
+              user_discount=${userDiscount},
+              user_payable=${userPayable},
+              gst_amount=${gstAmount},
+              vehicle_type_name=${vehicleTypeName},
+              seats_booked=${seatsBooked},
+              seat_price=${seatPrice},
+              commission_amount=${deductAmount},
+              driver_wallet_credit=${driverWalletCredit},
+              driver_fare=${driverWalletCredit},
+              customer_fare=${userPayable},
+              updated_at=NOW()
+          WHERE id=${tripId}::uuid
+          RETURNING *
+        `);
+        const completedTrip = camelize(r.rows[0]) as any;
+
+        if (deductAmount > 0) {
+          await settleRevenue({
+            driverId: driver.id,
+            tripId,
+            fare,
+            paymentMethod: paymentMethod as any,
+            breakdown,
+            serviceCategory,
+            serviceLabel: tripServiceType || "ride",
+            customerWalletBalance,
+            tx,
+          });
+        }
+
+        if (paymentMethod === "wallet" && tripCustomerId) {
+          const fullDeductR = await tx.execute(rawSql`
+            UPDATE users
+            SET wallet_balance = wallet_balance - ${userPayable}
+            WHERE id=${tripCustomerId}::uuid
+              AND wallet_balance >= ${userPayable}
             RETURNING wallet_balance
           `);
           const custBal = fullDeductR.rows.length
-            ? parseFloat((fullDeductR.rows[0] as any).wallet_balance || '0') + userPayable
-            : parseFloat(((await rawDb.execute(rawSql`SELECT wallet_balance FROM users WHERE id=${tripCustomerId}::uuid`)).rows[0] as any)?.wallet_balance || '0');
+            ? parseFloat((fullDeductR.rows[0] as any).wallet_balance || "0") + userPayable
+            : parseFloat(((await tx.execute(rawSql`SELECT wallet_balance FROM users WHERE id=${tripCustomerId}::uuid`)).rows[0] as any)?.wallet_balance || "0");
           if (fullDeductR.rows.length) {
-            // Full wallet deduction succeeded atomically
-            const newCustBal = parseFloat((fullDeductR.rows[0] as any).wallet_balance || '0');
+            const newCustBal = parseFloat((fullDeductR.rows[0] as any).wallet_balance || "0");
             walletPaidAmount = userPayable;
-            await rawDb.execute(rawSql`
+            await tx.execute(rawSql`
               INSERT INTO transactions (user_id, account, credit, debit, balance, transaction_type, ref_transaction_id)
-              VALUES (${tripCustomerId}::uuid, ${'Ride payment via Wallet'}, 0, ${userPayable}, ${newCustBal}, ${'ride_payment'}, ${tripId})
-            `).catch(dbCatch("db"));
-            console.log(`[WALLET] ? Full deduction ?${userPayable} from customer ${tripCustomerId}`);
+              VALUES (${tripCustomerId}::uuid, ${"Ride payment via Wallet"}, 0, ${userPayable}, ${newCustBal}, ${"ride_payment"}, ${tripId})
+            `);
           } else if (custBal > 0) {
-            // Partial wallet deduction � ATOMIC: CTE captures old balance, zeroes it in one statement
-            const partialR = await rawDb.execute(rawSql`
-              WITH prev AS (SELECT wallet_balance FROM users WHERE id=${tripCustomerId}::uuid FOR UPDATE)
-              UPDATE users SET wallet_balance = 0
+            const partialR = await tx.execute(rawSql`
+              WITH prev AS (
+                SELECT wallet_balance
+                FROM users
+                WHERE id=${tripCustomerId}::uuid
+                FOR UPDATE
+              )
+              UPDATE users
+              SET wallet_balance = 0
               FROM prev
-              WHERE users.id = ${tripCustomerId}::uuid AND prev.wallet_balance > 0
+              WHERE users.id = ${tripCustomerId}::uuid
+                AND prev.wallet_balance > 0
               RETURNING prev.wallet_balance AS prev_balance
             `);
             if (!partialR.rows.length) {
-              // Balance already zeroed by a concurrent transaction � treat as no wallet
-              await rawDb.execute(rawSql`
-                UPDATE trip_requests SET payment_status='pending_payment',
-                  pending_payment_amount=${userPayable} WHERE id=${tripId}::uuid
-              `).catch(dbCatch("db"));
               walletPendingAmount = userPayable;
-              console.log(`[WALLET] ??  Partial skipped (balance=0 by concurrent tx) � customer ${tripCustomerId}`);
+              await tx.execute(rawSql`
+                UPDATE trip_requests
+                SET payment_status='pending_payment',
+                    pending_payment_amount=${userPayable}
+                WHERE id=${tripId}::uuid
+              `);
             } else {
-              const deducted = parseFloat(parseFloat((partialR.rows[0] as any).prev_balance || '0').toFixed(2));
+              const deducted = parseFloat(parseFloat((partialR.rows[0] as any).prev_balance || "0").toFixed(2));
               const remaining = parseFloat((userPayable - deducted).toFixed(2));
-              await rawDb.execute(rawSql`
-                UPDATE trip_requests SET payment_status='partial_payment',
-                  pending_payment_amount=${remaining} WHERE id=${tripId}::uuid
-              `).catch(dbCatch("db"));
-              await rawDb.execute(rawSql`
-                INSERT INTO transactions (user_id, account, credit, debit, balance, transaction_type, ref_transaction_id)
-                VALUES (${tripCustomerId}::uuid, ${'Partial ride payment via Wallet'}, 0, ${deducted}, 0, ${'ride_payment'}, ${tripId})
-              `).catch(dbCatch("db"));
               walletPaidAmount = deducted;
               walletPendingAmount = remaining;
-              console.log(`[WALLET] ??  Partial: ?${deducted} from wallet, ?${remaining} pending (cash/UPI) � customer ${tripCustomerId}`);
+              await tx.execute(rawSql`
+                UPDATE trip_requests
+                SET payment_status='partial_payment',
+                    pending_payment_amount=${remaining}
+                WHERE id=${tripId}::uuid
+              `);
+              await tx.execute(rawSql`
+                INSERT INTO transactions (user_id, account, credit, debit, balance, transaction_type, ref_transaction_id)
+                VALUES (${tripCustomerId}::uuid, ${"Partial ride payment via Wallet"}, 0, ${deducted}, 0, ${"ride_payment"}, ${tripId})
+              `);
             }
           } else {
-            // No wallet balance � full amount must be paid by cash/UPI
-            await rawDb.execute(rawSql`
-              UPDATE trip_requests SET payment_status='pending_payment',
-                pending_payment_amount=${userPayable} WHERE id=${tripId}::uuid
-            `).catch(dbCatch("db"));
             walletPendingAmount = userPayable;
-            console.log(`[WALLET] ??  No balance: full ?${userPayable} pending (cash/UPI) � customer ${tripCustomerId}`);
+            await tx.execute(rawSql`
+              UPDATE trip_requests
+              SET payment_status='pending_payment',
+                  pending_payment_amount=${userPayable}
+              WHERE id=${tripId}::uuid
+            `);
           }
-        } catch (_) { }
-      }
+        }
 
-      // Record transaction for online/razorpay payments
-      if ((tripPaymentMethod === 'online' || tripPaymentMethod === 'upi' || tripPaymentMethod === 'razorpay') && tripCustomerId) {
-        try {
-          const custWalRes2 = await rawDb.execute(rawSql`SELECT wallet_balance FROM users WHERE id=${tripCustomerId}::uuid`);
-          const custBal2 = parseFloat((custWalRes2.rows[0] as any)?.wallet_balance || '0');
-          await rawDb.execute(rawSql`
+        if ((paymentMethod === "online" || paymentMethod === "upi" || paymentMethod === "razorpay") && tripCustomerId) {
+          const custWalRes2 = await tx.execute(rawSql`
+            SELECT wallet_balance
+            FROM users
+            WHERE id=${tripCustomerId}::uuid
+          `);
+          const custBal2 = parseFloat((custWalRes2.rows[0] as any)?.wallet_balance || "0");
+          await tx.execute(rawSql`
             INSERT INTO transactions (user_id, account, credit, debit, balance, transaction_type, ref_transaction_id)
-            VALUES (${tripCustomerId}::uuid, ${'Ride payment via UPI/Online'}, 0, ${userPayable}, ${custBal2}, ${'ride_payment'}, ${tripId})
+            VALUES (${tripCustomerId}::uuid, ${"Ride payment via UPI/Online"}, 0, ${userPayable}, ${custBal2}, ${"ride_payment"}, ${tripId})
             ON CONFLICT (ref_transaction_id, transaction_type) WHERE ref_transaction_id IS NOT NULL DO NOTHING
-          `).catch((e: any) => console.error('[CUST-ONLINE-TX]', e.message));
-        } catch (e: any) { console.error('[CUST-ONLINE-TX-OUTER]', e.message); }
+          `);
+        }
+
+        if (tripCustomerId) {
+          await tx.execute(rawSql`
+            UPDATE users
+            SET completed_rides_count = completed_rides_count + 1
+            WHERE id=${tripCustomerId}::uuid
+          `);
+        }
+
+        await tx.execute(rawSql`
+          UPDATE users
+          SET current_trip_id=NULL
+          WHERE id=${driver.id}::uuid
+            AND current_trip_id=${tripId}::uuid
+        `);
+
+        return { ok: true as const, completedTrip };
+      });
+      if (!completionOutcome.ok) {
+        return res.status(completionOutcome.status).json({ message: completionOutcome.message });
       }
-
-      // Driver earnings transaction handled by settleRevenue()
-
-      // -- Increment customer's completed_rides_count ----------------------
-      if (tripCustomerId) {
-        await rawDb.execute(rawSql`
-          UPDATE users SET completed_rides_count = completed_rides_count + 1 WHERE id=${tripCustomerId}::uuid
-        `).catch(dbCatch("db"));
-      }
-
-      // ? Clear driver's current trip � driver is now free for the next ride
-      await rawDb.execute(rawSql`UPDATE users SET current_trip_id=NULL WHERE id=${driver.id}::uuid`);
 
       // AI: Update driver performance stats + clear trip waypoints
       updateDriverStats(driver.id).catch(dbCatch("db"));
@@ -9765,7 +9643,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       await processEligibleReferralRewards(String(driver.id)).catch(dbCatch("db"));
 
-      const completedTrip = camelize(r.rows[0]) as any;
+      const completedTrip = completionOutcome.completedTrip;
       await appendTripStatus(tripId, 'trip_completed', 'driver', 'Trip completed by driver');
       await logRideLifecycleEvent(tripId, 'trip_completed', driver.id, 'driver', { fare, actualDistance });
 
@@ -9803,6 +9681,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const custDevResComp = await rawDb.execute(rawSql`SELECT fcm_token FROM user_devices WHERE user_id=${completedTrip.customerId}::uuid`);
       const custFcmComp = (custDevResComp.rows[0] as any)?.fcm_token || null;
       notifyCustomerTripCompleted({ fcmToken: custFcmComp, fare: userPayable, tripId }).catch(dbCatch("db"));
+      processOutboxBatch(io, 5).catch(dbCatch("db"));
 
       res.json({
         success: true,
@@ -9827,23 +9706,45 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const driver = (req as any).currentUser;
       const { tripId, reason } = req.body;
-      // Get trip details first
-      const tripDetails = await rawDb.execute(rawSql`
-        SELECT * FROM trip_requests WHERE id=${tripId}::uuid AND driver_id=${driver.id}::uuid AND current_status IN ('driver_assigned','accepted','arrived')
-      `);
-      if (!tripDetails.rows.length) return res.status(400).json({ message: "Cannot cancel this trip" });
-      const trip = camelize(tripDetails.rows[0]) as any;
-
-      // Reset trip to 'searching' � auto-reassign to next driver
-      await rawDb.execute(rawSql`
-        UPDATE trip_requests SET current_status='searching', driver_id=NULL, pickup_otp=NULL,
-          driver_accepted_at=NULL, cancel_reason=${reason || 'Driver cancelled'}, updated_at=NOW()
-        WHERE id=${tripId}::uuid
-      `);
+      const cancelOutcome = await rawDb.transaction(async (tx) => {
+        const tripDetails = await tx.execute(rawSql`
+          SELECT *
+          FROM trip_requests
+          WHERE id=${tripId}::uuid
+            AND driver_id=${driver.id}::uuid
+          FOR UPDATE
+        `);
+        if (!tripDetails.rows.length) {
+          return { ok: false as const, status: 400, message: "Cannot cancel this trip" };
+        }
+        const trip = tripDetails.rows[0] as any;
+        if (!["driver_assigned", "accepted", "arrived"].includes(String(trip.current_status || ""))) {
+          return { ok: false as const, status: 409, message: `Cannot cancel trip in status: ${trip.current_status}` };
+        }
+        await tx.execute(rawSql`
+          UPDATE trip_requests
+          SET current_status='searching',
+              driver_id=NULL,
+              pickup_otp=NULL,
+              driver_accepted_at=NULL,
+              driver_arriving_at=NULL,
+              cancel_reason=${reason || "Driver cancelled"},
+              cancelled_by='driver',
+              rejected_driver_ids = array_append(COALESCE(rejected_driver_ids,'{}'), ${driver.id}::uuid),
+              updated_at=NOW()
+          WHERE id=${tripId}::uuid
+        `);
+        await tx.execute(rawSql`
+          UPDATE users
+          SET current_trip_id=NULL
+          WHERE id=${driver.id}::uuid
+        `);
+        return { ok: true as const, trip: camelize(trip) as any };
+      });
+      if (!cancelOutcome.ok) return res.status(cancelOutcome.status).json({ message: cancelOutcome.message });
+      const trip = cancelOutcome.trip;
       await appendTripStatus(tripId, 'requested', 'driver', reason || 'Driver cancelled, reassigned');
       await logRideLifecycleEvent(tripId, 'driver_reassigned', driver.id, 'driver', { reason: reason || 'Driver cancelled' });
-      // Free the driver
-      await rawDb.execute(rawSql`UPDATE users SET current_trip_id=NULL WHERE id=${driver.id}::uuid`);
 
       // -- Cancel penalty: ?10 fine after 3rd cancel in 24 hours -------------
       try {
@@ -9870,14 +9771,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           `).catch(dbCatch("db"));
           log(`[CancelPenalty] Driver ${driver.id} fined ?${penalty} (${cancelCount} cancels in 24h)`, 'cancel');
         }
-        // Mark this cancel as cancelled_by=driver on the trip
-        await rawDb.execute(rawSql`
-          UPDATE trip_requests SET cancelled_by='driver' WHERE id=${tripId}::uuid
-        `).catch(dbCatch("db"));
       } catch (_) { }
       clearTripWaypoints(tripId);
 
-      // Notify customer � driver cancelled, now searching again
+      // Notify customer ï¿½ driver cancelled, now searching again
       if (io && trip.customerId) {
         io.to(`user:${trip.customerId}`).emit("trip:searching", {
           tripId, message: "Your previous pilot cancelled. Looking for a new one...",
@@ -9911,7 +9808,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           if (dFcm) notifyDriverNewRide({ fcmToken: dFcm, driverName: nd.fullName, customerName: "Customer", tripId, pickupAddress: trip.pickupAddress, estimatedFare: trip.estimatedFare || 0 }).catch(dbCatch("db"));
         }
       } else {
-        // No drivers available � cancel trip and notify customer via both socket + FCM
+        // No drivers available ï¿½ cancel trip and notify customer via both socket + FCM
         await rawDb.execute(rawSql`
           UPDATE trip_requests SET current_status='cancelled', cancel_reason='No drivers available after reassignment'
           WHERE id=${tripId}::uuid AND current_status='searching'
@@ -10123,7 +10020,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const settings: any = {};
       settingRows.rows.forEach((r: any) => { settings[r.key_name] = r.value; });
 
-      // Amount from DB � never trust client-sent amount
+      // Amount from DB ï¿½ never trust client-sent amount
       const pendingRec = await rawDb.execute(rawSql`
         SELECT amount FROM driver_payments WHERE razorpay_order_id=${razorpayOrderId} AND driver_id=${driver.id}::uuid AND status='pending' LIMIT 1
       `);
@@ -10219,7 +10116,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (method === "bank") {
         const accClean = (accountNumber || "").replace(/\s/g, "");
         if (!accClean || !/^\d{9,18}$/.test(accClean))
-          return res.status(400).json({ message: "Invalid account number (9�18 digits required)" });
+          return res.status(400).json({ message: "Invalid account number (9ï¿½18 digits required)" });
         if (!ifscCode || !/^[A-Z]{4}0[A-Z0-9]{6}$/i.test(ifscCode.trim()))
           return res.status(400).json({ message: "Invalid IFSC code (format: ABCD0123456)" });
         if (!accountHolderName || accountHolderName.trim().length < 3)
@@ -10373,7 +10270,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         crypto.timingSafeEqual(Buffer.from(expectedSig, "utf8"), Buffer.from(razorpaySignature, "utf8"));
       if (!sigValid) return res.status(400).json({ message: "Invalid payment signature" });
 
-      // SECURITY: Atomic idempotency � mark driver_payment as completed FIRST
+      // SECURITY: Atomic idempotency ï¿½ mark driver_payment as completed FIRST
       // Second call will find status='completed' and return 409 immediately
       const atomicMark = await rawDb.execute(rawSql`
         UPDATE driver_payments
@@ -10490,7 +10387,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const sigValid = expectedSig.length === razorpaySignature.length &&
         crypto.timingSafeEqual(Buffer.from(expectedSig, "utf8"), Buffer.from(razorpaySignature, "utf8"));
       if (!sigValid) return res.status(400).json({ message: "Invalid payment signature" });
-      // IDEMPOTENCY (atomic): Mark payment completed FIRST � only one request can succeed this UPDATE.
+      // IDEMPOTENCY (atomic): Mark payment completed FIRST ï¿½ only one request can succeed this UPDATE.
       // If razorpay_payment_id is already set (duplicate call), rows=0 ? 409 immediately, wallet NOT credited.
       const claimR = await rawDb.execute(rawSql`
         UPDATE driver_payments
@@ -10574,7 +10471,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         receiverName, receiverPhone,
         // Coupon
         couponCode, promoDiscount,
-        // Online payment � used to link customer_payments ? trip for refund on cancel
+        // Online payment ï¿½ used to link customer_payments ? trip for refund on cancel
         razorpayPaymentId
       } = req.body;
 
@@ -10740,7 +10637,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       const finalFareAfterDiscount = Math.max(0, computedFare - discountAmount);
 
-      // Auto-cancel any previous 'searching' trips � user is explicitly requesting a new ride
+      // Auto-cancel any previous 'searching' trips ï¿½ user is explicitly requesting a new ride
       await rawDb.execute(rawSql`
         UPDATE trip_requests
         SET current_status='cancelled', cancel_reason='Auto-cancelled: customer started a new booking'
@@ -10797,7 +10694,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
 
-      // Always start as 'searching' � driver must ACCEPT before being assigned
+      // Always start as 'searching' ï¿½ driver must ACCEPT before being assigned
       const trip = await rawDb.execute(rawSql`
         INSERT INTO trip_requests (
           ref_id, customer_id, driver_id, vehicle_category_id,
@@ -10897,7 +10794,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         tripType,
       };
 
-      // Start sequential dispatch � sends to ONE driver at a time with expanding radius
+      // Start sequential dispatch ï¿½ sends to ONE driver at a time with expanding radius
       startDispatch(
         tripRow.id,
         customer.id,
@@ -11087,24 +10984,44 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ORDER BY created_at DESC LIMIT 1
       `).then(r2 => (r2.rows[0] as any)?.id).catch(() => null);
       if (!effectiveTripId) return res.status(404).json({ message: "No active trip to cancel" });
-      const existingTripR = await rawDb.execute(rawSql`
-        SELECT id, current_status, driver_id, payment_status, razorpay_payment_id
-        FROM trip_requests
-        WHERE id=${effectiveTripId}::uuid
-          AND customer_id=${customer.id}::uuid
-          AND current_status NOT IN ('completed','cancelled','on_the_way')
-        LIMIT 1
-      `);
-      if (!existingTripR.rows.length) return res.status(400).json({ message: "Cannot cancel - trip already in progress or completed" });
-      const existingTrip = existingTripR.rows[0] as any;
-      const previousStatus = String(existingTrip.current_status || "");
-      const r = await rawDb.execute(rawSql`
-        UPDATE trip_requests SET current_status='cancelled', cancelled_by='customer', cancel_reason=${reason || 'Customer cancelled'}
-        WHERE id=${effectiveTripId}::uuid AND customer_id=${customer.id}::uuid AND current_status NOT IN ('completed','cancelled','on_the_way')
-        RETURNING *
-      `);
-      if (!r.rows.length) return res.status(400).json({ message: "Cannot cancel - trip already in progress or completed" });
-      const trip = r.rows[0] as any;
+      const cancelOutcome = await rawDb.transaction(async (tx) => {
+        const existingTripR = await tx.execute(rawSql`
+          SELECT *
+          FROM trip_requests
+          WHERE id=${effectiveTripId}::uuid
+            AND customer_id=${customer.id}::uuid
+          FOR UPDATE
+        `);
+        if (!existingTripR.rows.length) {
+          return { ok: false as const, status: 400, message: "Cannot cancel - trip already in progress or completed" };
+        }
+        const existingTrip = existingTripR.rows[0] as any;
+        const previousStatus = String(existingTrip.current_status || "");
+        if (["completed", "cancelled", "on_the_way"].includes(previousStatus)) {
+          return { ok: false as const, status: 400, message: "Cannot cancel - trip already in progress or completed" };
+        }
+        const r = await tx.execute(rawSql`
+          UPDATE trip_requests
+          SET current_status='cancelled',
+              cancelled_by='customer',
+              cancel_reason=${reason || 'Customer cancelled'},
+              updated_at=NOW()
+          WHERE id=${effectiveTripId}::uuid
+          RETURNING *
+        `);
+        const trip = r.rows[0] as any;
+        if (trip?.driver_id) {
+          await tx.execute(rawSql`
+            UPDATE users
+            SET current_trip_id=NULL
+            WHERE id=${trip.driver_id}::uuid
+              AND current_trip_id=${effectiveTripId}::uuid
+          `);
+        }
+        return { ok: true as const, trip, previousStatus, existingTrip };
+      });
+      if (!cancelOutcome.ok) return res.status(cancelOutcome.status).json({ message: cancelOutcome.message });
+      const { trip, previousStatus, existingTrip } = cancelOutcome;
 
       // Cancel active dispatch session if one exists
       cancelDispatch(effectiveTripId);
@@ -11117,7 +11034,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         logHeatmapEvent('cancellation', parseFloat(trip.pickup_lat), parseFloat(trip.pickup_lng), 'ride');
       }
       if (trip.driver_id) {
-        await rawDb.execute(rawSql`UPDATE users SET current_trip_id=NULL WHERE id=${trip.driver_id}::uuid`);
         const drvDevRes = await rawDb.execute(rawSql`SELECT fcm_token FROM user_devices WHERE user_id=${trip.driver_id}::uuid`);
         const drvFcm = (drvDevRes.rows[0] as any)?.fcm_token || null;
         notifyTripCancelled({ fcmToken: drvFcm, cancelledBy: "customer", tripId: effectiveTripId }).catch(dbCatch("db"));
@@ -11174,7 +11090,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           await rawDb.execute(rawSql`
             INSERT INTO transactions (user_id, account, credit, debit, balance, transaction_type, ref_transaction_id)
             VALUES (${customer.id}::uuid,
-              ${refundedToBank ? 'Refund to bank � cancelled ride' : 'Refund to wallet � cancelled ride'},
+              ${refundedToBank ? 'Refund to bank ï¿½ cancelled ride' : 'Refund to wallet ï¿½ cancelled ride'},
               ${refundedToBank ? 0 : refundAmt}, 0, ${newBal},
               ${'ride_refund'}, ${rzpPaymentId || null})
             ON CONFLICT (ref_transaction_id, transaction_type) WHERE ref_transaction_id IS NOT NULL DO NOTHING
@@ -11204,7 +11120,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             `).catch(dbCatch("db"));
             log(`[CancelFee] Customer ${customer.id} charged ?${cancelFee} for late cancellation`, 'cancel');
           } else {
-            cancelFee = 0; // Don't charge if wallet empty � just log
+            cancelFee = 0; // Don't charge if wallet empty ï¿½ just log
           }
         }
       } catch (_) { cancelFee = 0; }
@@ -11488,8 +11404,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         destLat: _destLat, destLng: _destLng,
         destinationLat, destinationLng,
         vehicleCategoryId, distanceKm, durationMin = 0,
-        userId, // optional � if provided, include launch offer info
-        category, // optional � 'ride' | 'parcel' | 'pool' to filter vehicle types
+        userId, // optional ï¿½ if provided, include launch offer info
+        category, // optional ï¿½ 'ride' | 'parcel' | 'pool' to filter vehicle types
       } = req.body;
       const destLat = _destLat ?? destinationLat;
       const destLng = _destLng ?? destinationLng;
@@ -11578,7 +11494,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const isCarpool = f.vcIsCarpool === true || f.vcIsCarpool === 'true';
         const totalSeats = parseInt(f.vcTotalSeats) || 4;
 
-        // Formula: fullFare = base_fare + (distanceKm � fare_per_km), floored at minimum_fare
+        // Formula: fullFare = base_fare + (distanceKm ï¿½ fare_per_km), floored at minimum_fare
         const billableKm = dist;
         const distanceFare = +(billableKm * perKm).toFixed(2);
         const timeFare = +(dur * perMin).toFixed(2);
@@ -11590,7 +11506,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         // GST 5% on full fare (government tax)
         const gst = +(total * 0.05).toFixed(2);
         const grandTotal = +(total + gst).toFixed(2);
-        // �5% range shown in UI: "?85 � ?95"
+        // ï¿½5% range shown in UI: "?85 ï¿½ ?95"
         const fareMin = Math.floor(grandTotal * 0.95);
         const fareMax = Math.ceil(grandTotal * 1.05);
         const estTime = Math.max(5, Math.round(dist * 3));
@@ -11690,7 +11606,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       let source = 'haversine';
 
       try {
-        if (!gmapsKey) throw new Error('Google Maps API key not configured � using Haversine fallback');
+        if (!gmapsKey) throw new Error('Google Maps API key not configured ï¿½ using Haversine fallback');
         const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${oLat},${oLng}&destinations=${dLat},${dLng}&mode=driving&departure_time=now&traffic_model=best_guess&key=${gmapsKey}`;
         const gmRes = await fetch(url).then(r => r.json()) as any;
         const element = gmRes?.rows?.[0]?.elements?.[0];
@@ -11718,8 +11634,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // -- PARCEL FARE ESTIMATE (weight + distance + helpers based) ----------------
-  // Formula: customerFare = base_fare + (distanceKm � fare_per_km) + (weightKg � weight_rate) + loadingCharge + (helpers � helperChargePerHour � hours)
-  // driverFare  = customerFare � platform commission (per parcels_model setting)
+  // Formula: customerFare = base_fare + (distanceKm ï¿½ fare_per_km) + (weightKg ï¿½ weight_rate) + loadingCharge + (helpers ï¿½ helperChargePerHour ï¿½ hours)
+  // driverFare  = customerFare ï¿½ platform commission (per parcels_model setting)
   app.post("/api/app/customer/estimate-parcel-fare", authApp, async (req, res) => {
     try {
       const { pickupLat, pickupLng, destLat, destLng, weightKg = 0, helpers = 0, helperHours = 1 } = req.body;
@@ -11879,7 +11795,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         /current|here|my location|ikkade|ikkad|yahan|naa location/i.test(parsed.pickup || '');
 
       if (isCurrentLocation && currentLat && currentLng) {
-        // Use GPS coordinates directly � no geocoding needed
+        // Use GPS coordinates directly ï¿½ no geocoding needed
         pickupGeo = { lat: Number(currentLat), lng: Number(currentLng), address: currentAddress || 'Current Location' };
         if (apiKey && parsed.destination) destGeo = await geocodePlaceWithCache(apiKey, parsed.destination);
       } else if (parsed.pickup || parsed.destination) {
@@ -12019,7 +11935,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const user = (req as any).currentUser;
       const { lat, lng, tripId, message } = req.body;
-      // Insert into safety_alerts (correct table � sos_alerts was wrong table name)
+      // Insert into safety_alerts (correct table ï¿½ sos_alerts was wrong table name)
       const r = await rawDb.execute(rawSql`
         INSERT INTO safety_alerts (user_id, trip_id, alert_type, triggered_by, latitude, longitude, notes, status)
         VALUES (
@@ -12067,12 +11983,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // -- CUSTOMER: Wallet recharge � DISABLED (use Razorpay verify-payment instead) --
+  // -- CUSTOMER: Wallet recharge ï¿½ DISABLED (use Razorpay verify-payment instead) --
   app.post("/api/app/customer/wallet/recharge", authApp, async (_req, res) => {
     // This legacy endpoint credited wallet without payment verification.
     // All wallet recharges must go through create-order ? Razorpay ? verify-payment.
     return res.status(410).json({ message: "Please use the payment gateway to recharge your wallet." });
-    /* DISABLED � security fix
+    /* DISABLED ï¿½ security fix
     try {
       const customer = (req as any).currentUser;
       const { amount, paymentRef, paymentMethod = "upi" } = req.body;
@@ -12093,18 +12009,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     */
   });
 
-  // -- CUSTOMER: Razorpay � Create order ------------------------------------
+  // -- CUSTOMER: Razorpay ï¿½ Create order ------------------------------------
   app.post("/api/app/customer/wallet/create-order", authApp, requireCustomer, paymentOrderLimiter, async (req, res) => {
     try {
       const customer = (req as any).currentUser;
       const { amount } = req.body;
       const amt = parseFloat(amount);
-      if (!amt || amt < 10 || amt > 50000) return res.status(400).json({ message: "Amount must be ?10�?50,000" });
+      if (!amt || amt < 10 || amt > 50000) return res.status(400).json({ message: "Amount must be ?10ï¿½?50,000" });
       const { keyId, keySecret } = await getRazorpayKeys();
       if (!keyId || !keySecret) return res.status(503).json({ message: "Payment gateway not configured" });
       const Razorpay = _require("razorpay");
       const rzp = new Razorpay({ key_id: keyId, key_secret: keySecret, timeout: 15000 });
-      // Explicit 20s timeout � prevents DO App Platform 504 if Razorpay API is slow
+      // Explicit 20s timeout ï¿½ prevents DO App Platform 504 if Razorpay API is slow
       const timeoutErr = new Error("Payment gateway timeout. Please try again.");
       const order = await Promise.race([
         rzp.orders.create({
@@ -12129,7 +12045,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // -- CUSTOMER: Razorpay � Verify & credit wallet ---------------------------
+  // -- CUSTOMER: Razorpay ï¿½ Verify & credit wallet ---------------------------
   app.post("/api/app/customer/wallet/verify-payment", authApp, requireCustomer, async (req, res) => {
     try {
       const customer = (req as any).currentUser;
@@ -12148,7 +12064,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         SELECT id FROM transactions WHERE ref_transaction_id=${razorpayPaymentId} AND transaction_type='wallet_recharge' LIMIT 1
       `);
       if (dupCheck.rows.length) return res.status(409).json({ message: "Payment already processed", alreadyCredited: true });
-      // Amount from DB � never trust client-sent amount
+      // Amount from DB ï¿½ never trust client-sent amount
       // SECURITY: Atomic mark-completed first prevents concurrent double-credit
       const atomicMark = await rawDb.execute(rawSql`
         UPDATE customer_payments SET razorpay_payment_id=${razorpayPaymentId}, status='completed', verified_at=NOW()
@@ -12169,7 +12085,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // -- CUSTOMER: Razorpay � Create order for ride payment --------------------
+  // -- CUSTOMER: Razorpay ï¿½ Create order for ride payment --------------------
   app.post("/api/app/customer/ride/create-order", authApp, requireCustomer, paymentOrderLimiter, async (req, res) => {
     try {
       const customer = (req as any).currentUser;
@@ -12199,7 +12115,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // -- CUSTOMER: Razorpay � Verify ride payment ------------------------------
+  // -- CUSTOMER: Razorpay ï¿½ Verify ride payment ------------------------------
   app.post("/api/app/customer/ride/verify-payment", authApp, requireCustomer, async (req, res) => {
     try {
       const customer = (req as any).currentUser;
@@ -12213,7 +12129,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const sigValid = expectedSig.length === razorpaySignature.length &&
         crypto.timingSafeEqual(Buffer.from(expectedSig, "utf8"), Buffer.from(razorpaySignature, "utf8"));
       if (!sigValid) return res.status(400).json({ message: "Invalid payment signature" });
-      // Amount + trip_id from DB � never trust client-sent amount
+      // Amount + trip_id from DB ï¿½ never trust client-sent amount
       const pendingRec = await rawDb.execute(rawSql`
         SELECT amount, trip_id FROM customer_payments WHERE razorpay_order_id=${razorpayOrderId} AND customer_id=${customer.id}::uuid AND status='pending' LIMIT 1
       `);
@@ -12241,7 +12157,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Legacy alias  : POST /api/webhooks/razorpay
   //
   // Security    : HMAC-SHA256 (X-Razorpay-Signature) with timing-safe compare
-  // Idempotency : razorpay_webhook_logs UNIQUE(event_id) � duplicate ? 200, skip
+  // Idempotency : razorpay_webhook_logs UNIQUE(event_id) ï¿½ duplicate ? 200, skip
   // Performance : HTTP 200 returned before DB processing (setImmediate async)
   // Events      : payment.authorized/captured/failed
   //               subscription.authenticated/activated/pending/charged/
@@ -12319,7 +12235,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           // -- A) Driver payment (wallet topup, subscription, commission) ----
           {
             // Atomic idempotency: UPDATE only if still 'pending', RETURNING gives us the record.
-            // If two webhooks arrive simultaneously, only one UPDATE changes a row � prevents double-credit.
+            // If two webhooks arrive simultaneously, only one UPDATE changes a row ï¿½ prevents double-credit.
             const dpUpdate = await rawDb.execute(rawSql`
               UPDATE driver_payments
               SET status = 'completed',
@@ -12524,15 +12440,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             SET status = 'failed', failure_reason = ${failReason}
             WHERE razorpay_order_id = ${orderId} AND status = 'pending'
           `).catch(dbCatch("db"));
-          console.error(`[WEBHOOK:ALERT] Payment failed orderId=${orderId} � "${failReason}"`);
+          console.error(`[WEBHOOK:ALERT] Payment failed orderId=${orderId} ï¿½ "${failReason}"`);
           break;
         }
 
         // -- subscription.authenticated / subscription.pending --------------
-        // Informational events � logged, no DB action required
+        // Informational events ï¿½ logged, no DB action required
         case "subscription.authenticated":
         case "subscription.pending":
-          console.info(`${tag} subscription=${subEnt?.id ?? "?"} � logged only`);
+          console.info(`${tag} subscription=${subEnt?.id ?? "?"} ï¿½ logged only`);
           break;
 
         // -- subscription.activated / subscription.charged ------------------
@@ -12582,7 +12498,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             if (io) io.to(`user:${driverId}`).emit("subscription:activated", { validUntil: cycleEnd });
             console.info(`${tag} sub ${rzpSubId} activated driver=${driverId} until ${cycleEnd}`);
           } else {
-            // No driver_id in notes � update by razorpay_subscription_id only
+            // No driver_id in notes ï¿½ update by razorpay_subscription_id only
             await rawDb.execute(rawSql`
               UPDATE driver_subscriptions
               SET is_active = true, payment_status = 'paid',
@@ -12597,7 +12513,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         }
 
         // -- subscription.halted --------------------------------------------
-        // Payment retry failed � disable driver access until payment succeeds
+        // Payment retry failed ï¿½ disable driver access until payment succeeds
         case "subscription.halted": {
           if (!subEnt) break;
           const rzpSubId = String(subEnt.id ?? "");
@@ -12618,7 +12534,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
               WHERE razorpay_subscription_id = ${rzpSubId}
             `);
           }
-          console.warn(`${tag} sub ${rzpSubId} halted � access disabled`);
+          console.warn(`${tag} sub ${rzpSubId} halted ï¿½ access disabled`);
           break;
         }
 
@@ -12651,7 +12567,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
               message: "Subscription cancelled. Access continues until expiry date.",
             });
           }
-          console.info(`${tag} sub ${rzpSubId} cancelled � access retained until end_date`);
+          console.info(`${tag} sub ${rzpSubId} cancelled ï¿½ access retained until end_date`);
           break;
         }
 
@@ -12696,7 +12612,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         }
 
         default:
-          console.info(`[WEBHOOK] Unhandled event type: ${eventType} � logged only`);
+          console.info(`[WEBHOOK] Unhandled event type: ${eventType} ï¿½ logged only`);
       }
 
       // Mark as successfully processed in audit log
@@ -12751,7 +12667,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     if (!sigValid) {
-      console.warn(`${tag} invalid signature from ${req.ip} � rejected`);
+      console.warn(`${tag} invalid signature from ${req.ip} ï¿½ rejected`);
       // Log the bad attempt for security audit (best-effort)
       rawDb.execute(rawSql`
         INSERT INTO razorpay_webhook_logs
@@ -12761,7 +12677,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           ${"INVALID_SIGNATURE"},
           ${JSON.stringify({ ip: req.ip, ua: req.headers["user-agent"] })}::jsonb,
           false,
-          ${"Signature mismatch � rejected"}
+          ${"Signature mismatch ï¿½ rejected"}
         )
       `).catch(dbCatch("db"));
       res.status(400).json({ message: "Invalid webhook signature" });
@@ -12774,7 +12690,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const eventType = String(event?.event ?? "unknown");
 
     // -- 4. Idempotency via razorpay_webhook_logs ------------------------------
-    // INSERT � ON CONFLICT DO NOTHING: if 0 rows returned, event already logged
+    // INSERT ï¿½ ON CONFLICT DO NOTHING: if 0 rows returned, event already logged
     try {
       const ins = await rawDb.execute(rawSql`
         INSERT INTO razorpay_webhook_logs (event_id, event_type, payload, processed)
@@ -12788,12 +12704,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         RETURNING id
       `);
       if (!ins.rows.length) {
-        console.info(`${tag} duplicate event ${eventId} (${eventType}) � skipped`);
+        console.info(`${tag} duplicate event ${eventId} (${eventType}) ï¿½ skipped`);
         res.json({ success: true, duplicate: true });
         return;
       }
     } catch (logErr: any) {
-      // Log table error is non-fatal � never block Razorpay on infra issues
+      // Log table error is non-fatal ï¿½ never block Razorpay on infra issues
       console.error(`${tag} webhook log insert failed:`, logErr.message);
     }
 
@@ -12808,7 +12724,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   };
 
-  // Register both URLs � Razorpay dashboard URL + legacy alias
+  // Register both URLs ï¿½ Razorpay dashboard URL + legacy alias
   app.post("/api/app/razorpay/webhook", _razorpayWebhookHandler);
   app.post("/api/webhooks/razorpay", _razorpayWebhookHandler);
 
@@ -13235,8 +13151,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // -- LOGOUT: Invalidate auth token ----------------------------------------
   app.post("/api/app/logout", authApp, async (req, res) => {
     try {
-      const user = (req as any).currentUser;
-      await rawDb.execute(rawSql`UPDATE users SET auth_token=NULL WHERE id=${user.id}::uuid`);
+      const accessToken = extractBearerToken(req) || "";
+      const refreshToken = String(req.body?.refreshToken || "").trim() || null;
+      await revokeAppSession(accessToken, refreshToken);
       res.json({ success: true, message: "Logged out successfully" });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
@@ -13248,7 +13165,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const { newPin, newPassword, currentPassword } = req.body;
       const newPass = newPassword || newPin;
       if (!newPass || String(newPass).length < 6) return res.status(400).json({ message: "Password must be at least 6 characters" });
-      // Verify current password � required
+      // Verify current password ï¿½ required
       {
         const userRow = await rawDb.execute(rawSql`SELECT password_hash FROM users WHERE id=${user.id}::uuid`);
         const stored = (userRow.rows[0] as any)?.password_hash;
@@ -13269,7 +13186,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const customer = (req as any).currentUser;
       const { permanent = false } = req.body || {};
       if (permanent) {
-        // Permanent delete � anonymize all PII, revoke token, keep records for audit
+        // Permanent delete ï¿½ anonymize all PII, revoke token, keep records for audit
         await rawDb.execute(rawSql`
           UPDATE users SET is_active=false, full_name='Deleted User', email=null, phone=null,
             profile_image=null, auth_token=null, wallet_balance=0, updated_at=NOW()
@@ -13282,7 +13199,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         `);
         return res.json({ success: true, message: "Account permanently deleted. All data has been removed." });
       }
-      // Soft delete � just deactivate
+      // Soft delete ï¿½ just deactivate
       await rawDb.execute(rawSql`UPDATE users SET is_active=false, auth_token=null, updated_at=NOW() WHERE id=${customer.id}::uuid`);
       res.json({ success: true, message: "Account deactivated. Contact support to reactivate." });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
@@ -13647,7 +13564,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         VALUES (gen_random_uuid(), ${driver.id}::uuid, ${planId}::uuid, ${startDate.toISOString()}, ${endDate.toISOString()}, ${plan.price}, 'paid', 0, true, ${razorpayPaymentId}, now())
       `);
       // Keep hybrid if already chosen; otherwise default to subscription after successful payment
-      // Also expire free period � paid subscription overrides it
+      // Also expire free period ï¿½ paid subscription overrides it
       await rawDb.execute(rawSql`
         UPDATE users
         SET revenue_model = CASE WHEN revenue_model='hybrid' THEN 'hybrid' ELSE 'subscription' END,
@@ -14099,7 +14016,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // -- Driver support chat (aliases customer endpoints � same user table) ---
+  // -- Driver support chat (aliases customer endpoints ï¿½ same user table) ---
   app.get('/api/app/driver/support-chat', authApp, async (req, res) => {
     try {
       const user = (req as any).currentUser;
@@ -14339,7 +14256,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.use("/apks", express.static(apkDir));
 
-  // Download page � jagopro.org/download
+  // Download page ï¿½ jagopro.org/download
   app.get("/download", (_req, res) => {
     const base = String(process.env.APP_BASE_URL || "").trim();
     if (!base) {
@@ -14374,7 +14291,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     ?? Download Driver / Pilot App
   </a>
   <span class="badge">Latest live driver APK | Universal APK</span>
-  <div class="version">Android 6.0+ required � Free Download</div>
+  <div class="version">Android 6.0+ required ï¿½ Free Download</div>
 </div>
 </body></html>`);
   });
@@ -14392,18 +14309,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   });
 
   // -------------------------------------------------------------------
-  // ������   UNIQUE FEATURES � No competitor has all of these   ������
+  // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½   UNIQUE FEATURES ï¿½ No competitor has all of these   ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
   // -------------------------------------------------------------------
 
   // Helper: inline auth check for unique feature routes
   async function requireAppAuth(req: Request, res: Response): Promise<any | null> {
     try {
-      const token = req.headers.authorization?.replace("Bearer ", "");
+      const token = extractBearerToken(req);
       if (!token) { res.status(401).json({ message: "No token provided" }); return null; }
-      const parts = token.split(":");
-      if (parts.length < 2) { res.status(401).json({ message: "Invalid token format" }); return null; }
-      const userId = parts[0];
-      const userR = await rawDb.execute(rawSql`SELECT * FROM users WHERE id=${userId}::uuid AND is_active=true AND auth_token=${token} LIMIT 1`);
+      const session = await authenticateAppAccessToken(token);
+      if (!session) { res.status(401).json({ message: "Session expired. Please login again." }); return null; }
+      const userR = await rawDb.execute(rawSql`SELECT * FROM users WHERE id=${session.userId}::uuid AND is_active=true LIMIT 1`);
       if (!userR.rows.length) { res.status(401).json({ message: "Session expired. Please login again." }); return null; }
       return camelize(userR.rows[0]);
     } catch (e: any) { res.status(401).json({ message: "Auth failed" }); return null; }
@@ -14472,7 +14388,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   })();
 
   // ??????????????????????????????????????????????????????????????????
-  // 1. JAGO Pro COINS � Loyalty Program
+  // 1. JAGO Pro COINS ï¿½ Loyalty Program
   // ??????????????????????????????????????????????????????????????????
   app.get("/api/app/customer/coins", async (req, res) => {
     try {
@@ -14627,7 +14543,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       // Log it
       await rawDb.execute(rawSql`
         INSERT INTO coins_ledger (user_id, amount, type, description, trip_id)
-        VALUES (${trip.driver_id}::uuid, ${amount * 10}, 'tip_bonus', 'Tip received for ride � bonus coins', ${tripId}::uuid)
+        VALUES (${trip.driver_id}::uuid, ${amount * 10}, 'tip_bonus', 'Tip received for ride ï¿½ bonus coins', ${tripId}::uuid)
       `);
       res.json({ success: true, message: `?${amount} tip sent to driver! You also earned ${amount * 10} bonus JAGO Pro Coins ??` });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
@@ -14725,7 +14641,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
   // ??????????????????????????????????????????????????????????????????
   // ??????????????????????????????????????????????????????????????????
-  // CAR SHARING � Customer browse & book
+  // CAR SHARING ï¿½ Customer browse & book
   // ??????????????????????????????????????????????????????????????????
   app.get('/api/app/customer/car-sharing/rides', authApp, async (req, res) => {
     try {
@@ -14761,7 +14677,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       if (!rideRes.rows.length) return res.status(404).json({ message: 'Ride not found' });
       const ride = camelize(rideRes.rows[0]);
       const totalFare = parseFloat((parseFloat(ride.seatPrice || 0) * seats).toFixed(2));
-      // ATOMIC: deduct wallet only if balance sufficient � prevents negative balance race
+      // ATOMIC: deduct wallet only if balance sufficient ï¿½ prevents negative balance race
       const walUpd = await rawDb.execute(rawSql`
         UPDATE users SET wallet_balance = wallet_balance - ${totalFare}
         WHERE id=${user.id}::uuid AND wallet_balance >= ${totalFare}
@@ -14780,7 +14696,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         RETURNING id
       `);
       if (!bookingR.rows.length) {
-        // Seats were taken between our check and insert � refund the wallet deduction
+        // Seats were taken between our check and insert ï¿½ refund the wallet deduction
         await rawDb.execute(rawSql`UPDATE users SET wallet_balance = wallet_balance + ${totalFare} WHERE id=${user.id}::uuid`);
         return res.status(409).json({ message: 'No seats available. Please try again.' });
       }
@@ -14805,7 +14721,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // 6. SURGE ALERT � "Notify me when surge drops"
+  // 6. SURGE ALERT ï¿½ "Notify me when surge drops"
   // ??????????????????????????????????????????????????????????????????
   app.post("/api/app/customer/surge-alert", async (req, res) => {
     try {
@@ -14820,13 +14736,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   });
 
   // ??????????????????????????????????????????????????????????????????
-  // 7. DRIVER BREAK MODE � Set break, show "Back in X min" to customers
+  // 7. DRIVER BREAK MODE ï¿½ Set break, show "Back in X min" to customers
   // ??????????????????????????????????????????????????????????????????
   app.post("/api/app/driver/break", async (req, res) => {
     try {
       const user = await requireAppAuth(req, res); if (!user) return;
       const { minutes } = req.body;
-      if (!minutes || minutes < 1 || minutes > 120) return res.status(400).json({ message: "Break: 1�120 minutes only" });
+      if (!minutes || minutes < 1 || minutes > 120) return res.status(400).json({ message: "Break: 1ï¿½120 minutes only" });
       const breakUntil = new Date(Date.now() + minutes * 60 * 1000);
       await rawDb.execute(rawSql`UPDATE users SET break_until=${breakUntil.toISOString()}, is_online=false WHERE id=${user.id}::uuid`);
       res.json({ success: true, breakUntil: breakUntil.toISOString(), message: `Break set for ${minutes} minutes. You'll auto go-online after break.` });
@@ -14857,7 +14773,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   });
 
   // ??????????????????????????????????????????????????????????????????
-  // 8. DRIVER FATIGUE ALERT � Warn admin if driver online 8+ hrs
+  // 8. DRIVER FATIGUE ALERT ï¿½ Warn admin if driver online 8+ hrs
   // ??????????????????????????????????????????????????????????????????
   app.get("/api/app/driver/fatigue-status", async (req, res) => {
     try {
@@ -14958,7 +14874,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // -- PLATFORM SERVICES � per-service activation + revenue model control ------
+  // -- PLATFORM SERVICES ï¿½ per-service activation + revenue model control ------
   // Admin: list all 9 configured services
   app.get("/api/platform-services", requireAdminAuth, async (_req, res) => {
     try {
@@ -15066,7 +14982,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
       if (service_status !== undefined) {
         await syncServiceActivationState(key, service_status === 'active');
-        // Parcel � all parcel vehicles share one service toggle
+        // Parcel ï¿½ all parcel vehicles share one service toggle
         // Also sync business_settings legacy toggle
       }
 
@@ -15092,7 +15008,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   // Parcel migration: add gst_amt column if missing
   await rawDb.execute(rawSql`ALTER TABLE parcel_orders ADD COLUMN IF NOT EXISTS gst_amt NUMERIC(10,2) DEFAULT 0`).catch(dbCatch("db"));
 
-  // Hardcoded defaults � fallback only when parcel_vehicle_types DB row not found
+  // Hardcoded defaults ï¿½ fallback only when parcel_vehicle_types DB row not found
   const PARCEL_VEHICLES: Record<string, { baseFare: number; perKm: number; perKg: number; name: string; maxWeightKg: number; loadCharge: number }> = {
     bike_parcel: { baseFare: 40, perKm: 12, perKg: 4, name: 'Bike Parcel', maxWeightKg: 10, loadCharge: 0 },
     tata_ace: { baseFare: 150, perKm: 18, perKg: 2, name: 'Mini Truck', maxWeightKg: 500, loadCharge: 50 },
@@ -15102,7 +15018,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     tempo_407: { baseFare: 800, perKm: 28, perKg: 1, name: 'Tata 407 / Tempo', maxWeightKg: 2500, loadCharge: 120 },
   };
 
-  // 60s in-memory caches for parcel pricing lookups — avoids hammering DB
+  // 60s in-memory caches for parcel pricing lookups â€” avoids hammering DB
   // on every quote/booking (parcel_vehicle_types + parcel_fares + platform_services
   // + zones.surge_factor are otherwise 4 queries per call).
   const PARCEL_CACHE_TTL_MS = 60_000;
@@ -15226,7 +15142,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       }
     }
 
-    // 5. Fare calculation — Porter formula:
+    // 5. Fare calculation â€” Porter formula:
     //   fare = base + dist*per_km + wt*per_kg, then apply surge, then enforce min
     const distFareRaw = distKm * perKm;
     const weightFareRaw = wt * perKg;
@@ -15254,7 +15170,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     };
   }
 
-  // Customer: get fare quote for parcel � zone-aware, reads admin-configured rates
+  // Customer: get fare quote for parcel ï¿½ zone-aware, reads admin-configured rates
   app.post("/api/app/parcel/quote", authApp, async (req, res) => {
     try {
       const { vehicleCategory = 'bike_parcel', dropLocations = [], weightKg = 1,
@@ -15444,7 +15360,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       const order = (r.rows as any[])[0];
 
       // Porter-grade parcel dispatch: strict vehicle match + expanding radius
-      // 5km → 10km → 15km. Stops at first radius that finds any eligible driver.
+      // 5km â†’ 10km â†’ 15km. Stops at first radius that finds any eligible driver.
       if (io && pickupLat && pickupLng) {
         try {
           const PARCEL_DISPATCH_RADII = [5, 10, 15];
@@ -15460,7 +15376,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
             finalRadiusUsed = r;
             lastExcludedSummary = match.excludedSummary;
             mappingRejected = match.rejected;
-            if (match.rejected) break; // mapping missing — expanding radius won't help
+            if (match.rejected) break; // mapping missing â€” expanding radius won't help
             if (match.drivers.length) {
               parcelDrivers = match.drivers;
               break;
@@ -15939,7 +15855,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // -- B2B: Schema migration � add login columns -----------------------------
+  // -- B2B: Schema migration ï¿½ add login columns -----------------------------
   await rawDb.execute(rawSql`ALTER TABLE b2b_companies ADD COLUMN IF NOT EXISTS b2b_email VARCHAR(255)`).catch(dbCatch("db"));
   await rawDb.execute(rawSql`ALTER TABLE b2b_companies ADD COLUMN IF NOT EXISTS b2b_password_hash VARCHAR(255)`).catch(dbCatch("db"));
   await rawDb.execute(rawSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_b2b_companies_email ON b2b_companies(b2b_email) WHERE b2b_email IS NOT NULL`).catch(dbCatch("db"));
@@ -16059,7 +15975,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
            ${email ? email.trim().toLowerCase() : null}, ${pwHash})
         RETURNING id
       `);
-      res.json({ success: true, message: "B2B company registered � pending admin approval", companyId: (ins.rows[0] as any).id });
+      res.json({ success: true, message: "B2B company registered ï¿½ pending admin approval", companyId: (ins.rows[0] as any).id });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -16143,7 +16059,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // B2B: bulk delivery � create multiple parcel orders for a business
+  // B2B: bulk delivery ï¿½ create multiple parcel orders for a business
   app.post("/api/b2b/:companyId/bulk-delivery", requireAdminAuth, async (req, res) => {
     try {
       const companyId = req.params.companyId as string;
@@ -16191,7 +16107,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         RETURNING wallet_balance
       `);
       if (!deductR.rows.length) {
-        return res.status(402).json({ message: 'Wallet deduction failed � balance may have changed. Please retry.' });
+        return res.status(402).json({ message: 'Wallet deduction failed ï¿½ balance may have changed. Please retry.' });
       }
 
       const results: any[] = [];
@@ -16514,7 +16430,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           INSERT INTO trip_status (trip_id, status, source, note)
           VALUES (${r.id}::uuid, 'arrival_delayed', 'system', 'Driver accepted >15 min ago, not yet arrived')
         `).catch(dbCatch("db"));
-        console.log(`[ARRIVAL-TIMEOUT] Trip ${r.id} � driver accepted 15+ min ago, notified parties`);
+        console.log(`[ARRIVAL-TIMEOUT] Trip ${r.id} ï¿½ driver accepted 15+ min ago, notified parties`);
       }
     } catch (e: any) {
       console.error("[ARRIVAL-TIMEOUT] Error:", (e as any).message);
@@ -16537,7 +16453,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   });
 
   // --------------------------------------------------------------------------
-  //  AI INTELLIGENCE LAYER � ENDPOINTS
+  //  AI INTELLIGENCE LAYER ï¿½ ENDPOINTS
   // --------------------------------------------------------------------------
 
   // Initialize AI tables on startup
@@ -17039,14 +16955,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
   // --------------------------------------------------------------------------
   //  DRIVER HEATMAP EARNINGS PREDICTOR SYSTEM
-  //  - Grid-based demand tracking (configurable cell size, default 500m�500m)
+  //  - Grid-based demand tracking (configurable cell size, default 500mï¿½500m)
   //  - Real-time demand score = requests / active_drivers per cell
   //  - Service-wise breakdown: ride, parcel, pool, cargo
-  //  - Earning predictions per zone (?min�?max in 30 min)
+  //  - Earning predictions per zone (?minï¿½?max in 30 min)
   //  - Idle driver suggestions after configurable idle timeout
   //  - Admin config: grid size, thresholds, activation, idle timeout
   //  - Event sources: search, booking, pickup, cancellation, parcel
-  //  - Background refresh every 30�60 seconds
+  //  - Background refresh every 30ï¿½60 seconds
   //  - Data privacy: only aggregated stats, no individual passenger data
   // --------------------------------------------------------------------------
 
@@ -17216,7 +17132,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         `);
       }
 
-      // Purge stale cells not updated in 2� lookback window
+      // Purge stale cells not updated in 2ï¿½ lookback window
       await rawDb.execute(rawSql`
         DELETE FROM heatmap_grid_cache
         WHERE updated_at < NOW() - (${lookbackMin * 2} || ' minutes')::INTERVAL
@@ -17360,7 +17276,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           earningMax: parseInt(z.estimated_earning_max),
           topService,
           message: `${icon} ${level === 'high' ? 'High' : 'Medium'} demand zone ${distKm} km away`,
-          detail: `${svcLabel} detected. Estimated ?${z.estimated_earning_min}�?${z.estimated_earning_max} in next 30 min`,
+          detail: `${svcLabel} detected. Estimated ?${z.estimated_earning_min}ï¿½?${z.estimated_earning_max} in next 30 min`,
         },
       });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
@@ -17451,13 +17367,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   // -- HOOK: Log booking events automatically --------------------------------
   // Intercept book-ride responses to log pickup location
   const _origBookRide = app._router?.stack?.find?.((l: any) => l?.route?.path === '/api/app/customer/book-ride');
-  // Event logging is done directly inside book-ride handler � see post-booking log below
+  // Event logging is done directly inside book-ride handler ï¿½ see post-booking log below
 
   // ----------------------------------------------------------------------------
-  //  ADVANCED MOBILITY INTELLIGENCE � API ENDPOINTS
+  //  ADVANCED MOBILITY INTELLIGENCE ï¿½ API ENDPOINTS
   // ----------------------------------------------------------------------------
 
-  // -- 1. DEMAND HEATMAP � Admin + Driver -------------------------------------
+  // -- 1. DEMAND HEATMAP ï¿½ Admin + Driver -------------------------------------
   app.get("/api/admin/demand-heatmap", requireAdminAuth, async (_req, res) => {
     try {
       const zones = await computeDemandHeatmap();
@@ -17482,7 +17398,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // -- 2. SURGE PRICING � Admin CRUD + Calculation ----------------------------
+  // -- 2. SURGE PRICING ï¿½ Admin CRUD + Calculation ----------------------------
   app.get("/api/app/surge", async (req, res) => {
     try {
       const lat = Number(req.query.lat) || 0;
@@ -17690,7 +17606,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  // -- 8. GOOGLE MAPS CACHE � Optimized endpoints -----------------------------
+  // -- 8. GOOGLE MAPS CACHE ï¿½ Optimized endpoints -----------------------------
   app.get("/api/app/geocode", authApp, async (req, res) => {
     try {
       const address = String(req.query.address || "");
@@ -17768,7 +17684,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   });
 
   // --------------------------------------------------------------------------
-  //  ADVANCED PARCEL SYSTEM � NEW ENDPOINTS
+  //  ADVANCED PARCEL SYSTEM ï¿½ NEW ENDPOINTS
   // --------------------------------------------------------------------------
 
   // -- Parcel: Get insurance quote -----------------------------------------
@@ -18057,7 +17973,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   });
 
   // --------------------------------------------------------------------------
-  //  UNIFIED MAPPING ARCHITECTURE � NEW ENDPOINTS
+  //  UNIFIED MAPPING ARCHITECTURE ï¿½ NEW ENDPOINTS
   // --------------------------------------------------------------------------
 
   // -- Places Autocomplete -------------------------------------------------
@@ -18173,7 +18089,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   });
 
   // --------------------------------------------------------------------------
-  //  UNIFIED REVENUE ENGINE � ENDPOINTS
+  //  UNIFIED REVENUE ENGINE ï¿½ ENDPOINTS
   // --------------------------------------------------------------------------
 
   // -- Payment Methods: list supported -------------------------------------
@@ -18437,7 +18353,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   });
 
   // --------------------------------------------------------------------------
-  //  DYNAMIC SERVICES & PARCEL VEHICLES � ENDPOINTS
+  //  DYNAMIC SERVICES & PARCEL VEHICLES ï¿½ ENDPOINTS
   // --------------------------------------------------------------------------
 
   // App: Get services available at a location (city-based filtering)
@@ -18553,3 +18469,4 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
   return httpServer;
 }
+

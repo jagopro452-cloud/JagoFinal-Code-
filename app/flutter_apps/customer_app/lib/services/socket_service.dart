@@ -22,6 +22,11 @@ class SocketService {
   final _noDriversController = StreamController<Map<String, dynamic>>.broadcast();
   final _tripSearchingController = StreamController<Map<String, dynamic>>.broadcast();
   final _paymentPendingController = StreamController<Map<String, dynamic>>.broadcast();
+  final _poolStatusController = StreamController<Map<String, dynamic>>.broadcast();
+  final _poolSeatUpdateController = StreamController<Map<String, dynamic>>.broadcast();
+  final _parcelStatusController = StreamController<Map<String, dynamic>>.broadcast();
+  final _parcelLocationController = StreamController<Map<String, dynamic>>.broadcast();
+  final _configUpdatedController = StreamController<Map<String, dynamic>>.broadcast();
   final _callIncomingController = StreamController<Map<String, dynamic>>.broadcast();
   final _callOfferController = StreamController<Map<String, dynamic>>.broadcast();
   final _callAnswerController = StreamController<Map<String, dynamic>>.broadcast();
@@ -40,6 +45,11 @@ class SocketService {
   Stream<Map<String, dynamic>> get onNoDrivers => _noDriversController.stream;
   Stream<Map<String, dynamic>> get onTripSearching => _tripSearchingController.stream;
   Stream<Map<String, dynamic>> get onPaymentPending => _paymentPendingController.stream;
+  Stream<Map<String, dynamic>> get onPoolStatus => _poolStatusController.stream;
+  Stream<Map<String, dynamic>> get onPoolSeatUpdate => _poolSeatUpdateController.stream;
+  Stream<Map<String, dynamic>> get onParcelStatus => _parcelStatusController.stream;
+  Stream<Map<String, dynamic>> get onParcelLocation => _parcelLocationController.stream;
+  Stream<Map<String, dynamic>> get onConfigUpdated => _configUpdatedController.stream;
   Stream<Map<String, dynamic>> get onCallIncoming => _callIncomingController.stream;
   Stream<Map<String, dynamic>> get onCallOffer => _callOfferController.stream;
   Stream<Map<String, dynamic>> get onCallAnswer => _callAnswerController.stream;
@@ -238,6 +248,21 @@ class SocketService {
     _socket!.on('trip:payment_pending', (data) {
       _paymentPendingController.add(Map<String, dynamic>.from(data));
     });
+    _socket!.on('pool:status', (data) {
+      _poolStatusController.add(Map<String, dynamic>.from(data));
+    });
+    _socket!.on('pool:seat_update', (data) {
+      _poolSeatUpdateController.add(Map<String, dynamic>.from(data));
+    });
+    _socket!.on('parcel:status', (data) {
+      _parcelStatusController.add(Map<String, dynamic>.from(data));
+    });
+    _socket!.on('parcel:location', (data) {
+      _parcelLocationController.add(Map<String, dynamic>.from(data));
+    });
+    _socket!.on('config:updated', (data) {
+      _configUpdatedController.add(Map<String, dynamic>.from(data));
+    });
 
     // ── WebRTC Call Signaling ──────────────────────────────────
     _socket!.on('call:incoming', (data) {
@@ -281,6 +306,18 @@ class SocketService {
       _socket!.emit('customer:leave_trip', {'tripId': tripId});
     }
     _activeTripId = null;
+  }
+
+  void trackParcel(String orderId) {
+    if (_socket != null && (_isConnected || _socket!.connected)) {
+      _socket!.emit('parcel:track', {'orderId': orderId});
+    }
+  }
+
+  void stopTrackingParcel(String orderId) {
+    if (_socket != null && _socket!.connected) {
+      _socket!.emit('parcel:leave', {'orderId': orderId});
+    }
   }
 
   // Cancel a trip
@@ -355,6 +392,11 @@ class SocketService {
     _noDriversController.close();
     _tripSearchingController.close();
     _paymentPendingController.close();
+    _poolStatusController.close();
+    _poolSeatUpdateController.close();
+    _parcelStatusController.close();
+    _parcelLocationController.close();
+    _configUpdatedController.close();
     _callIncomingController.close();
     _callOfferController.close();
     _callAnswerController.close();

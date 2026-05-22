@@ -89,7 +89,10 @@ android {
 
     buildTypes {
         release {
-            signingConfig keystorePropertiesFile.exists() ? signingConfigs.release : signingConfigs.debug
+            if (!keystorePropertiesFile.exists()) {
+                throw new GradleException("Release signing requires android/key.properties. Refusing to build a debug-signed release APK/AAB.")
+            }
+            signingConfig signingConfigs.release
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'

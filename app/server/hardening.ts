@@ -147,7 +147,7 @@ export async function verifyDriverAfterAccept(
   const config = await loadHardeningSettings();
   const timeoutMs = config.driver_ping_timeout_ms || 5000;
 
-  if (hasActiveDriverSocket(driverId)) {
+  if (await hasActiveDriverSocket(driverId)) {
     await logInfo('DRIVER-VERIFY', 'Driver already has an active socket after accept', { driverId, tripId });
     return true;
   }
@@ -188,7 +188,7 @@ export async function verifyDriverAfterAccept(
         String(activeTrip.current_status || "") === "accepted" &&
         String(activeTrip.current_trip_id || "") === tripId &&
         (
-          hasActiveDriverSocket(driverId) ||
+          (await hasActiveDriverSocket(driverId)) ||
           (activeTrip.is_online === true && activeTrip.updated_at && (Date.now() - new Date(activeTrip.updated_at).getTime()) <= 30_000)
         );
       if (stillClaimed) {

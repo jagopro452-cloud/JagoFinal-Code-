@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Platform;
 import 'dart:math' show min, max;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
@@ -20,6 +21,12 @@ import '../../services/trip_service.dart';
 import '../call/call_screen.dart';
 import '../chat/trip_chat_sheet.dart';
 import '../home/home_screen.dart';
+
+void _tripDebugLog(String message) {
+  if (kDebugMode) {
+    debugPrint(message);
+  }
+}
 
 // Quick polyline decoder (no extra package needed)
 List<LatLng> _decodePolyline(String encoded) {
@@ -134,7 +141,7 @@ class _TripScreenState extends State<TripScreen>
       }
       _validateActiveTrip();
     });
-    print(
+    _tripDebugLog(
         '[TRIP] Screen init — tripId=${_trip?['tripId'] ?? _trip?['id']} status=$_status');
   }
 
@@ -233,7 +240,7 @@ class _TripScreenState extends State<TripScreen>
               previousStatus != 'on_the_way') {
             _startTripTimer();
           }
-          print('[TRIP] Poll sync: $previousStatus → $serverStatus');
+          _tripDebugLog('[TRIP] Poll sync: $previousStatus → $serverStatus');
         }
       }
     } catch (_) {} // network error — keep polling
@@ -772,10 +779,10 @@ class _TripScreenState extends State<TripScreen>
           0;
     }
     if (destLat == 0 || destLng == 0) {
-      print('[ROUTE] Skipping fetch — no valid destination coords (status=$_status)');
+      _tripDebugLog('[ROUTE] Skipping fetch — no valid destination coords (status=$_status)');
       return;
     }
-    print('[ROUTE] Fetching route from ($myLat,$myLng) → ($destLat,$destLng) [status=$_status]');
+    _tripDebugLog('[ROUTE] Fetching route from ($myLat,$myLng) → ($destLat,$destLng) [status=$_status]');
     await _fetchRoute(myLat, myLng, destLat, destLng);
   }
 
@@ -983,7 +990,7 @@ class _TripScreenState extends State<TripScreen>
             );
             _loading = false;
           });
-          print('[TRIP] ✅ Arrived at pickup — tripId=$tripId');
+          _tripDebugLog('[TRIP] ✅ Arrived at pickup — tripId=$tripId');
           _showSnack('Arrived! Ask customer for OTP 📍');
           // Pre-fetch route to destination while driver waits for OTP
           // (polylines will be ready the moment trip starts)
@@ -1089,7 +1096,7 @@ class _TripScreenState extends State<TripScreen>
         _locationTimer?.cancel();
         _posStream?.cancel();
         _stopTripTimer();
-        print(
+        _tripDebugLog(
             '[TRIP] ✅ Ride completed — tripId=$tripId fare=$rideFare earnings=$driverEarnings');
         if (!mounted) return;
         _showCompletionSheet(
@@ -1107,7 +1114,7 @@ class _TripScreenState extends State<TripScreen>
         setState(() => _loading = false);
       }
     } catch (e) {
-      print('[TRIP] ❌ complete-trip network error: $e');
+      _tripDebugLog('[TRIP] ❌ complete-trip network error: $e');
       if (!mounted) return;
       _showSnack('Network error. Please tap "Complete" again.', error: true);
       setState(() => _loading = false);
@@ -1273,7 +1280,7 @@ class _TripScreenState extends State<TripScreen>
           ? body['trip'] as Map<String, dynamic>
           : null;
       if (res.statusCode == 200) {
-        print('[TRIP] ✅ OTP verified — trip started — tripId=$tripId');
+        _tripDebugLog('[TRIP] ✅ OTP verified — trip started — tripId=$tripId');
         if (!mounted) return;
         setState(() {
           _trip = _mergeTripState(_trip, serverTrip);

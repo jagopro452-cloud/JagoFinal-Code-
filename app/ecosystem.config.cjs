@@ -6,6 +6,9 @@ module.exports = {
     instances: 'max',
     exec_mode: 'cluster',
     node_args: '--env-file=/var/www/jago/.env',
+    wait_ready: false,
+    listen_timeout: 15000,
+    kill_timeout: 10000,
     env_production: {
       NODE_ENV: 'production',
       PORT: 5000,
@@ -13,6 +16,7 @@ module.exports = {
     max_memory_restart: '512M',
     restart_delay: 3000,
     max_restarts: 10,
+    exp_backoff_restart_delay: 200,
     watch: false,
     log_date_format: 'YYYY-MM-DD HH:mm:ss',
     error_file: '/var/log/jago/error.log',

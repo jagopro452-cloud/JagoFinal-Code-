@@ -1,11 +1,45 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
-function getAdminToken(): string | null {
+function getSavedAdminSession(): any {
   try {
-    const saved = JSON.parse(localStorage.getItem("jago-admin") || "{}");
-    return saved?.token || null;
+    return JSON.parse(localStorage.getItem("jago-admin") || "{}");
   } catch {
-    return null;
+    return {};
+  }
+}
+
+function getAdminToken(): string | null {
+  return getSavedAdminSession()?.token || null;
+}
+
+function getAdminRefreshToken(): string | null {
+  return getSavedAdminSession()?.refreshToken || null;
+}
+
+function getAdminDeviceId(): string {
+  try {
+    const storageKey = "jago-admin-device-id";
+    const existing = localStorage.getItem(storageKey);
+    if (existing) return existing;
+    const created = `admin-web-${crypto.randomUUID()}`;
+    localStorage.setItem(storageKey, created);
+    return created;
+  } catch {
+    return "admin-web-fallback";
+  }
+}
+
+function saveAdminSession(update: { token: string; refreshToken?: string | null; expiresAt?: string | null }) {
+  try {
+    const current = getSavedAdminSession();
+    localStorage.setItem("jago-admin", JSON.stringify({
+      ...current,
+      token: update.token,
+      refreshToken: update.refreshToken ?? current.refreshToken ?? null,
+      expiresAt: update.expiresAt ?? current.expiresAt ?? null,
+    }));
+  } catch {
+    handle401();
   }
 }
 
@@ -15,13 +49,15 @@ function buildAdminHeaders(extra?: HeadersInit): HeadersInit {
     new Headers(extra).forEach((v, k) => { headers[k] = v; });
   }
   const token = getAdminToken();
-  if (token && !headers["authorization"] && !headers["Authorization"]) {
-    headers["Authorization"] = `Bearer ${token}`;
+  if (token && !headers.authorization && !headers.Authorization) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  if (!headers["X-Device-Id"] && !headers["x-device-id"]) {
+    headers["X-Device-Id"] = getAdminDeviceId();
   }
   return headers;
 }
 
-// Redirect to login and clear session on 401
 function handle401() {
   localStorage.removeItem("jago-admin");
   if (!window.location.pathname.includes("/admin/login")) {
@@ -29,30 +65,77 @@ function handle401() {
   }
 }
 
-// Patch window.fetch at module load time so ALL raw fetch() calls in admin pages:
-// 1. Get the admin Bearer token header automatically
-// 2. On 401 → clear session + redirect to login (prevents crash from non-array responses)
+let refreshPromise: Promise<boolean> | null = null;
+
+async function refreshAdminSession(): Promise<boolean> {
+  const refreshToken = getAdminRefreshToken();
+  if (!refreshToken) return false;
+  if (!refreshPromise) {
+    refreshPromise = fetch("/api/admin/auth/refresh", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Device-Id": getAdminDeviceId(),
+      },
+      body: JSON.stringify({
+        refreshToken,
+        deviceId: getAdminDeviceId(),
+      }),
+    })
+      .then(async (res) => {
+        if (!res.ok) return false;
+        const data = await res.json();
+        if (!data?.token) return false;
+        saveAdminSession({
+          token: data.token,
+          refreshToken: data.refreshToken,
+          expiresAt: data.expiresAt,
+        });
+        return true;
+      })
+      .catch(() => false)
+      .finally(() => {
+        refreshPromise = null;
+      });
+  }
+  return refreshPromise;
+}
+
 (function patchFetch() {
-  const _orig = window.fetch.bind(window);
-  window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-    const url = typeof input === "string" ? input
-      : input instanceof URL ? input.toString()
-      : (input as Request).url;
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : (input as Request).url;
     const isAdminApi = url.startsWith("/api/") &&
       !url.startsWith("/api/app/") &&
       !url.startsWith("/api/driver/") &&
       !url.startsWith("/api/webhook") &&
       url !== "/api/health";
-    if (!isAdminApi) return _orig(input as any, init);
-    const headers = buildAdminHeaders(init?.headers);
-    return _orig(input as any, { ...(init || {}), headers }).then(res => {
-      if (res.status === 401) {
-        handle401();
-        // Return a fake response so callers don't crash — they'll never use it (redirect happening)
-        return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
-      }
-      return res;
+    if (!isAdminApi) return originalFetch(input as any, init);
+
+    const makeRequest = () => originalFetch(input as any, {
+      ...(init || {}),
+      headers: buildAdminHeaders(init?.headers),
     });
+
+    let response = await makeRequest();
+    if (response.status === 401 && !url.startsWith("/api/admin/login") && url !== "/api/admin/auth/refresh") {
+      const refreshed = await refreshAdminSession();
+      if (refreshed) {
+        response = await makeRequest();
+      }
+    }
+    if (response.status === 401) {
+      handle401();
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return response;
   }) as typeof window.fetch;
 })();
 

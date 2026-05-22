@@ -6,7 +6,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../config/jago_theme.dart';
 import '../services/auth_service.dart';
 import 'auth/login_screen.dart';
-import 'home/home_screen.dart';
 import 'main_screen.dart';
 import 'onboarding/onboarding_screen.dart';
 import 'onboarding/terms_screen.dart';

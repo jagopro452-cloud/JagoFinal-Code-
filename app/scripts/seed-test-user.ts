@@ -8,7 +8,10 @@ const rawSql = sql;
 async function run() {
   const phone = "9999999999";
   const userType = "customer";
-  const password = "Test@123";
+  const password = String(process.env.SEED_TEST_USER_PASSWORD || "").trim();
+  if (!password) {
+    throw new Error("SEED_TEST_USER_PASSWORD is required");
+  }
   const passwordHash = await hashPassword(password);
 
   const existing = await rawDb.execute(rawSql`
@@ -64,7 +67,7 @@ async function run() {
         success: true,
         seeded: {
           phone,
-          password,
+          passwordConfigured: true,
           userType,
         },
       },

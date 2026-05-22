@@ -3,7 +3,6 @@ import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../config/jago_theme.dart';
 import '../../services/auth_service.dart';
-import '../home/home_screen.dart';
 import '../main_screen.dart';
 
 class RegisterScreen extends StatefulWidget {

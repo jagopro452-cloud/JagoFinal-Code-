@@ -8,19 +8,6 @@ export type SessionContext = {
   userAgent?: string | null;
 };
 
-export async function findActiveSessionByUser(userId: string) {
-  const result = await rawDb.execute(rawSql`
-    SELECT id, user_id, token, device_id, expires_at, last_active_at
-    FROM sessions
-    WHERE user_id=${userId}::uuid
-      AND revoked=false
-      AND expires_at > NOW()
-    ORDER BY created_at DESC
-    LIMIT 1
-  `);
-  return (result.rows[0] as any) || null;
-}
-
 export async function createSessionRecord(
   userId: string,
   token: string,
@@ -43,27 +30,11 @@ export async function createSessionRecord(
   return String((result.rows[0] as any).id);
 }
 
-export async function revokeSessionsForUser(userId: string) {
-  // H5 FIX: Revoke BOTH sessions AND refresh tokens together
+export async function revokeSessionById(sessionId: string) {
   await rawDb.execute(rawSql`
     UPDATE sessions
     SET revoked=true, revoked_at=NOW()
-    WHERE user_id=${userId}::uuid
-      AND revoked=false
-  `);
-  await rawDb.execute(rawSql`
-    UPDATE refresh_tokens
-    SET revoked=true, revoked_at=NOW()
-    WHERE user_id=${userId}::uuid
-      AND revoked=false
-  `).catch(() => undefined); // Silently pass if refresh_tokens table doesn't exist yet
-}
-
-export async function revokeSessionByToken(token: string) {
-  await rawDb.execute(rawSql`
-    UPDATE sessions
-    SET revoked=true, revoked_at=NOW()
-    WHERE token=${token}
+    WHERE id=${sessionId}::uuid
       AND revoked=false
   `);
 }
@@ -83,6 +54,20 @@ export async function findSessionByToken(token: string) {
     FROM sessions s
     JOIN users u ON u.id = s.user_id
     WHERE s.token=${token}
+      AND s.revoked=false
+      AND s.expires_at > NOW()
+      AND u.is_active=true
+    LIMIT 1
+  `);
+  return (result.rows[0] as any) || null;
+}
+
+export async function findSessionById(sessionId: string) {
+  const result = await rawDb.execute(rawSql`
+    SELECT s.id, s.user_id, s.device_id, s.expires_at, s.token, u.user_type
+    FROM sessions s
+    JOIN users u ON u.id = s.user_id
+    WHERE s.id=${sessionId}::uuid
       AND s.revoked=false
       AND s.expires_at > NOW()
       AND u.is_active=true
@@ -143,43 +128,6 @@ export async function revokeRefreshTokensBySession(sessionId: string) {
     SET revoked=true, revoked_at=NOW()
     WHERE session_id=${sessionId}::uuid
       AND revoked=false
-  `);
-}
-
-export async function revokeAllRefreshTokensForUser(userId: string) {
-  await rawDb.execute(rawSql`
-    UPDATE refresh_tokens
-    SET revoked=true, revoked_at=NOW()
-    WHERE user_id=${userId}::uuid
-      AND revoked=false
-  `);
-}
-
-export async function revokeUserAuthColumns(userId: string) {
-  await rawDb.execute(rawSql`
-    UPDATE users
-    SET auth_token=NULL,
-        auth_token_expires_at=NULL,
-        refresh_token=NULL,
-        refresh_token_expires_at=NULL
-    WHERE id=${userId}::uuid
-  `);
-}
-
-export async function syncLegacyUserAuthColumns(
-  userId: string,
-  accessToken: string,
-  accessTokenExpiresAt: string,
-  refreshToken: string,
-  refreshTokenExpiresAt: string,
-) {
-  await rawDb.execute(rawSql`
-    UPDATE users
-    SET auth_token=${accessToken},
-        auth_token_expires_at=${accessTokenExpiresAt}::timestamp,
-        refresh_token=${refreshToken},
-        refresh_token_expires_at=${refreshTokenExpiresAt}::timestamp
-    WHERE id=${userId}::uuid
   `);
 }
 

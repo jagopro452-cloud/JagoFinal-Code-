@@ -12,8 +12,13 @@ import pg from "pg";
 import * as schema from "@shared/schema";
 
 const { Pool } = pg;
+const isProduction = process.env.NODE_ENV === 'production';
+const databaseUrl = (process.env.DATABASE_URL || "").trim();
 
-if (!process.env.DATABASE_URL) {
+if (!databaseUrl) {
+  if (isProduction) {
+    throw new Error("[db] DATABASE_URL is required in production");
+  }
   console.error("[db] WARNING: DATABASE_URL not set — DB operations will fail at runtime");
 }
 
@@ -32,11 +37,10 @@ function normalizeDatabaseUrl(connectionString: string): string {
   }
 }
 
-// Cloud DBs (Neon, Supabase, Railway) use intermediate CAs that trigger Node.js SSL errors.
-// Fix: disable cert rejection at pool level only (not globally — global setting breaks all HTTPS).
-const isLocalDb = (process.env.DATABASE_URL || "").match(/localhost|127\.0\.0\.1/);
-const isProduction = process.env.NODE_ENV === 'production';
-const normalizedDatabaseUrl = normalizeDatabaseUrl(process.env.DATABASE_URL || "postgres://localhost/jago_placeholder");
+const isLocalDb = databaseUrl.match(/localhost|127\.0\.0\.1/);
+const normalizedDatabaseUrl = normalizeDatabaseUrl(databaseUrl);
+const rejectUnauthorized =
+  String(process.env.DB_SSL_REJECT_UNAUTHORIZED || "true").toLowerCase() !== "false";
 
 // Neon serverless needs enough connections to handle concurrent request bursts.
 // 10 was too low — production peaks can exhaust the pool causing queue buildup.
@@ -45,7 +49,7 @@ const maxConnections = Number(process.env.DB_POOL_MAX || (isProduction ? "25" : 
 
 export const pool = new Pool({
   connectionString: normalizedDatabaseUrl,
-  ssl: isLocalDb ? false : { rejectUnauthorized: false },
+  ssl: isLocalDb ? false : { rejectUnauthorized },
   max: maxConnections,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 2000,
@@ -58,7 +62,9 @@ pool.on("error", (err) => {
 });
 
 pool.on("connect", () => {
-  console.debug("[DB] New connection established, pool size:", pool.totalCount);
+  if (!isProduction) {
+    console.debug("[DB] New connection established, pool size:", pool.totalCount);
+  }
 });
 
 export const db = drizzle(pool, { schema });

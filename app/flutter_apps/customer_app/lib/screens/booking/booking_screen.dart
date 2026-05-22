@@ -66,20 +66,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
   Set<Polyline> _polylines = {};
   double _routedDistanceKm = 0.0;
 
-  // Populated dynamically from /api/app/popular-locations; static data used as fallback
-  List<Map<String, dynamic>> _popularLocations = const [
-    {'name': 'Benz Circle', 'lat': 16.5062, 'lng': 80.6480},
-    {'name': 'Vijayawada Railway Station', 'lat': 16.5175, 'lng': 80.6400},
-    {'name': 'Vijayawada Bus Stand', 'lat': 16.5179, 'lng': 80.6238},
-    {'name': 'Balaji Bus Stand', 'lat': 16.5106, 'lng': 80.6248},
-    {'name': 'Kanaka Durga Temple', 'lat': 16.5176, 'lng': 80.6121},
-    {'name': 'Gannavaram Airport', 'lat': 16.5304, 'lng': 80.7968},
-    {'name': 'Governorpet', 'lat': 16.5135, 'lng': 80.6346},
-    {'name': 'Patamata', 'lat': 16.4883, 'lng': 80.6681},
-  ];
-
   static const Color _jagoPrimary = JT.primary;
-  static const Color _jagoSecondary = JT.secondary;
 
   static const Color _blue = Color(0xFF6366F1); // Vibrant Indigo
   static const Color _green = JT.success;
@@ -120,17 +107,6 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     }).toList();
   }
 
-  void _syncSelectedFareToVisible(Map<String, VehicleStatus> statuses) {
-    if (_allFares.isEmpty) return;
-    final selectedName = _fareVehicleName(_allFares[_selectedFareIndex]);
-    if (VehicleStatusService.isActive(statuses, selectedName)) return;
-    final visible = _visibleFareEntries(statuses);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || visible.isEmpty) return;
-      setState(() => _selectedFareIndex = visible.first.key);
-    });
-  }
-
   static IconData _iconForVehicle(String name) {
     final n = name.toLowerCase();
     if (n.contains('pickup van') || n.contains('pickup')) return Icons.fire_truck_rounded;
@@ -165,20 +141,6 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
   }
 
   // Rule 3: Parcel Auto subtitle must clearly say GOODS ONLY
-  static String _subtitleForVehicle(String name) {
-    final n = name.toLowerCase();
-    if (n.contains('parcel auto')) return 'Goods Carrier Auto · CARGO ONLY';
-    if (n.contains('parcel bike')) return 'Delivery bike · Up to 10 kg';
-    if (n.contains('mini truck') || n.contains('tata ace')) return 'Mini cargo truck · Up to 500 kg';
-    if (n.contains('pickup van') || n.contains('pickup')) return 'Large pickup van · Up to 2000 kg';
-    if (n.contains('parcel')) return 'Parcel delivery';
-    if (n.contains('bike')) return '1 passenger · Fastest';
-    if (n.contains('auto')) return 'Up to 3 passengers';
-    if (n.contains('suv')) return 'Up to 6 passengers · AC';
-    if (n.contains('car')) return 'Up to 4 passengers · AC';
-    return '';
-  }
-
   // Rule 4: Returns true if vehicle should be HIDDEN
   static bool _shouldHideVehicle(String name) {
     final n = name.toLowerCase();
@@ -228,6 +190,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
   }
 
   /// Renders vehicle artwork — real network image with icon fallback.
+  // ignore: unused_element
   Widget _buildVehicleArtwork(String name, Color accent, bool isSelected, {double size = 96}) {
     final imageKey = _vehicleImageKey(name);
     final imageUrl = imageKey != null ? _vehicleImageUrls[imageKey] : null;
@@ -280,6 +243,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     );
   }
 
+  // ignore: unused_element
   Widget _buildVehicleHero() {
     if (_allFares.isEmpty) return const SizedBox.shrink();
     final fare = _allFares[_selectedFareIndex];
@@ -370,6 +334,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     return '$h:$m $ampm';
   }
 
+  // ignore: unused_element
   static String _capacityForVehicle(String name) {
     final n = name.toLowerCase();
     if (n.contains('pickup van') || n.contains('pickup')) return 'Up to 2000 kg';
@@ -408,6 +373,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     return v.split(',').first.trim();
   }
 
+  // ignore: unused_element
   void _quickSelectPopular(Map<String, dynamic> location) {
     final name = (location['name'] ?? '').toString();
     final lat = (location['lat'] as num?)?.toDouble() ?? 0.0;
@@ -442,31 +408,11 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     _razorpay.on(Razorpay.EVENT_EXTERNAL_WALLET, _handleExternalWallet);
     _estimateFare();
     _fetchWallet();
-    _fetchPopularLocations();
     _fetchRoutePolyline();
   }
 
-  Future<void> _fetchPopularLocations() async {
-    try {
-      final uri = Uri.parse(ApiConfig.popularLocations).replace(
-        queryParameters: {'lat': widget.pickupLat.toString(), 'lng': widget.pickupLng.toString()},
-      );
-      final r = await http.get(uri).timeout(const Duration(seconds: 5));
-      if (r.statusCode == 200) {
-        final data = jsonDecode(r.body);
-        if (data is! Map) return;
-        final rawList = data['locations'];
-        final list = rawList is List ? rawList.whereType<Map<String, dynamic>>().toList() : <Map<String, dynamic>>[];
-        if (mounted && list.isNotEmpty) {
-          setState(() => _popularLocations = list.map((l) => {
-            'name': l['name']?.toString() ?? '',
-            'lat': (l['lat'] as num?)?.toDouble() ?? 0.0,
-            'lng': (l['lng'] as num?)?.toDouble() ?? 0.0,
-          }).toList());
-        }
-      }
-    } catch (_) { /* keep static fallback */ }
-  }
+  // ignore: unused_element
+  Future<void> _fetchPopularLocations() async {}
 
   @override
   void dispose() {
@@ -744,6 +690,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
 
   /// Offers Google Maps navigation to pickup location after booking is confirmed.
   /// Shows a premium bottom sheet with "Navigate" and "Skip" options.
+  // ignore: unused_element
   Future<void> _offerNavigateToPickup() async {
     if (!mounted) return;
     final pickupLat = widget.pickupLat;
@@ -1217,7 +1164,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
                                   ),
                                   boxShadow: [
                                     BoxShadow(
-                                      color: Colors.black.withOpacity(0.1),
+                                      color: Colors.black.withValues(alpha: 0.1),
                                       blurRadius: 20,
                                       offset: const Offset(0, -5),
                                     ),
@@ -1247,7 +1194,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
                                               borderRadius: BorderRadius.circular(16),
                                               boxShadow: [
                                                 BoxShadow(
-                                                  color: const Color(0xFF2D8CFF).withOpacity(0.3),
+                                                  color: const Color(0xFF2D8CFF).withValues(alpha: 0.3),
                                                   blurRadius: 15,
                                                   offset: const Offset(0, 8),
                                                 ),
@@ -1359,7 +1306,6 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
 
   Widget _payBtn(String method, IconData icon, String label) {
     final selected = _paymentMethod == method;
-    const blue = Color(0xFF2D8CFF);
     const lavender = Color(0xFF8B5CF6);
     
     return GestureDetector(
@@ -1371,14 +1317,14 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         duration: const Duration(milliseconds: 250),
         padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
         decoration: BoxDecoration(
-          color: selected ? lavender.withOpacity(0.08) : Colors.white,
+          color: selected ? lavender.withValues(alpha: 0.08) : Colors.white,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
             color: selected ? lavender : Colors.grey.shade200,
             width: selected ? 2 : 1.5,
           ),
           boxShadow: selected ? [
-            BoxShadow(color: lavender.withOpacity(0.15), blurRadius: 10, offset: const Offset(0, 4))
+            BoxShadow(color: lavender.withValues(alpha: 0.15), blurRadius: 10, offset: const Offset(0, 4))
           ] : [],
         ),
         child: Column(
@@ -1433,6 +1379,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     return hour >= 22 || hour < 6;
   }
 
+  // ignore: unused_element
   Widget _buildNightChargeIndicator() {
     if (!_isNightTime()) return const SizedBox.shrink();
     return Padding(
@@ -1479,6 +1426,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     return null;
   }
 
+  // ignore: unused_element
   Widget _vehicleTagBadge(String tag) {
     Color color;
     IconData icon;
@@ -1638,16 +1586,16 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
             margin: const EdgeInsets.only(bottom: 12),
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: isSelected ? selColor.withOpacity(0.06) : Colors.white,
+              color: isSelected ? selColor.withValues(alpha: 0.06) : Colors.white,
               borderRadius: BorderRadius.circular(20),
               border: Border.all(
-                color: isSelected ? selColor.withOpacity(0.3) : Colors.grey.shade100,
+                color: isSelected ? selColor.withValues(alpha: 0.3) : Colors.grey.shade100,
                 width: isSelected ? 2 : 1,
               ),
               boxShadow: isSelected ? [
-                BoxShadow(color: selColor.withOpacity(0.08), blurRadius: 12, offset: const Offset(0, 4))
+                BoxShadow(color: selColor.withValues(alpha: 0.08), blurRadius: 12, offset: const Offset(0, 4))
               ] : [
-                BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 5, offset: const Offset(0, 2))
+                BoxShadow(color: Colors.black.withValues(alpha: 0.02), blurRadius: 5, offset: const Offset(0, 2))
               ],
             ),
             child: Opacity(
@@ -1659,7 +1607,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
                     width: 70, height: 70,
                     padding: const EdgeInsets.all(4),
                     decoration: BoxDecoration(
-                      color: isSelected ? selColor.withOpacity(0.1) : const Color(0xFFF9FAFB),
+                      color: isSelected ? selColor.withValues(alpha: 0.1) : const Color(0xFFF9FAFB),
                       borderRadius: BorderRadius.circular(16),
                     ),
                     child: Builder(builder: (_) {
@@ -1746,6 +1694,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     );
   }
 
+  // ignore: unused_element
   Widget _buildFareBreakdown(Map<String, dynamic> fare) {
     const cardBg = Color(0xFFF8FAFF);
     const borderCol = Color(0xFFE8EFFF);
@@ -1911,6 +1860,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     );
   }
 
+  // ignore: unused_element
   Widget _buildPromoRow() {
     const cardBg = Color(0xFFF8FBFF);
     const borderCol = Color(0xFFDCE8F8);
