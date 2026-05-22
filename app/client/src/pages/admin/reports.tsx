@@ -9,12 +9,28 @@ const PaymentDistributionChart = lazy(() => import("./reports-charts").then((m) 
 const fmtCur = (v: any) => `₹${parseFloat(v || 0).toFixed(2)}`;
 const fmtDate = (d: any) => d ? new Date(d).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—";
 
-async function exportExcel(data: any[], filename: string) {
-  const XLSX = await import("xlsx");
-  const ws = XLSX.utils.json_to_sheet(data);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Report");
-  XLSX.writeFile(wb, `${filename}.xlsx`);
+function csvCell(value: any) {
+  if (value == null) return "";
+  const text = typeof value === "object" ? JSON.stringify(value) : String(value);
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function exportCsv(data: any[], filename: string) {
+  const rows = Array.isArray(data) ? data : [];
+  const headers = Array.from(new Set(rows.flatMap((row) => Object.keys(row || {}))));
+  const csvRows = [
+    headers.map(csvCell).join(","),
+    ...rows.map((row) => headers.map((header) => csvCell(row?.[header])).join(",")),
+  ];
+  const blob = new Blob([`\uFEFF${csvRows.join("\r\n")}`], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${filename}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
 function ChartFallback() {
@@ -150,7 +166,7 @@ export default function ReportsPage() {
       <div className="d-flex align-items-center justify-content-between mb-4 flex-wrap gap-2">
         <div>
           <h4 className="fw-bold mb-0" data-testid="page-title">Reports & Analytics</h4>
-          <div className="text-muted small">PDF and Excel export for all reports</div>
+          <div className="text-muted small">PDF and CSV export for all reports</div>
         </div>
         <div className="d-flex gap-2 no-print">
           <button className="btn btn-outline-success btn-sm" style={{ borderRadius: 8 }}
@@ -159,9 +175,9 @@ export default function ReportsPage() {
                 : tab === "trip" ? trips
                 : tab === "driver" ? driversData
                 : customers;
-              await exportExcel(exportData, `JAGO_${tab}_report_${from}_${to}`);
+              exportCsv(exportData, `JAGO_${tab}_report_${from}_${to}`);
             }} data-testid="btn-export-excel">
-            <i className="bi bi-file-earmark-excel-fill me-1"></i>Excel
+            <i className="bi bi-filetype-csv me-1"></i>CSV
           </button>
           <button className="btn btn-outline-danger btn-sm" style={{ borderRadius: 8 }}
             onClick={() => printPDF(printRef, `JAGO ${tab} Report`)}

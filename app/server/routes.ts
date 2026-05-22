@@ -190,6 +190,10 @@ import {
   boostrFareOffer,
 } from "./hardening-routes";
 import { processOutboxBatch } from "./outbox";
+import {
+  getRuntimeConfigSnapshot,
+  resolveRuntimeConfigContext,
+} from "./runtime-config";
 
 // -- Multer upload setup -------------------------------------------------------
 const uploadsDir = path.join(process.cwd(), "public", "uploads");
@@ -8384,6 +8388,37 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     next();
   }
 
+  app.get("/api/app/runtime-config", authApp, async (req, res) => {
+    try {
+      const user = (req as any).currentUser || {};
+      const snapshot = await getRuntimeConfigSnapshot();
+      const cityKey = String(req.query.cityKey || user.city || "").trim() || null;
+      const serviceKey = String(req.query.serviceKey || "").trim() || null;
+      const vehicleKey = String(req.query.vehicleKey || "").trim() || null;
+      const resolvedConfig = resolveRuntimeConfigContext(snapshot, {
+        cityKey,
+        serviceKey,
+        vehicleKey,
+      });
+
+      res.json({
+        success: true,
+        data: {
+          ...snapshot,
+          context: {
+            cityKey,
+            serviceKey,
+            vehicleKey,
+            userType: user.userType || user.user_type || null,
+          },
+          resolvedConfig,
+        },
+      });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: safeErrMsg(e) });
+    }
+  });
+
   // Role-specific guards ï¿½ always used after authApp
   function requireDriver(req: Request, res: Response, next: NextFunction) {
     const user = (req as any).currentUser;
@@ -8667,7 +8702,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       // 2. Check driver location + vehicle category to find matching nearby trips
       const locR = await rawDb.execute(rawSql`
-        SELECT dl.lat, dl.lng, COALESCE(dd.vehicle_category_id, u.vehicle_category_id) as vehicle_category_id
+        SELECT dl.lat, dl.lng, dd.vehicle_category_id as vehicle_category_id
         FROM driver_locations dl
         JOIN users u ON u.id = dl.driver_id
         LEFT JOIN driver_details dd ON dd.user_id = dl.driver_id

@@ -196,7 +196,7 @@ export async function getDriverDispatchProfile(driverId: string): Promise<Driver
       u.city,
       u.is_online,
       dl.is_online as dl_online,
-      COALESCE(dd.vehicle_category_id, u.vehicle_category_id) as vehicle_category_id,
+      dd.vehicle_category_id as vehicle_category_id,
       COALESCE(dd.vehicle_subcategory, '') as vehicle_subcategory,
       COALESCE(dd.service_eligibility, '{}'::text[]) as service_eligibility,
       dd.parcel_eligibility,
@@ -214,7 +214,7 @@ export async function getDriverDispatchProfile(driverId: string): Promise<Driver
     FROM users u
     LEFT JOIN driver_locations dl ON dl.driver_id = u.id
     LEFT JOIN driver_details dd ON dd.user_id = u.id
-    LEFT JOIN vehicle_categories vc ON vc.id = COALESCE(dd.vehicle_category_id, u.vehicle_category_id)
+    LEFT JOIN vehicle_categories vc ON vc.id = dd.vehicle_category_id
     WHERE u.id = ${driverId}::uuid
     LIMIT 1
   `).catch(() => ({ rows: [] as any[] }));
@@ -334,9 +334,9 @@ export async function findEligibleDriversForDispatch(input: {
     ? rawSql`AND NOT (u.id = ANY(${safeExclude}::uuid[]))`
     : rawSql``;
   const categoryClause = requirements.strictCategoryIds?.length
-    ? rawSql`AND COALESCE(dd.vehicle_category_id, u.vehicle_category_id) = ANY(${requirements.strictCategoryIds}::uuid[])`
+    ? rawSql`AND dd.vehicle_category_id = ANY(${requirements.strictCategoryIds}::uuid[])`
     : requirements.vehicleCategoryId
-      ? rawSql`AND COALESCE(dd.vehicle_category_id, u.vehicle_category_id) = ${requirements.vehicleCategoryId}::uuid`
+      ? rawSql`AND dd.vehicle_category_id = ${requirements.vehicleCategoryId}::uuid`
       : rawSql``;
 
   const candidates = await rawDb.execute(rawSql`
@@ -344,7 +344,7 @@ export async function findEligibleDriversForDispatch(input: {
       u.id, u.full_name, u.phone, u.rating, u.city,
       u.is_active, u.is_locked, u.current_trip_id, u.verification_status, u.is_online,
       dl.is_online as dl_online, dl.lat, dl.lng, dl.updated_at,
-      COALESCE(dd.vehicle_category_id, u.vehicle_category_id) as vehicle_category_id,
+      dd.vehicle_category_id as vehicle_category_id,
       COALESCE(dd.vehicle_subcategory, '') as vehicle_subcategory,
       COALESCE(dd.service_eligibility, '{}'::text[]) as service_eligibility,
       dd.parcel_eligibility, dd.pool_eligibility, dd.outstation_eligibility, dd.intercity_eligibility,
@@ -367,7 +367,7 @@ export async function findEligibleDriversForDispatch(input: {
     FROM users u
     JOIN driver_locations dl ON dl.driver_id = u.id
     LEFT JOIN driver_details dd ON dd.user_id = u.id
-    LEFT JOIN vehicle_categories vc ON vc.id = COALESCE(dd.vehicle_category_id, u.vehicle_category_id)
+    LEFT JOIN vehicle_categories vc ON vc.id = dd.vehicle_category_id
     LEFT JOIN driver_stats ds ON ds.driver_id = u.id
     LEFT JOIN driver_behavior_scores dbs ON dbs.driver_id = u.id
     WHERE u.user_type = 'driver'
