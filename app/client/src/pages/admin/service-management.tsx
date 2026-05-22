@@ -30,6 +30,16 @@ const MODEL_COLORS: Record<string, { bg: string; text: string; label: string }> 
 
 const LAUNCH_FIRST = ["bike_ride", "parcel_delivery"];
 
+function normalizeServices(payload: unknown): PlatformService[] {
+  if (Array.isArray(payload)) return payload;
+  if (payload && typeof payload === "object") {
+    const value = payload as Record<string, unknown>;
+    if (Array.isArray(value.data)) return value.data as PlatformService[];
+    if (Array.isArray(value.services)) return value.services as PlatformService[];
+  }
+  return [];
+}
+
 export default function ServiceManagement() {
   const queryClient = useQueryClient();
   const [editingModel, setEditingModel] = useState<string | null>(null);
@@ -42,7 +52,8 @@ export default function ServiceManagement() {
     queryFn: async () => {
       const r = await adminFetch("/api/platform-services");
       if (!r.ok) throw new Error("Failed");
-      return r.json();
+      const body = await r.json().catch(() => []);
+      return normalizeServices(body);
     },
   });
 

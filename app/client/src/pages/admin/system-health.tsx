@@ -74,6 +74,59 @@ const VEHICLE_COLORS: Record<string, string> = {
   premium: "#111827",
 };
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function asNumber(value: unknown): number {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function normalizeHealthData(payload: unknown): HealthData {
+  const root = asRecord(payload);
+  const trips = asRecord(root.trips);
+  const parcels = asRecord(root.parcels);
+  const drivers = asRecord(root.drivers);
+  const gstWallet = asRecord(root.gstWallet);
+
+  return {
+    timestamp: typeof root.timestamp === "string" ? root.timestamp : new Date().toISOString(),
+    status: typeof root.status === "string" ? root.status : "degraded",
+    services: Array.isArray(root.services) ? root.services as HealthData["services"] : [],
+    trips: {
+      active: asNumber(trips.active),
+      completedToday: asNumber(trips.completedToday),
+      cancelledToday: asNumber(trips.cancelledToday),
+      staleSearching: asNumber(trips.staleSearching),
+    },
+    parcels: {
+      active: asNumber(parcels.active),
+      completedToday: asNumber(parcels.completedToday),
+      commissionToday: asNumber(parcels.commissionToday),
+    },
+    drivers: {
+      online: asNumber(drivers.online),
+      locked: asNumber(drivers.locked),
+      onTrip: asNumber(drivers.onTrip),
+      activeSubscriptions: asNumber(drivers.activeSubscriptions),
+      subscribedDrivers: asNumber(drivers.subscribedDrivers),
+    },
+    gstWallet: {
+      balance: asNumber(gstWallet.balance),
+      totalCollected: asNumber(gstWallet.totalCollected),
+      totalTrips: asNumber(gstWallet.totalTrips),
+    },
+  };
+}
+
+function normalizeVehicleData(payload: unknown): { vehicles: VehicleStatus[] } {
+  const root = asRecord(payload);
+  return {
+    vehicles: Array.isArray(root.vehicles) ? root.vehicles as VehicleStatus[] : [],
+  };
+}
+
 function StatusPill({ ok, label }: { ok: boolean; label: string }) {
   return (
     <span style={{
@@ -119,7 +172,7 @@ export default function SystemHealthPage() {
     queryFn: () => adminFetch("/api/admin/system-health").then(r => {
       if (!r.ok) throw new Error("Health check failed");
       return r.json();
-    }).then(d => (d && !d.message && !d.error) ? d : (() => { throw new Error("Invalid health data"); })()),
+    }).then(normalizeHealthData),
     refetchInterval: autoRefresh ? 15000 : false,
   });
 
@@ -133,10 +186,10 @@ export default function SystemHealthPage() {
     queryFn: (): Promise<{ vehicles: VehicleStatus[] }> => adminFetch("/api/admin/vehicle-status").then(r => {
       if (!r.ok) throw new Error("Vehicle status unavailable");
       return r.json();
-    }),
+    }).then(normalizeVehicleData),
     refetchInterval: 5000,
   });
-  const vehicles = vehicleData?.vehicles ?? [];
+  const vehicles = Array.isArray(vehicleData?.vehicles) ? vehicleData.vehicles : [];
 
   const [toggling, setToggling] = useState<string | null>(null);
   const [vehicleToggling, setVehicleToggling] = useState<string | null>(null);

@@ -29,6 +29,16 @@ const DEFAULT_LANGUAGES = [
   { code: "ur", name: "Urdu", nativeName: "اردو", flag: "🇮🇳" },
 ];
 
+function normalizeLanguages(payload: unknown): Language[] {
+  if (Array.isArray(payload)) return payload;
+  if (payload && typeof payload === "object") {
+    const value = payload as Record<string, unknown>;
+    if (Array.isArray(value.data)) return value.data as Language[];
+    if (Array.isArray(value.languages)) return value.languages as Language[];
+  }
+  return [];
+}
+
 export default function LanguagesPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState({ code: "", name: "", nativeName: "", flag: "🌐", isActive: true });
@@ -37,7 +47,13 @@ export default function LanguagesPage() {
 
   const { data: languages = [], isLoading } = useQuery<Language[]>({
     queryKey: ["/api/admin/languages"],
+    queryFn: async () => {
+      const response = await apiRequest("GET", "/api/admin/languages");
+      const body = await response.json().catch(() => []);
+      return normalizeLanguages(body);
+    },
   });
+  const languageRows = Array.isArray(languages) ? languages : [];
 
   const toggleMutation = useMutation({
     mutationFn: ({ id, isActive }: { id: string; isActive: boolean }) =>
@@ -52,7 +68,7 @@ export default function LanguagesPage() {
       nativeName: data.nativeName,
       flag: data.flag,
       isActive: data.isActive,
-      sortOrder: languages.length + 1,
+      sortOrder: languageRows.length + 1,
     }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/languages"] });
@@ -80,8 +96,8 @@ export default function LanguagesPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/admin/languages"] }),
   });
 
-  const activeCount = languages.filter((l) => l.is_active).length;
-  const addedCodes = new Set(languages.map((l) => l.code));
+  const activeCount = languageRows.filter((l) => l.is_active).length;
+  const addedCodes = new Set(languageRows.map((l) => l.code));
   const availableToAdd = DEFAULT_LANGUAGES.filter((l) => !addedCodes.has(l.code));
 
   return (
@@ -216,7 +232,7 @@ export default function LanguagesPage() {
           </div>
         ) : (
           <div className="space-y-3">
-            {languages.map((lang) => (
+            {languageRows.map((lang) => (
               <div
                 key={lang.id}
                 data-testid={`card-language-${lang.code}`}
@@ -335,12 +351,12 @@ export default function LanguagesPage() {
         )}
 
         {/* Footer stats */}
-        {languages.length > 0 && (
+        {languageRows.length > 0 && (
           <div className="mt-6 p-4 bg-gray-50 dark:bg-gray-900 rounded-xl">
             <div className="flex items-center gap-6 text-sm text-gray-500">
-              <span>Total: <strong className="text-gray-900 dark:text-white">{languages.length}</strong></span>
+              <span>Total: <strong className="text-gray-900 dark:text-white">{languageRows.length}</strong></span>
               <span>Active: <strong className="text-blue-600">{activeCount}</strong></span>
-              <span>Hidden: <strong className="text-gray-400">{languages.length - activeCount}</strong></span>
+              <span>Hidden: <strong className="text-gray-400">{languageRows.length - activeCount}</strong></span>
             </div>
           </div>
         )}

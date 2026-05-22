@@ -23,6 +23,16 @@ function timeAgo(dateStr: string) {
   return `${days} days ago`;
 }
 
+function normalizeReferrals(payload: unknown): any[] {
+  if (Array.isArray(payload)) return payload;
+  if (payload && typeof payload === "object") {
+    const value = payload as Record<string, unknown>;
+    if (Array.isArray(value.data)) return value.data;
+    if (Array.isArray(value.referrals)) return value.referrals;
+  }
+  return [];
+}
+
 export default function ReferralsPage() {
   const { toast } = useToast();
   const [statusFilter, setStatusFilter] = useState("all");
@@ -31,9 +41,13 @@ export default function ReferralsPage() {
   const { data: stats } = useQuery<any>({ queryKey: ["/api/referrals/stats"] });
   const { data: referrals = [], isLoading } = useQuery<any[]>({
     queryKey: ["/api/referrals", { status: statusFilter, referralType: typeFilter }],
-    queryFn: () =>
-      apiRequest("GET", `/api/referrals?status=${statusFilter}&referralType=${typeFilter}`).then((r) => r.json()),
+    queryFn: async () => {
+      const response = await apiRequest("GET", `/api/referrals?status=${statusFilter}&referralType=${typeFilter}`);
+      const body = await response.json().catch(() => []);
+      return normalizeReferrals(body);
+    },
   });
+  const referralRows = Array.isArray(referrals) ? referrals : [];
 
   const payMutation = useMutation({
     mutationFn: (id: string) => apiRequest("PATCH", `/api/referrals/${id}/pay`, {}),
@@ -195,7 +209,7 @@ export default function ReferralsPage() {
                     Array(5).fill(0).map((_, i) => (
                       <tr key={i}>{Array(9).fill(0).map((__, j) => <td key={j}><div style={{ height: 14, background: "#f1f5f9", borderRadius: 4 }} /></td>)}</tr>
                     ))
-                  ) : (referrals as any[]).length === 0 ? (
+                  ) : referralRows.length === 0 ? (
                     <tr>
                       <td colSpan={9} className="text-center py-4 text-muted">
                         <i className="bi bi-share fs-2 d-block mb-2 opacity-25"></i>
@@ -203,7 +217,7 @@ export default function ReferralsPage() {
                       </td>
                     </tr>
                   ) : (
-                    (referrals as any[]).map((referral: any, index: number) => {
+                    referralRows.map((referral: any, index: number) => {
                       const statusStyle = STATUS_STYLES[referral.status] || STATUS_STYLES.pending;
                       return (
                         <tr
