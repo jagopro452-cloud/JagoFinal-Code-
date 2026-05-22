@@ -10,6 +10,8 @@ const EnvSchema = z.object({
   DB_PASSWORD: z.string().optional(),
   DB_SSL: z.string().optional(),
   DB_SSL_REJECT_UNAUTHORIZED: z.string().optional(),
+  DB_CA_CERT: z.string().optional(),
+  DATABASE_CA_CERT: z.string().optional(),
 
   ADMIN_EMAIL: z.string().email().optional(),
   ADMIN_NAME: z.string().optional(),

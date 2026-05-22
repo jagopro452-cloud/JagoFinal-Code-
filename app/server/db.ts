@@ -39,8 +39,15 @@ function normalizeDatabaseUrl(connectionString: string): string {
 
 const isLocalDb = databaseUrl.match(/localhost|127\.0\.0\.1/);
 const normalizedDatabaseUrl = normalizeDatabaseUrl(databaseUrl);
+const databaseCaCert = (process.env.DATABASE_CA_CERT || process.env.DB_CA_CERT || "")
+  .replace(/\\n/g, "\n")
+  .trim();
 const rejectUnauthorized =
-  String(process.env.DB_SSL_REJECT_UNAUTHORIZED || "true").toLowerCase() !== "false";
+  String(process.env.DB_SSL_REJECT_UNAUTHORIZED || (databaseCaCert ? "true" : "false")).toLowerCase() !== "false";
+const sslConfig = isLocalDb ? false : {
+  rejectUnauthorized,
+  ...(databaseCaCert ? { ca: databaseCaCert } : {}),
+};
 
 // Neon serverless needs enough connections to handle concurrent request bursts.
 // 10 was too low — production peaks can exhaust the pool causing queue buildup.
@@ -49,7 +56,7 @@ const maxConnections = Number(process.env.DB_POOL_MAX || (isProduction ? "25" : 
 
 export const pool = new Pool({
   connectionString: normalizedDatabaseUrl,
-  ssl: isLocalDb ? false : { rejectUnauthorized },
+  ssl: sslConfig,
   max: maxConnections,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 2000,
