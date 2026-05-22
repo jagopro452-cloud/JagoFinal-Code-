@@ -153,8 +153,13 @@ export async function notifyDriverNewRide(opts: {
   driverName: string;
   customerName: string;
   pickupAddress: string;
+  destinationAddress?: string;
   estimatedFare: number;
+  estimatedDistance?: number | string;
   tripId: string;
+  vehicleCategoryId?: string | null;
+  vehicleCategoryName?: string | null;
+  timeoutMs?: number;
 }) {
   if (!opts.fcmToken) return;
   return sendFcmNotification({
@@ -162,14 +167,20 @@ export async function notifyDriverNewRide(opts: {
     title: "🚗 New Ride Request!",
     body: `${opts.customerName} — ${opts.pickupAddress} — ₹${opts.estimatedFare}`,
     sound: "trip_alert",
-    channelId: "trip_alerts",
+    channelId: "trip_alerts_v2",
     dataOnly: true, // background handler shows full-screen intent
     data: {
       type: "new_trip",
       tripId: opts.tripId,
       customerName: opts.customerName,
       pickupAddress: opts.pickupAddress,
+      destinationAddress: opts.destinationAddress || "",
       estimatedFare: String(opts.estimatedFare),
+      estimatedDistance: String(opts.estimatedDistance ?? ""),
+      vehicleCategoryId: opts.vehicleCategoryId || "",
+      vehicleCategoryName: opts.vehicleCategoryName || "",
+      vehicleCategory: opts.vehicleCategoryName || "",
+      timeoutMs: String(opts.timeoutMs ?? 40000),
     },
   });
 }
@@ -189,7 +200,7 @@ export async function notifyDriverNewParcel(opts: {
     title: "📦 New Parcel Delivery!",
     body: `${opts.pickupAddress} — ₹${opts.totalFare} — ${label}`,
     sound: "trip_alert",
-    channelId: "trip_alerts",
+    channelId: "trip_alerts_v2",
     dataOnly: true, // background handler shows full-screen intent
     data: {
       type: "new_parcel",

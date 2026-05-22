@@ -90,11 +90,42 @@ export interface TripMeta {
   estimatedDistance: number;
   paymentMethod: string;
   tripType: string;
+  vehicleCategoryName?: string;
 }
 
 // ── Dispatch Engine (singleton) ──────────────────────────────────────────────
 
 const activeDispatches = new Map<string, DispatchSession>();
+
+async function persistDriverOffer(
+  session: DispatchSession,
+  driver: DriverMatchScore,
+  payload: Record<string, any>,
+): Promise<void> {
+  const timeoutSec = Math.max(1, Math.ceil(session.config.driverTimeoutMs / 1000));
+  await rawDb.execute(rawSql`
+    UPDATE trip_requests
+    SET offered_driver_id=${driver.driverId}::uuid,
+        offer_expires_at=NOW() + (${timeoutSec} * INTERVAL '1 second'),
+        offer_payload=${JSON.stringify(payload)}::jsonb,
+        updated_at=NOW()
+    WHERE id=${session.tripId}::uuid
+      AND current_status='searching'
+      AND driver_id IS NULL
+  `);
+}
+
+async function clearPersistedOffer(tripId: string, driverId?: string): Promise<void> {
+  await rawDb.execute(rawSql`
+    UPDATE trip_requests
+    SET offered_driver_id=NULL,
+        offer_expires_at=NULL,
+        offer_payload=NULL,
+        updated_at=NOW()
+    WHERE id=${tripId}::uuid
+      ${driverId ? rawSql`AND offered_driver_id=${driverId}::uuid` : rawSql``}
+  `);
+}
 
 /**
  * Resolve the service type from trip_type and vehicle category name.
@@ -198,6 +229,7 @@ export async function onDriverAccepted(tripId: string, driverId: string): Promis
 
   session.status = "accepted";
   clearTimers(session);
+  await clearPersistedOffer(tripId).catch(() => {});
 
   // Notify all previously-notified (but not accepted) drivers that trip is taken
   if (io) {
@@ -249,6 +281,7 @@ export async function onDriverRejected(tripId: string, driverId: string): Promis
 
   session.rejectedDriverIds.add(driverId);
   session.currentOfferedDriverId = null;
+  await clearPersistedOffer(tripId, driverId).catch(() => {});
 
   // Emit timeout/rejection to driver
   if (io) {
@@ -283,6 +316,7 @@ export function cancelDispatch(tripId: string): void {
   }
 
   activeDispatches.delete(tripId);
+  clearPersistedOffer(tripId).catch(() => {});
   console.log(`[DISPATCH] Cancelled for trip ${tripId}`);
 }
 
@@ -522,10 +556,17 @@ async function offerTripToDriver(session: DispatchSession, driver: DriverMatchSc
   const payload = {
     tripId: session.tripId,
     ...session.tripMeta,
+    vehicleCategoryId: session.vehicleCategoryId || null,
+    vehicleCategoryName: session.tripMeta.vehicleCategoryName || null,
+    vehicleCategory: session.tripMeta.vehicleCategoryName || null,
     aiScore: driver.score,
     driverDistanceKm: driver.distanceKm,
     timeoutMs: session.config.driverTimeoutMs,
   };
+
+  await persistDriverOffer(session, driver, payload).catch((err: any) => {
+    console.error(`[DISPATCH] Failed to persist driver offer trip=${session.tripId} pilot=${driver.driverId}:`, err?.message || err);
+  });
 
   // Socket notification (foreground)
   if (io) {
@@ -541,8 +582,13 @@ async function offerTripToDriver(session: DispatchSession, driver: DriverMatchSc
       driverName: driver.fullName,
       customerName: session.tripMeta.customerName,
       pickupAddress: session.tripMeta.pickupAddress,
+      destinationAddress: session.tripMeta.destinationAddress,
       estimatedFare: session.tripMeta.estimatedFare,
+      estimatedDistance: session.tripMeta.estimatedDistance,
       tripId: session.tripId,
+      vehicleCategoryId: session.vehicleCategoryId || null,
+      vehicleCategoryName: session.tripMeta.vehicleCategoryName || null,
+      timeoutMs: session.config.driverTimeoutMs,
     }).then(() => {
       console.log(`[DISPATCH] ✅ FCM sent — trip=${session.tripId} pilot=${driver.driverId} (${driver.fullName}) token=${driver.fcmToken!.substring(0, 15)}...`);
     }).catch((err: any) => {
@@ -573,6 +619,7 @@ async function offerTripToDriver(session: DispatchSession, driver: DriverMatchSc
     // Record this driver as timed out (equivalent to soft rejection)
     session.rejectedDriverIds.add(driver.driverId);
     session.currentOfferedDriverId = null;
+    await clearPersistedOffer(session.tripId, driver.driverId).catch(() => {});
 
     // Notify driver their time expired
     if (io) {
@@ -634,6 +681,9 @@ async function expireDispatch(session: DispatchSession, message: string): Promis
       SET current_status='cancelled',
           cancel_reason=${message},
           cancelled_by='system',
+          offered_driver_id=NULL,
+          offer_expires_at=NULL,
+          offer_payload=NULL,
           updated_at=NOW()
       WHERE id=${session.tripId}::uuid
         AND current_status IN ('searching', 'driver_assigned')
@@ -850,6 +900,7 @@ async function findDriversInRadius(
     LIMIT ${limit}
   `);
 
+  if (process.env.DISPATCH_DEBUG === "true") {
   // Debug: log total online drivers vs filtered results
   const totalOnlineCheck = await rawDb.execute(rawSql`
     SELECT COUNT(*) as total FROM driver_locations WHERE is_online=true
@@ -896,6 +947,9 @@ async function findDriversInRadius(
     } catch (e: any) {
       console.error("[DISPATCH] Exclusion debug query failed:", e.message);
     }
+  }
+  } else {
+    console.log(`[DISPATCH] Radius ${radiusKm}km search - found ${drivers.rows.length} eligible drivers vehicleCategoryId=${requirements.vehicleCategoryId ?? "any"}`);
   }
 
   if (!drivers.rows.length) return [];
@@ -1046,6 +1100,7 @@ export function startScheduledRideDispatcher(): void {
             estimatedDistance: Number(trip.estimated_distance) || 0,
             paymentMethod: trip.payment_method || "cash",
             tripType: trip.trip_type || "normal",
+            vehicleCategoryName: trip.vehicle_category_name || undefined,
           }
         );
 

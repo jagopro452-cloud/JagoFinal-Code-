@@ -170,12 +170,16 @@ class _PremiumLocationScreenState extends State<PremiumLocationScreen> {
       }
       try {
         final headers = await AuthService.getHeaders();
-        final qp = StringBuffer('?query=${Uri.encodeComponent(q)}');
-        if (_pickupLat != 0 && _pickupLng != 0) {
-          qp.write('&lat=$_pickupLat&lng=$_pickupLng');
-        }
+        final queryParameters = <String, String>{
+          'query': q,
+          if (_pickupLat != 0 && _pickupLng != 0) ...{
+            'lat': _pickupLat.toString(),
+            'lng': _pickupLng.toString(),
+          },
+        };
         final res = await http.get(
-          Uri.parse('${ApiConfig.placesAutocomplete}$qp'),
+          Uri.parse(ApiConfig.placesAutocomplete)
+              .replace(queryParameters: queryParameters),
           headers: headers,
         );
         if (res.statusCode == 200) {
@@ -249,7 +253,9 @@ class _PremiumLocationScreenState extends State<PremiumLocationScreen> {
     try {
       final headers = await AuthService.getHeaders();
       final res = await http.get(
-        Uri.parse('${ApiConfig.placeDetails}?placeId=${Uri.encodeComponent(placeId.toString())}'),
+        Uri.parse(ApiConfig.placeDetails).replace(queryParameters: {
+          'placeId': placeId.toString(),
+        }),
         headers: headers,
       );
       if (res.statusCode == 200) {

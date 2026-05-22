@@ -10,7 +10,7 @@
     "dev": "cross-env NODE_ENV=development tsx --env-file=.env server/index.ts",
     "dev:with-db": "powershell -ExecutionPolicy Bypass -File ./scripts/dev-with-db.ps1",
     "sync-apks": "node script/sync-apks.js",
-    "prebuild": "node script/sync-apks.js && node scripts/check-migrations.cjs",
+    "prebuild": "node scripts/check-migrations.cjs",
     "build": "tsx script/build.ts",
     "start": "cross-env NODE_ENV=production node dist/index.js",
     "check": "tsc",

@@ -81,8 +81,12 @@ function syncAPKs() {
   ];
 
   aliases.forEach(({ source, alias }) => {
-    if (!source) return;
-    copyFile(path.join(SOURCE_DIR, source), path.join(DEST_DIR_DIST, alias));
+    const explicitLatest = path.join(SOURCE_DIR, alias);
+    if (fs.existsSync(explicitLatest)) {
+      copyFile(explicitLatest, path.join(DEST_DIR_DIST, alias));
+      return;
+    }
+    if (source) copyFile(path.join(SOURCE_DIR, source), path.join(DEST_DIR_DIST, alias));
   });
 
   const status = {

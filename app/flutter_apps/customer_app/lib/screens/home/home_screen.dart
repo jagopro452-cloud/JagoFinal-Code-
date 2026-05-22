@@ -2622,10 +2622,16 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
       final headers = await AuthService.getHeaders();
       final lat = widget.pickupLat;
       final lng = widget.pickupLng;
-      final qp = StringBuffer('?query=${Uri.encodeComponent(normalizedQuery)}');
-      if (lat != 0.0 && lng != 0.0) qp.write('&lat=$lat&lng=$lng');
+      final queryParameters = <String, String>{
+        'query': normalizedQuery,
+        if (lat != 0.0 && lng != 0.0) ...{
+          'lat': lat.toString(),
+          'lng': lng.toString(),
+        },
+      };
       final r = await http.get(
-        Uri.parse('${ApiConfig.placesAutocomplete}$qp'),
+        Uri.parse(ApiConfig.placesAutocomplete)
+            .replace(queryParameters: queryParameters),
         headers: headers,
       ).timeout(const Duration(seconds: 6));
       if (r.statusCode == 200) {
@@ -2663,8 +2669,9 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
         final headers = await AuthService.getHeaders();
         final r = await http
             .get(
-              Uri.parse(
-                  '${ApiConfig.placeDetails}?placeId=${Uri.encodeComponent(placeId)}'),
+              Uri.parse(ApiConfig.placeDetails).replace(queryParameters: {
+                'placeId': placeId,
+              }),
               headers: headers,
             )
             .timeout(const Duration(seconds: 6));

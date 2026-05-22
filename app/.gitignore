@@ -23,10 +23,14 @@ key.properties
 # Build outputs
 *.apk
 !public/apks/
+!public/apks/jago-customer-latest.apk
+!public/apks/jago-driver-latest.apk
+!public/apks/jago-customer-v1.0.62-release.apk
 !public/apks/jago-customer-v1.0.74-release.apk
 !public/apks/jago-customer-v1.0.93-release.apk
 !public/apks/jago-customer-v1.0.96-release.apk
 !public/apks/jago-pilot-v1.0.75-release.apk
+!public/apks/jago-driver-v1.0.63-release.apk
 !public/apks/jago-driver-v1.0.94-release.apk
 !public/apks/jago-pilot-v1.0.94-release.apk
 !public/apks/jago-driver-v1.0.95-release.apk
@@ -64,10 +68,14 @@ do-spec.yaml
 
 # Public APK downloads (served at runtime, not version controlled)
 public/apks/*
+!public/apks/jago-customer-latest.apk
+!public/apks/jago-driver-latest.apk
+!public/apks/jago-customer-v1.0.62-release.apk
 !public/apks/jago-customer-v1.0.74-release.apk
 !public/apks/jago-customer-v1.0.93-release.apk
 !public/apks/jago-customer-v1.0.96-release.apk
 !public/apks/jago-pilot-v1.0.75-release.apk
+!public/apks/jago-driver-v1.0.63-release.apk
 !public/apks/jago-driver-v1.0.94-release.apk
 !public/apks/jago-pilot-v1.0.94-release.apk
 !public/apks/jago-driver-v1.0.95-release.apk

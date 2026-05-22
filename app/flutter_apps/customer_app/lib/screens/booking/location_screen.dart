@@ -657,16 +657,17 @@ class _LocationScreenState extends State<LocationScreen>
       final headers = await AuthService.getHeaders();
       final lat = _pickupLat;
       final lng = _pickupLng;
-      
-      // Use the session token to optimize API costs
-      final qp = StringBuffer('?query=${Uri.encodeComponent(normalizedQuery)}');
-      qp.write('&sessionToken=$_sessionToken');
-      
-      if (lat != 0.0 && lng != 0.0) qp.write('&lat=$lat&lng=$lng');
-      
-      print('[PLACES] Searching: $normalizedQuery (session: $_sessionToken)');
+      final queryParameters = <String, String>{
+        'query': normalizedQuery,
+        'sessionToken': _sessionToken,
+        if (lat != 0.0 && lng != 0.0) ...{
+          'lat': lat.toString(),
+          'lng': lng.toString(),
+        },
+      };
       final r = await http.get(
-        Uri.parse('${ApiConfig.placesAutocomplete}$qp'),
+        Uri.parse(ApiConfig.placesAutocomplete)
+            .replace(queryParameters: queryParameters),
         headers: headers,
       ).timeout(const Duration(seconds: 6));
       
@@ -690,7 +691,6 @@ class _LocationScreenState extends State<LocationScreen>
         setState(() {
           _searchResults = mapped;
         });
-        print('[PLACES] Found ${_searchResults.length} results');
       } else {
         final fallback = await _searchPlacesFallback(normalizedQuery);
         if (!mounted) return;
@@ -700,8 +700,7 @@ class _LocationScreenState extends State<LocationScreen>
         }
         setState(() => _searchResults = fallback);
       }
-    } catch (e) {
-      print('[PLACES] Error: $e');
+    } catch (_) {
       final fallback = await _searchPlacesFallback(normalizedQuery);
       if (mounted) {
         final fallbackQuery = (_activeField ? _dropCtrl.text : _stopCtrl.text).trim();
@@ -786,8 +785,10 @@ class _LocationScreenState extends State<LocationScreen>
         final headers = await AuthService.getHeaders();
         final r = await http
             .get(
-              Uri.parse(
-                  '${ApiConfig.placeDetails}?placeId=${Uri.encodeComponent(placeId)}&sessionToken=$_sessionToken'),
+              Uri.parse(ApiConfig.placeDetails).replace(queryParameters: {
+                'placeId': placeId,
+                'sessionToken': _sessionToken,
+              }),
               headers: headers,
             )
             .timeout(const Duration(seconds: 6));

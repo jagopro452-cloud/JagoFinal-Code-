@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -247,13 +247,18 @@ export default function Drivers() {
     !addDriver.isPending;
 
   const { data, isLoading } = useQuery<any>({
-    queryKey: ["/api/users", { userType: "driver", search, page }],
+    queryKey: ["/api/users", { userType: "driver", search, page, verificationStatus: verifyTab }],
     queryFn: () => {
       const params = new URLSearchParams({ userType: "driver", page: String(page), limit: "50" });
       if (search) params.set("search", search);
+      if (verifyTab !== "all") params.set("verificationStatus", verifyTab);
       return fetch(`/api/users?${params}`).then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error") })).then(d => d?.data ? d : { data: Array.isArray(d) ? d : [], total: 0 });
     },
   });
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, verifyTab]);
 
   const toggleActive = useMutation({
     mutationFn: ({ id, isActive }: any) => apiRequest("PATCH", `/api/users/${id}/status`, { isActive }),
@@ -261,17 +266,15 @@ export default function Drivers() {
   });
 
   const drivers: any[] = Array.isArray(data?.data) ? data.data : [];
-
-  const filtered = drivers.filter(d => {
-    if (verifyTab === "pending") return (d.verificationStatus || "pending") === "pending";
-    if (verifyTab === "approved") return d.verificationStatus === "approved";
-    if (verifyTab === "rejected") return d.verificationStatus === "rejected";
-    return true;
-  });
-
-  const pendingCount = drivers.filter(d => (d.verificationStatus || "pending") === "pending").length;
-  const approvedCount = drivers.filter(d => d.verificationStatus === "approved").length;
-  const rejectedCount = drivers.filter(d => d.verificationStatus === "rejected").length;
+  const summary = data?.summary || {};
+  const totalDrivers = Number(summary.total ?? data?.total ?? drivers.length);
+  const pendingCount = Number(summary.pending ?? 0);
+  const approvedCount = Number(summary.approved ?? 0);
+  const rejectedCount = Number(summary.rejected ?? 0);
+  const totalRows = Number(data?.total ?? drivers.length);
+  const totalPages = Math.max(1, Math.ceil(totalRows / 50));
+  const firstRow = totalRows === 0 ? 0 : (page - 1) * 50 + 1;
+  const lastRow = Math.min(page * 50, totalRows);
 
   return (
     <div className="container-fluid">
@@ -379,7 +382,7 @@ export default function Drivers() {
       {/* Summary cards */}
       <div className="row g-3 mb-3">
         {[
-          { label: "Total Drivers", val: drivers.length, icon: "bi-people-fill", color: "#1a73e8", bg: "#e8f0fe" },
+          { label: "Total Drivers", val: totalDrivers, icon: "bi-people-fill", color: "#1a73e8", bg: "#e8f0fe" },
           { label: "Pending Verification", val: pendingCount, icon: "bi-hourglass-split", color: "#d97706", bg: "#fefce8", alert: pendingCount > 0 },
           { label: "Approved", val: approvedCount, icon: "bi-check-circle-fill", color: "#16a34a", bg: "#f0fdf4" },
           { label: "Rejected", val: rejectedCount, icon: "bi-x-circle-fill", color: "#dc2626", bg: "#fff5f5" },
@@ -414,7 +417,7 @@ export default function Drivers() {
           style={{ borderBottom: "1px solid #f1f5f9" }}>
           <ul className="nav nav--tabs p-1 rounded bg-light">
             {([
-              ["all", "All Drivers", drivers.length],
+              ["all", "All Drivers", totalDrivers],
               ["pending", "Pending Verification", pendingCount],
               ["approved", "Approved", approvedCount],
               ["rejected", "Rejected", rejectedCount],
@@ -434,14 +437,14 @@ export default function Drivers() {
           <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#f8fafc", border: "1.5px solid #e2e8f0", borderRadius: 10, padding: "6px 12px" }}>
             <i className="bi bi-search" style={{ fontSize: 12, color: "#94a3b8" }}></i>
             <input style={{ border: "none", background: "transparent", outline: "none", fontSize: 13, width: 200 }}
-              placeholder="Search drivers…" value={search} onChange={e => setSearch(e.target.value)}
+              placeholder="Search drivers..." value={search} onChange={e => setSearch(e.target.value)}
               data-testid="input-driver-search" />
           </div>
         </div>
 
         <div className="card-body p-0">
-          <div className="table-responsive">
-            <table className="table table-borderless align-middle table-hover mb-0">
+          <div className="table-responsive" style={{ maxHeight: "calc(100vh - 360px)", overflowY: "auto" }}>
+            <table className="table table-borderless align-middle table-hover mb-0" style={{ minWidth: 1080 }}>
               <thead style={{ background: "#f8fafc" }}>
                 <tr>
                   {["#","Driver","Contact","Vehicle Info","Documents","Rating","Status","Verification","Action"].map((h, i) => (
@@ -457,20 +460,20 @@ export default function Drivers() {
                   Array(4).fill(0).map((_, i) => (
                     <tr key={i}>{Array(9).fill(0).map((_, j) => <td key={j}><div style={{ height: 14, background: "#f1f5f9", borderRadius: 4 }} /></td>)}</tr>
                   ))
-                ) : filtered.length === 0 ? (
+                ) : drivers.length === 0 ? (
                   <tr><td colSpan={9}>
                     <div className="text-center py-5 text-muted">
                       <i className="bi bi-people fs-1 d-block mb-2" style={{ opacity: 0.25 }}></i>
                       <p className="fw-semibold mb-1">No drivers found</p>
                     </div>
                   </td></tr>
-                ) : filtered.map((driver: any, idx: number) => {
+                ) : drivers.map((driver: any, idx: number) => {
                   const name = driver.fullName || `${driver.firstName || ""} ${driver.lastName || ""}`.trim() || "Driver";
                   const vs = VSTATUS[driver.verificationStatus || "pending"] || VSTATUS.pending;
                   const docsCount = [driver.licenseImage, driver.vehicleImage, driver.profileImage, driver.licenseNumber, driver.vehicleNumber].filter(Boolean).length;
                   return (
                     <tr key={driver.id} data-testid={`row-driver-${driver.id}`}>
-                      <td className="ps-4 text-muted small">{idx + 1}</td>
+                      <td className="ps-4 text-muted small">{(page - 1) * 50 + idx + 1}</td>
                       <td>
                         <div className="d-flex align-items-center gap-2">
                           <div className="rounded-circle d-flex align-items-center justify-content-center flex-shrink-0 position-relative"
@@ -539,6 +542,26 @@ export default function Drivers() {
                 })}
               </tbody>
             </table>
+          </div>
+          <div className="d-flex align-items-center justify-content-between px-4 py-3 border-top flex-wrap gap-2">
+            <div className="text-muted small">
+              Showing {firstRow}-{lastRow} of {totalRows} drivers
+            </div>
+            <div className="d-flex align-items-center gap-2">
+              <button className="btn btn-sm btn-light"
+                disabled={page <= 1 || isLoading}
+                onClick={() => setPage(p => Math.max(1, p - 1))}
+                data-testid="btn-drivers-prev">
+                Previous
+              </button>
+              <span className="small text-muted">Page {page} of {totalPages}</span>
+              <button className="btn btn-sm btn-light"
+                disabled={page >= totalPages || isLoading}
+                onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                data-testid="btn-drivers-next">
+                Next
+              </button>
+            </div>
           </div>
         </div>
       </div>

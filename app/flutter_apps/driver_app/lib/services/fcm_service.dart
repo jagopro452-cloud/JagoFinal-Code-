@@ -8,7 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../config/api_config.dart';
 
-const String _tripAlertChannelId = 'trip_alerts';
+const String _tripAlertChannelId = 'trip_alerts_v2';
 const String _tripAlertChannelName = 'Trip Alerts';
 const String _tripAlertChannelDescription = 'Incoming ride and parcel requests';
 const String _tripDataKey = 'pending_trip_data';
@@ -288,7 +288,10 @@ class FcmService {
     debugPrint('[FCM-FG] type=$type');
 
     if (type == 'new_trip' || type == 'new_parcel') {
-      _foregroundAlertController.add(Map<String, dynamic>.from(message.data));
+      final data = Map<String, dynamic>.from(message.data);
+      _persistPendingAlert(data);
+      _showDriverAlertNotification(_localNotif, data);
+      _foregroundAlertController.add(data);
       return;
     }
 

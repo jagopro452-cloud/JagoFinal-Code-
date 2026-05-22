@@ -1013,6 +1013,9 @@ async function ensureOperationalSchema() {
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS cancel_reason TEXT;
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS cancelled_by VARCHAR(50);
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS rejected_driver_ids UUID[] DEFAULT '{}'::uuid[];
+      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS offered_driver_id UUID;
+      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS offer_expires_at TIMESTAMPTZ;
+      ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS offer_payload JSONB;
 
       ALTER TABLE users ADD COLUMN IF NOT EXISTS vehicle_status VARCHAR(30) DEFAULT 'pending';
       ALTER TABLE users ADD COLUMN IF NOT EXISTS wallet_balance NUMERIC(12,2) DEFAULT 0;
@@ -1998,6 +2001,7 @@ async function ensureOperationalSchema() {
       CREATE INDEX IF NOT EXISTS idx_trip_requests_customer_status ON trip_requests(customer_id, current_status);
       CREATE INDEX IF NOT EXISTS idx_trip_requests_driver_status   ON trip_requests(driver_id, current_status);
       CREATE INDEX IF NOT EXISTS idx_trip_requests_status_created  ON trip_requests(current_status, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_trip_requests_offered_driver  ON trip_requests(offered_driver_id, offer_expires_at) WHERE offered_driver_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_users_phone                   ON users(phone);
       CREATE INDEX IF NOT EXISTS idx_users_user_type               ON users(user_type);
       CREATE INDEX IF NOT EXISTS idx_driver_locations_lat_lng      ON driver_locations(lat, lng) WHERE is_online = true;
@@ -3876,7 +3880,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Users
   app.get("/api/users", async (req, res) => {
     try {
-      const { userType, search, page, limit, isActive } = req.query as Record<string, string>;
+      const { userType, search, page, limit, isActive, verificationStatus } = req.query as Record<string, string>;
       const activeFilter =
         isActive === "true" ? true :
         isActive === "false" ? false :
@@ -3887,7 +3891,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         Number(page) || 1,
         Math.min(Number(limit) || 15, 100),
         activeFilter,
+        verificationStatus,
       );
+      if (userType === "driver") {
+        const summaryRows = await rawDb.execute(rawSql`
+          SELECT
+            COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE COALESCE(verification_status, 'pending') = 'pending')::int AS pending,
+            COUNT(*) FILTER (WHERE verification_status = 'approved')::int AS approved,
+            COUNT(*) FILTER (WHERE verification_status = 'rejected')::int AS rejected
+          FROM users
+          WHERE user_type = 'driver'
+            ${search ? rawSql`AND (full_name ILIKE ${"%" + search + "%"} OR email ILIKE ${"%" + search + "%"} OR phone ILIKE ${"%" + search + "%"})` : rawSql``}
+            ${typeof activeFilter === "boolean" ? rawSql`AND is_active = ${activeFilter}` : rawSql``}
+        `);
+        return res.json({ ...result, summary: camelize(summaryRows.rows[0] || {}) });
+      }
       res.json(result);
     } catch (e: any) {
       res.status(500).json({ message: safeErrMsg(e) });
@@ -8700,6 +8719,41 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (activelyOffered) {
         return res.json({ trip: activelyOffered.trip, stage: "new_request" });
       }
+
+      // HA recovery: process-local dispatch state can be lost across app instances,
+      // so the current driver offer is also persisted on the trip row.
+      const dbOffered = await rawDb.execute(rawSql`
+        SELECT t.*, c.full_name as customer_name, c.phone as customer_phone,
+          vc.name as vehicle_name, vc.icon as vehicle_icon,
+          CASE WHEN t.is_for_someone_else THEN t.passenger_name ELSE c.full_name END as contact_name,
+          CASE WHEN t.is_for_someone_else THEN t.passenger_phone ELSE c.phone END as contact_phone
+        FROM trip_requests t
+        LEFT JOIN users c ON c.id = t.customer_id
+        LEFT JOIN vehicle_categories vc ON vc.id = t.vehicle_category_id
+        WHERE t.current_status = 'searching'
+          AND t.driver_id IS NULL
+          AND t.offered_driver_id = ${driver.id}::uuid
+          AND t.offer_expires_at > NOW()
+        ORDER BY t.offer_expires_at DESC
+        LIMIT 1
+      `).catch(() => ({ rows: [] as any[] }));
+      if (dbOffered.rows.length) {
+        const row = dbOffered.rows[0] as any;
+        const trip = camelize(row) as any;
+        const payload = row.offer_payload && typeof row.offer_payload === "object"
+          ? row.offer_payload
+          : {};
+        return res.json({
+          trip: {
+            ...trip,
+            ...payload,
+            tripId: payload.tripId || trip.id,
+            id: trip.id,
+          },
+          stage: "new_request",
+        });
+      }
+
       // 2. Check driver location + vehicle category to find matching nearby trips
       const locR = await rawDb.execute(rawSql`
         SELECT dl.lat, dl.lng, dd.vehicle_category_id as vehicle_category_id
@@ -8723,6 +8777,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         WHERE t.current_status = 'searching' AND t.driver_id IS NULL
           AND t.created_at > NOW() - INTERVAL '10 minutes'
           AND NOT (${driver.id}::uuid = ANY(COALESCE(t.rejected_driver_ids, '{}'::uuid[])))
+          AND (t.offered_driver_id IS NULL OR t.offer_expires_at <= NOW())
           ${vehicle_category_id ? rawSql`AND t.vehicle_category_id = ${vehicle_category_id}::uuid` : rawSql``}
           AND (t.pickup_lat - ${Number(lat)})*(t.pickup_lat - ${Number(lat)}) + (t.pickup_lng - ${Number(lng)})*(t.pickup_lng - ${Number(lng)}) < 0.02
         ORDER BY (t.pickup_lat - ${Number(lat)})*(t.pickup_lat - ${Number(lat)}) + (t.pickup_lng - ${Number(lng)})*(t.pickup_lng - ${Number(lng)}) ASC LIMIT 5
@@ -8921,6 +8976,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         if (tripInfo.driver_id && String(tripInfo.driver_id) !== driver.id) {
           return { ok: false as const, code: "TRIP_ALREADY_TAKEN", message: "Trip already accepted by another driver" };
         }
+        const offeredDriverId = tripInfo.offered_driver_id ? String(tripInfo.offered_driver_id) : "";
+        const offerExpiryMs = tripInfo.offer_expires_at ? new Date(tripInfo.offer_expires_at).getTime() : 0;
+        if (offeredDriverId && offeredDriverId !== driver.id && offerExpiryMs > Date.now()) {
+          return { ok: false as const, code: "TRIP_NOT_ASSIGNED", message: "This ride request is currently offered to another driver" };
+        }
+        if (offeredDriverId === driver.id && offerExpiryMs > 0 && offerExpiryMs <= Date.now()) {
+          return { ok: false as const, code: "TRIP_OFFER_EXPIRED", message: "This ride request expired. Please wait for the next request." };
+        }
 
         const accepted = await tx.execute(rawSql`
           UPDATE trip_requests
@@ -8929,6 +8992,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
               driver_arriving_at=NOW(),
               pickup_otp=${otp},
               driver_id=${driver.id}::uuid,
+              offered_driver_id=NULL,
+              offer_expires_at=NULL,
+              offer_payload=NULL,
               updated_at=NOW()
           WHERE id=${tripId}::uuid
           RETURNING *
@@ -9021,6 +9087,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         });
         // Notify other nearby drivers that this trip is taken
         io.emit("trip:taken", { tripId: tripData.id });
+        io.emit("trip:request_taken", { tripId: tripData.id });
       }
 
       // ?? FCM: notify customer
@@ -9051,9 +9118,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const tripRes = await rawDb.execute(rawSql`
         UPDATE trip_requests
         SET current_status='searching', driver_id=NULL,
+            offered_driver_id=NULL,
+            offer_expires_at=NULL,
+            offer_payload=NULL,
             rejected_driver_ids = array_append(COALESCE(rejected_driver_ids,'{}'), ${driver.id}::uuid)
         WHERE id=${tripId}::uuid AND current_status IN ('driver_assigned','searching','accepted')
           AND (driver_id=${driver.id}::uuid OR driver_id IS NULL)
+          AND (offered_driver_id IS NULL OR offered_driver_id=${driver.id}::uuid)
         RETURNING pickup_lat, pickup_lng, vehicle_category_id, rejected_driver_ids, customer_id,
                   pickup_address, destination_address, estimated_fare
       `);
@@ -10827,6 +10898,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         estimatedDistance: tripRow.estimatedDistance || finalDistance || 0,
         paymentMethod: finalPayment,
         tripType,
+        vehicleCategoryName: vcName || undefined,
       };
 
       // Start sequential dispatch ï¿½ sends to ONE driver at a time with expanding radius
@@ -18019,20 +18091,23 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       const lat = req.query.lat ? Number(req.query.lat) : undefined;
       const lng = req.query.lng ? Number(req.query.lng) : undefined;
       if (!query) return res.status(400).json({ message: "query required" });
-      const predictions = await searchPlaces(query, sessionToken, lat, lng);
-      const serviceablePredictions = predictions.filter((p: any) => p?.serviceable);
+      const predictions = (await searchPlaces(query, sessionToken, lat, lng)).map((p: any) => ({
+        ...p,
+        serviceable: p?.serviceable !== false,
+      }));
       const serviceableZoneNames = Array.from(new Set(
-        serviceablePredictions
+        predictions
+          .filter((p: any) => p?.serviceable)
           .map((p: any) => p?.zoneName)
           .filter((name: any) => typeof name === "string" && name.trim().length > 0)
       ));
       res.json({
-        predictions: serviceablePredictions,
-        hasServiceableResults: serviceablePredictions.length > 0,
+        predictions,
+        hasServiceableResults: predictions.some((p: any) => p?.serviceable),
         serviceableZoneNames,
-        message: serviceablePredictions.length > 0
+        message: predictions.length > 0
           ? null
-          : "We are not serving this area yet. Please choose a location inside an active service zone.",
+          : "No matching locations found. Please try a more specific destination.",
       });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });

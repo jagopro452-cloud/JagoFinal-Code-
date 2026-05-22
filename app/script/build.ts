@@ -26,3 +26,5 @@ if (fs.existsSync(rootMigrationsSrc)) {
   fs.mkdirSync(rootMigrationsDest, { recursive: true });
   fs.cpSync(rootMigrationsSrc, rootMigrationsDest, { recursive: true });
 }
+
+run("node script/sync-apks.js");

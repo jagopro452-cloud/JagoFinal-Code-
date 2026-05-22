@@ -20,6 +20,7 @@ export interface IStorage {
     page?: number,
     limit?: number,
     isActive?: boolean,
+    verificationStatus?: string,
   ): Promise<{ data: User[]; total: number }>;
   getUserById(id: string): Promise<User | undefined>;
   updateUserStatus(id: string, isActive: boolean): Promise<User>;
@@ -83,12 +84,16 @@ export class DatabaseStorage implements IStorage {
     page = 1,
     limit = 15,
     isActive?: boolean,
+    verificationStatus?: string,
   ): Promise<{ data: User[]; total: number }> {
     const offset = (page - 1) * limit;
     let query = db.select().from(users);
     const conditions = [];
     if (userType) conditions.push(eq(users.userType, userType));
     if (typeof isActive === "boolean") conditions.push(eq(users.isActive, isActive));
+    if (verificationStatus && verificationStatus !== "all") {
+      conditions.push(eq(users.verificationStatus, verificationStatus));
+    }
     if (search) conditions.push(or(
       ilike(users.fullName, `%${search}%`),
       ilike(users.email, `%${search}%`),

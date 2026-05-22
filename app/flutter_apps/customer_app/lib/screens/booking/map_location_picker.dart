@@ -277,10 +277,17 @@ class _MapLocationPickerState extends State<MapLocationPicker> {
     try {
       final headers = await AuthService.getHeaders();
       final hasGps = _gpsLat != null && _gpsLng != null;
-      final qp = StringBuffer('?query=${Uri.encodeComponent(normalizedQuery)}&sessionToken=$_sessionToken');
-      if (hasGps) qp.write('&lat=$_gpsLat&lng=$_gpsLng');
+      final queryParameters = <String, String>{
+        'query': normalizedQuery,
+        'sessionToken': _sessionToken,
+        if (hasGps) ...{
+          'lat': _gpsLat.toString(),
+          'lng': _gpsLng.toString(),
+        },
+      };
       final res = await http.get(
-        Uri.parse('${ApiConfig.placesAutocomplete}$qp'),
+        Uri.parse(ApiConfig.placesAutocomplete)
+            .replace(queryParameters: queryParameters),
         headers: headers,
       ).timeout(const Duration(seconds: 6));
       if (res.statusCode == 200) {
@@ -338,9 +345,10 @@ class _MapLocationPickerState extends State<MapLocationPicker> {
     try {
       final headers = await AuthService.getHeaders();
       final res = await http.get(
-        Uri.parse(
-          '${ApiConfig.placeDetails}?placeId=${Uri.encodeComponent(pred.placeId)}&sessionToken=$_sessionToken',
-        ),
+        Uri.parse(ApiConfig.placeDetails).replace(queryParameters: {
+          'placeId': pred.placeId,
+          'sessionToken': _sessionToken,
+        }),
         headers: headers,
       ).timeout(const Duration(seconds: 6));
       // Generate a new session token after a detail fetch
