@@ -164,7 +164,10 @@ import {
   updateParcelVehicle,
   addParcelVehicle,
 } from "./dynamic-services";
+import { registerRollingPoolRoutes } from "./rolling-pool";
+import { ensureOutstationPoolV2Schema, registerOutstationPoolV2Routes } from "./outstation-pool-v2";
 import {
+  getDriverDispatchProfile,
   isDriverEligibleForDispatch,
   resolveDispatchRequirementsFromTrip,
 } from "./dispatch-eligibility";
@@ -218,6 +221,225 @@ const upload = multer({
     }
   },
 });
+
+const DRIVER_REQUIRED_DOCUMENT_TYPES = [
+  "dl_front",
+  "dl_back",
+  "rc",
+  "insurance",
+  "selfie",
+  "vehicle_photo",
+] as const;
+
+const DRIVER_DOCUMENT_LABELS: Record<string, string> = {
+  dl_front: "DL Front",
+  dl_back: "DL Back",
+  rc: "RC",
+  insurance: "Insurance",
+  selfie: "Profile Selfie",
+  vehicle_photo: "Vehicle Photo",
+  aadhar_front: "Aadhaar Front",
+  aadhar_back: "Aadhaar Back",
+  puc: "PUC",
+};
+
+let ensureDriverDocumentsSchemaPromise: Promise<void> | null = null;
+
+function buildDriverDocumentServeUrl(driverId: string, docType: string): string {
+  return `/api/public/driver-documents/${driverId}/${encodeURIComponent(docType)}`;
+}
+
+function getDriverDocumentLabel(docType: string): string {
+  return DRIVER_DOCUMENT_LABELS[docType] || docType;
+}
+
+function inferMimeTypeFromBytes(buffer: Buffer): { mimeType: string; ext: string } {
+  if (buffer.length >= 8
+    && buffer[0] === 0x89
+    && buffer[1] === 0x50
+    && buffer[2] === 0x4e
+    && buffer[3] === 0x47) {
+    return { mimeType: "image/png", ext: ".png" };
+  }
+  if (buffer.length >= 3
+    && buffer[0] === 0xff
+    && buffer[1] === 0xd8
+    && buffer[2] === 0xff) {
+    return { mimeType: "image/jpeg", ext: ".jpg" };
+  }
+  if (buffer.length >= 12
+    && buffer.toString("ascii", 0, 4) === "RIFF"
+    && buffer.toString("ascii", 8, 12) === "WEBP") {
+    return { mimeType: "image/webp", ext: ".webp" };
+  }
+  if (buffer.length >= 4 && buffer.toString("ascii", 0, 4) === "%PDF") {
+    return { mimeType: "application/pdf", ext: ".pdf" };
+  }
+  return { mimeType: "application/octet-stream", ext: ".bin" };
+}
+
+function looksLikeRawBase64(value: string): boolean {
+  const compact = String(value || "").replace(/\s+/g, "");
+  return compact.length > 80 && /^[A-Za-z0-9+/=]+$/.test(compact);
+}
+
+function parseIncomingDocumentData(input: string): {
+  buffer: Buffer;
+  mimeType: string;
+  ext: string;
+  rawBase64: string;
+} {
+  const trimmed = String(input || "").trim();
+  const dataUriMatch = trimmed.match(/^data:([^;]+);base64,(.+)$/);
+  if (dataUriMatch) {
+    const mimeType = dataUriMatch[1];
+    const rawBase64 = dataUriMatch[2];
+    const buffer = Buffer.from(rawBase64, "base64");
+    const inferred = inferMimeTypeFromBytes(buffer);
+    const ext = path.extname(`file.${mimeType.split("/")[1] || ""}`) || inferred.ext;
+    return { buffer, mimeType, ext, rawBase64 };
+  }
+  const buffer = Buffer.from(trimmed, "base64");
+  const inferred = inferMimeTypeFromBytes(buffer);
+  return { buffer, mimeType: inferred.mimeType, ext: inferred.ext, rawBase64: trimmed };
+}
+
+async function ensureDriverDocumentsSchema(): Promise<void> {
+  if (!ensureDriverDocumentsSchemaPromise) {
+    ensureDriverDocumentsSchemaPromise = (async () => {
+      await rawDb.execute(rawSql`
+        CREATE TABLE IF NOT EXISTS driver_documents (
+          id SERIAL PRIMARY KEY,
+          driver_id UUID,
+          doc_type VARCHAR(50),
+          file_url TEXT,
+          file_data TEXT,
+          mime_type VARCHAR(100),
+          status VARCHAR(20) DEFAULT 'pending',
+          admin_note TEXT,
+          reviewed_at TIMESTAMPTZ,
+          expiry_date DATE,
+          created_at TIMESTAMPTZ DEFAULT now(),
+          updated_at TIMESTAMPTZ DEFAULT now(),
+          UNIQUE(driver_id, doc_type)
+        )
+      `);
+      await rawDb.execute(rawSql`ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS file_data TEXT`);
+      await rawDb.execute(rawSql`ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS mime_type VARCHAR(100)`);
+      await rawDb.execute(rawSql`ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS admin_note TEXT`);
+      await rawDb.execute(rawSql`ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ`);
+      await rawDb.execute(rawSql`ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS expiry_date DATE`);
+      await rawDb.execute(rawSql`ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now()`);
+      await rawDb.execute(rawSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_driver_documents_driver_doc_type ON driver_documents(driver_id, doc_type)`);
+    })().catch((err) => {
+      ensureDriverDocumentsSchemaPromise = null;
+      throw err;
+    });
+  }
+  await ensureDriverDocumentsSchemaPromise;
+}
+
+async function storeDriverDocumentRecord(input: {
+  driverId: string;
+  docType: string;
+  fileUrl?: string | null;
+  fileData?: string | null;
+  mimeType?: string | null;
+  expiryDate?: string | null;
+}) {
+  await ensureDriverDocumentsSchema();
+  const publicUrl = buildDriverDocumentServeUrl(input.driverId, input.docType);
+  await rawDb.execute(rawSql`
+    INSERT INTO driver_documents (
+      driver_id, doc_type, file_url, file_data, mime_type, status, expiry_date, created_at, updated_at
+    )
+    VALUES (
+      ${input.driverId}::uuid,
+      ${input.docType},
+      ${publicUrl},
+      ${input.fileData || null},
+      ${input.mimeType || null},
+      'pending',
+      ${input.expiryDate || null},
+      now(),
+      now()
+    )
+    ON CONFLICT (driver_id, doc_type) DO UPDATE SET
+      file_url=${publicUrl},
+      file_data=${input.fileData || null},
+      mime_type=${input.mimeType || null},
+      status='pending',
+      expiry_date=${input.expiryDate || null},
+      admin_note=NULL,
+      reviewed_at=NULL,
+      updated_at=now()
+  `);
+  if (input.docType === "selfie") {
+    await rawDb.execute(rawSql`
+      UPDATE users SET selfie_image=${publicUrl}, updated_at=NOW()
+      WHERE id=${input.driverId}::uuid
+    `).catch(dbCatch("db"));
+  }
+  return publicUrl;
+}
+
+async function getDriverDocumentsForResponse(driverId: string) {
+  await ensureDriverDocumentsSchema();
+  const docsR = await rawDb.execute(rawSql`
+    SELECT doc_type, file_url, file_data, mime_type, status, expiry_date, admin_note, reviewed_at, created_at, updated_at
+    FROM driver_documents
+    WHERE driver_id = ${driverId}::uuid
+    ORDER BY created_at
+  `).catch(() => ({ rows: [] as any[] }));
+  return (docsR.rows as any[]).map((row) => {
+    const fileUrl = buildDriverDocumentServeUrl(driverId, String(row.doc_type));
+    const camel = camelize(row) as any;
+    return {
+      ...camel,
+      doc_type: row.doc_type,
+      file_url: fileUrl,
+      admin_note: row.admin_note,
+      reviewed_at: row.reviewed_at,
+      expiry_date: row.expiry_date,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      fileUrl,
+      docType: camel.docType || row.doc_type,
+    };
+  });
+}
+
+async function getDriverDocumentFailures(driverId: string): Promise<Array<{ docType: string; label: string }>> {
+  await ensureDriverDocumentsSchema();
+  const docsR = await rawDb.execute(rawSql`
+    SELECT doc_type, file_url, file_data
+    FROM driver_documents
+    WHERE driver_id = ${driverId}::uuid
+  `).catch(() => ({ rows: [] as any[] }));
+  const byType = new Map<string, any>();
+  for (const row of docsR.rows as any[]) {
+    byType.set(String(row.doc_type), row);
+  }
+  return DRIVER_REQUIRED_DOCUMENT_TYPES.flatMap((docType) => {
+    const row = byType.get(docType);
+    if (!row) {
+      return [{ docType, label: getDriverDocumentLabel(docType) }];
+    }
+    const fileData = String(row.file_data || "").trim();
+    const fileUrl = String(row.file_url || "").trim();
+    if (fileData) return [];
+    if (fileUrl.startsWith("/uploads/")) {
+      const diskPath = path.join(process.cwd(), "public", fileUrl.replace(/^\/+/, ""));
+      return fs.existsSync(diskPath) ? [] : [{ docType, label: getDriverDocumentLabel(docType) }];
+    }
+    if (fileUrl.startsWith("data:")) return [];
+    if (looksLikeRawBase64(fileUrl)) return [];
+    if (fileUrl === buildDriverDocumentServeUrl(driverId, docType)) {
+      return [{ docType, label: getDriverDocumentLabel(docType) }];
+    }
+    return fileUrl ? [] : [{ docType, label: getDriverDocumentLabel(docType) }];
+  });
+}
 
 function generateRefId(): string {
   return "TRP" + Math.random().toString(36).substr(2, 7).toUpperCase();
@@ -1018,6 +1240,13 @@ async function ensureOperationalSchema() {
       ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS offer_payload JSONB;
 
       ALTER TABLE users ADD COLUMN IF NOT EXISTS vehicle_status VARCHAR(30) DEFAULT 'pending';
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(255);
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(191);
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(20);
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS user_type VARCHAR(25) DEFAULT 'customer';
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_status VARCHAR(30) DEFAULT 'pending';
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS wallet_balance NUMERIC(12,2) DEFAULT 0;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS current_trip_id UUID;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS license_expiry DATE;
@@ -1160,6 +1389,19 @@ async function ensureOperationalSchema() {
       UPDATE users SET referral_code = 'JAGO' || RIGHT(phone, 4) || UPPER(SUBSTRING(id::text from 1 for 4))
         WHERE referral_code IS NULL AND phone IS NOT NULL AND LENGTH(phone) >= 4;
       CREATE UNIQUE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code) WHERE referral_code IS NOT NULL;
+
+      UPDATE users
+      SET
+        full_name = COALESCE(NULLIF(full_name, ''), NULLIF(first_name, ''), NULLIF(name, ''), full_name),
+        phone = COALESCE(NULLIF(phone, ''), phone),
+        user_type = COALESCE(NULLIF(user_type, ''), 'customer'),
+        verification_status = COALESCE(NULLIF(verification_status, ''), CASE WHEN COALESCE(user_type, '') = 'driver' THEN 'pending' ELSE 'verified' END),
+        is_active = COALESCE(is_active, true)
+      WHERE
+        full_name IS NULL
+        OR user_type IS NULL
+        OR verification_status IS NULL
+        OR is_active IS NULL;
 
       -- Commission Settlement: per-driver pending balance tracking
       ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_commission_balance NUMERIC(12,2) NOT NULL DEFAULT 0;
@@ -2116,6 +2358,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     console.log("[admin] Admin bootstrap complete");
   } catch (e: any) {
     console.error("[admin] startup admin error:", e.message);
+  }
+  try {
+    await ensureOutstationPoolV2Schema();
+    console.log("[pool] Outstation pool v2 schema verified");
+  } catch (e: any) {
+    console.error("[pool] outstation pool schema error:", e.message);
   }
 
   // Apply API-level throttling for customer/driver mobile endpoints.
@@ -7488,7 +7736,59 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // -- Static uploads ----------------------------------------------------------
   const express = (await import("express")).default;
-  app.use("/uploads", express.static(path.join(process.cwd(), "public", "uploads")));
+  app.use("/uploads", express.static(path.join(process.cwd(), "public", "uploads"), { fallthrough: false }));
+
+  app.get("/api/public/driver-documents/:driverId/:docType", async (req, res) => {
+    try {
+      const { driverId, docType } = req.params;
+      await ensureDriverDocumentsSchema();
+      const docR = await rawDb.execute(rawSql`
+        SELECT file_url, file_data, mime_type
+        FROM driver_documents
+        WHERE driver_id=${driverId}::uuid AND doc_type=${docType}
+        LIMIT 1
+      `);
+      const doc = docR.rows[0] as any;
+      if (!doc) return res.status(404).json({ message: "Document not found" });
+
+      const storedFileData = String(doc.file_data || "").trim();
+      const storedFileUrl = String(doc.file_url || "").trim();
+      const mimeType = String(doc.mime_type || "").trim() || "application/octet-stream";
+
+      if (storedFileData) {
+        const parsed = parseIncomingDocumentData(storedFileData.startsWith("data:") ? storedFileData : `data:${mimeType};base64,${storedFileData}`);
+        res.setHeader("Content-Type", mimeType || parsed.mimeType);
+        res.setHeader("Cache-Control", "private, max-age=300");
+        return res.status(200).send(parsed.buffer);
+      }
+
+      if (storedFileUrl.startsWith("/uploads/")) {
+        const filePath = path.join(process.cwd(), "public", storedFileUrl.replace(/^\/+/, ""));
+        if (fs.existsSync(filePath)) {
+          return res.sendFile(filePath);
+        }
+        return res.status(404).json({ message: "Stored upload file not found" });
+      }
+
+      if (storedFileUrl.startsWith("data:")) {
+        const parsed = parseIncomingDocumentData(storedFileUrl);
+        res.setHeader("Content-Type", parsed.mimeType);
+        res.setHeader("Cache-Control", "private, max-age=300");
+        return res.status(200).send(parsed.buffer);
+      }
+
+      if (looksLikeRawBase64(storedFileUrl)) {
+        const parsed = parseIncomingDocumentData(`data:${mimeType};base64,${storedFileUrl}`);
+        res.setHeader("Content-Type", mimeType || parsed.mimeType);
+        res.setHeader("Cache-Control", "private, max-age=300");
+        return res.status(200).send(parsed.buffer);
+      }
+
+      return res.status(404).json({ message: "Document asset is unavailable" });
+    } catch (e: any) {
+      return res.status(500).json({ message: safeErrMsg(e) });
+    }
+  });
 
   // -- File upload (requires admin or app auth) --------------------------------
   app.post("/api/upload", (req, res, next) => {
@@ -8266,13 +8566,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/.test(passwordStr)) {
         return res.status(400).json({ message: "Password must be at least 8 characters and include upper, lower and number" });
       }
-      const existing = await rawDb.execute(rawSql`SELECT id FROM users WHERE phone=${phoneStr} AND user_type=${userType} LIMIT 1`);
+      const existing = await rawDb.execute(rawSql`
+        SELECT id
+        FROM users
+        WHERE (phone=${phoneStr} OR mobile=${phoneStr})
+          AND user_type=${userType}
+        LIMIT 1
+      `);
       if (existing.rows.length) return res.status(409).json({ message: "Account already exists. Please login." });
       const passwordHash = await hashPassword(passwordStr);
       const initialVerificationStatus = userType === "driver" ? "pending" : "approved";
       const insertRes = await rawDb.execute(rawSql`
-        INSERT INTO users (full_name, phone, email, user_type, is_active, wallet_balance, password_hash, verification_status)
-        VALUES (${nameStr}, ${phoneStr}, ${emailStr}, ${userType}, true, 0, ${passwordHash}, ${initialVerificationStatus})
+        INSERT INTO users (full_name, name, phone, mobile, email, user_type, is_active, wallet_balance, password_hash, verification_status)
+        VALUES (${nameStr}, ${nameStr}, ${phoneStr}, ${phoneStr}, ${emailStr}, ${userType}, true, 0, ${passwordHash}, ${initialVerificationStatus})
         RETURNING *
       `);
       // Set referral_code separately (handles DB where column may not exist yet)
@@ -8305,7 +8611,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           walletBalance: 0,
         },
       });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+    } catch (e: any) {
+      console.error("[app-register] failed:", formatDbError(e));
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
   });
 
   // -- PASSWORD-BASED LOGIN --------------------------------------------------
@@ -8316,7 +8625,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!phone || !password) return res.status(400).json({ message: "Phone and password are required" });
       const phoneStr = String(phone).replace(/\D/g, "").slice(-10);
       if (phoneStr.length !== 10) return res.status(400).json({ message: "Enter a valid 10-digit phone number" });
-      const userRes = await rawDb.execute(rawSql`SELECT * FROM users WHERE phone=${phoneStr} AND user_type=${userType} LIMIT 1`);
+      const userRes = await rawDb.execute(rawSql`
+        SELECT *
+        FROM users
+        WHERE (phone=${phoneStr} OR mobile=${phoneStr})
+          AND user_type=${userType}
+        LIMIT 1
+      `);
       if (!userRes.rows.length) return res.status(404).json({ message: "No account found. Please register first." });
       const user = camelize(userRes.rows[0]) as any;
       if (!user.isActive) return res.status(403).json({ message: "Account deactivated. Contact support." });
@@ -8348,7 +8663,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           isLocked: user.isLocked || false,
         },
       });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+    } catch (e: any) {
+      console.error("[app-login-password] failed:", formatDbError(e));
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
   });
 
   // -- FORGOT PASSWORD (manual support reset, no OTP/Firebase) ---------------
@@ -8478,6 +8796,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (user?.userType !== "customer") return res.status(403).json({ message: "Customer access required" });
     next();
   }
+
+  registerRollingPoolRoutes(app, authApp, requireAdminAuth);
+  registerOutstationPoolV2Routes(app, authApp, requireAdminAuth);
 
   // -- DRIVER: Go Online / Offline + Location Update -------------------------
   app.post("/api/app/driver/location", authApp, requireDriver, async (req, res) => {
@@ -13009,25 +13330,48 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // -- ADMIN: List pending KYC reviews --------------------------------------
   app.get("/api/admin/kyc/pending", requireAdminAuth, async (_req, res) => {
     try {
-      const r = await rawDb.execute(rawSql`
-        SELECT u.id as driver_id, u.full_name, u.phone, u.verification_status,
-          json_agg(json_build_object(
-            'id', k.id,
-            'documentType', k.document_type,
-            'documentNumber', k.document_number,
-            'fileUrl', k.file_url,
-            'status', k.status,
-            'adminNote', k.admin_note,
-            'updatedAt', k.updated_at
-          ) ORDER BY k.created_at ASC) as documents
+      const kycTableExistsR = await rawDb.execute(rawSql`
+        SELECT EXISTS (
+          SELECT 1
+          FROM information_schema.tables
+          WHERE table_schema='public' AND table_name='driver_kyc_documents'
+        ) AS exists
+      `).catch(() => ({ rows: [{ exists: false }] as any[] }));
+      const hasKycTable = (kycTableExistsR.rows[0] as any)?.exists === true;
+      if (hasKycTable) {
+        const r = await rawDb.execute(rawSql`
+          SELECT u.id as driver_id, u.full_name, u.phone, u.verification_status,
+            json_agg(json_build_object(
+              'id', k.id,
+              'documentType', k.document_type,
+              'documentNumber', k.document_number,
+              'fileUrl', k.file_url,
+              'status', k.status,
+              'adminNote', k.admin_note,
+              'updatedAt', k.updated_at
+            ) ORDER BY k.created_at ASC) as documents
+          FROM users u
+          JOIN driver_kyc_documents k ON k.driver_id = u.id
+          WHERE u.user_type = 'driver' AND u.verification_status IN ('under_review', 'pending')
+          GROUP BY u.id, u.full_name, u.phone, u.verification_status
+          ORDER BY MAX(k.created_at) DESC
+          LIMIT 50
+        `);
+        return res.json({ drivers: camelize(r.rows), source: "driver_kyc_documents" });
+      }
+
+      const fallbackR = await rawDb.execute(rawSql`
+        SELECT u.id as driver_id, u.full_name, u.phone, u.verification_status
         FROM users u
-        JOIN driver_kyc_documents k ON k.driver_id = u.id
         WHERE u.user_type = 'driver' AND u.verification_status IN ('under_review', 'pending')
-        GROUP BY u.id, u.full_name, u.phone, u.verification_status
-        ORDER BY MAX(k.created_at) DESC
+        ORDER BY u.updated_at DESC NULLS LAST, u.created_at DESC
         LIMIT 50
       `);
-      res.json({ drivers: camelize(r.rows) });
+      const drivers = await Promise.all((fallbackR.rows as any[]).map(async (row) => ({
+        ...camelize(row),
+        documents: await getDriverDocumentsForResponse(String(row.driver_id || row.id)),
+      })));
+      res.json({ drivers, source: "driver_documents" });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -13453,25 +13797,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const { docType } = req.body; // dl_front, dl_back, rc, aadhar_front, aadhar_back, insurance
       const fileUrl = req.file ? `/uploads/${req.file.filename}` : null;
       if (!fileUrl || !docType) return res.status(400).json({ message: "Document type and file required" });
-      await rawDb.execute(rawSql`
-        INSERT INTO driver_documents (driver_id, doc_type, file_url, status, created_at, updated_at)
-        VALUES (${user.id}::uuid, ${docType}, ${fileUrl}, 'pending', now(), now())
-        ON CONFLICT (driver_id, doc_type) DO UPDATE SET file_url=${fileUrl}, status='pending', updated_at=now()
-      `).catch(async () => {
-        await rawDb.execute(rawSql`
-          CREATE TABLE IF NOT EXISTS driver_documents (
-            id SERIAL PRIMARY KEY,
-            driver_id UUID, doc_type VARCHAR(50), file_url TEXT,
-            status VARCHAR(20) DEFAULT 'pending', created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now(),
-            UNIQUE(driver_id, doc_type)
-          )
-        `);
-        await rawDb.execute(rawSql`
-          INSERT INTO driver_documents (driver_id, doc_type, file_url, status) VALUES (${user.id}::uuid, ${docType}, ${fileUrl}, 'pending')
-          ON CONFLICT (driver_id, doc_type) DO UPDATE SET file_url=${fileUrl}, status='pending', updated_at=now()
-        `);
+      const fileData = req.file ? fs.readFileSync(path.join(uploadsDir, req.file.filename)).toString("base64") : null;
+      const publicUrl = await storeDriverDocumentRecord({
+        driverId: user.id,
+        docType: String(docType),
+        fileUrl,
+        fileData,
+        mimeType: req.file?.mimetype || null,
       });
-      res.json({ success: true, docType, fileUrl, status: 'pending', message: "Document uploaded. Under review." });
+      res.json({ success: true, docType, fileUrl: publicUrl, status: 'pending', message: "Document uploaded. Under review." });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -13479,8 +13813,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/app/driver/documents", authApp, async (req, res) => {
     try {
       const user = (req as any).currentUser;
-      const r = await rawDb.execute(rawSql`SELECT * FROM driver_documents WHERE driver_id=${user.id}::uuid`).catch(() => ({ rows: [] }));
-      res.json({ success: true, documents: r.rows.map(camelize) });
+      const documents = await getDriverDocumentsForResponse(user.id);
+      res.json({ success: true, documents });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -13492,12 +13826,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!docType || !imageData) return res.status(400).json({ message: "docType and imageData required" });
       const validTypes = ['dl_front', 'dl_back', 'rc', 'aadhar_front', 'aadhar_back', 'insurance', 'selfie', 'vehicle_photo'];
       if (!validTypes.includes(docType)) return res.status(400).json({ message: "Invalid docType" });
-      await rawDb.execute(rawSql`
-        INSERT INTO driver_documents (driver_id, doc_type, file_url, status, expiry_date, created_at, updated_at)
-        VALUES (${user.id}::uuid, ${docType}, ${imageData}, 'pending', ${expiryDate || null}, now(), now())
-        ON CONFLICT (driver_id, doc_type) DO UPDATE SET file_url=${imageData}, status='pending', expiry_date=${expiryDate || null}, updated_at=now()
-      `);
-      res.json({ success: true, docType, status: 'pending', message: "Document uploaded. Under review." });
+      const parsed = parseIncomingDocumentData(String(imageData));
+      const filename = `${Date.now()}-${crypto.randomBytes(10).toString("hex")}-${docType}${parsed.ext}`;
+      fs.writeFileSync(path.join(uploadsDir, filename), parsed.buffer);
+      const publicUrl = await storeDriverDocumentRecord({
+        driverId: user.id,
+        docType,
+        fileUrl: `/uploads/${filename}`,
+        fileData: parsed.rawBase64,
+        mimeType: parsed.mimeType,
+        expiryDate: expiryDate || null,
+      });
+      res.json({ success: true, docType, fileUrl: publicUrl, status: 'pending', message: "Document uploaded. Under review." });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -13612,14 +13952,46 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         LEFT JOIN vehicle_categories vc ON vc.id = dd.vehicle_category_id
         WHERE u.id = ${user.id}::uuid
       `);
-      const docsR = await rawDb.execute(rawSql`
-        SELECT doc_type, status, expiry_date, admin_note, reviewed_at
-        FROM driver_documents WHERE driver_id = ${user.id}::uuid ORDER BY created_at
-      `).catch(() => ({ rows: [] }));
       const profile = camelize(profileR.rows[0] || {});
-      const documents = docsR.rows.map(camelize);
+      const documents = await getDriverDocumentsForResponse(user.id);
       res.json({ success: true, ...profile, documents });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  app.get("/api/app/driver/readiness", authApp, requireDriver, async (req, res) => {
+    try {
+      const driver = (req as any).currentUser;
+      const missingDocuments = await getDriverDocumentFailures(driver.id);
+      const profile = await getDriverDispatchProfile(driver.id);
+      const blocked: string[] = [];
+      const warnings: string[] = [];
+
+      if (missingDocuments.length) blocked.push("documents");
+      if (!profile || !profile.isActive || !["approved", "verified"].includes(profile.approvalState)) {
+        blocked.push("dispatch_eligibility");
+      }
+
+      const locR = await rawDb.execute(rawSql`
+        SELECT updated_at
+        FROM driver_locations
+        WHERE driver_id=${driver.id}::uuid
+        LIMIT 1
+      `).catch(() => ({ rows: [] as any[] }));
+      const lastLoc = (locR.rows[0] as any)?.updated_at;
+      if (!lastLoc || new Date(lastLoc).getTime() < Date.now() - 5 * 60 * 1000) {
+        warnings.push("last_location");
+      }
+
+      res.json({
+        success: true,
+        ready: blocked.length === 0,
+        blocked,
+        warnings,
+        missingDocuments,
+      });
+    } catch (e: any) {
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
   });
 
   // -- DRIVER: Get subscription plans ----------------------------------------
@@ -13773,7 +14145,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  app.get("/api/admin/drivers/pending-verification", async (req, res) => {
+  app.get("/api/admin/drivers/pending-verification", requireAdminAuth, async (req, res) => {
     try {
       const status = (req.query.status as string) || 'pending';
       const r = await rawDb.execute(rawSql`
@@ -13790,13 +14162,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ORDER BY u.created_at DESC
         LIMIT 100
       `);
-      const drivers = await Promise.all(r.rows.map(async (d: any) => {
-        const docsR = await rawDb.execute(rawSql`
-          SELECT doc_type, file_url, status, expiry_date, admin_note, reviewed_at, created_at, updated_at
-          FROM driver_documents WHERE driver_id = ${d.id}::uuid ORDER BY created_at
-        `).catch(() => ({ rows: [] }));
-        return { ...camelize(d), documents: docsR.rows.map(camelize) };
-      }));
+      const drivers = await Promise.all(r.rows.map(async (d: any) => ({
+        ...camelize(d),
+        documents: await getDriverDocumentsForResponse(String(d.id)),
+      })));
       res.json({ success: true, drivers, count: drivers.length });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
@@ -13820,30 +14189,39 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // -- ADMIN: Approve/Reject entire driver verification ----------------------
   app.patch("/api/admin/drivers/:id/verify-driver", requireAdminRole(["admin", "superadmin"]), async (req, res) => {
     try {
-      const { id } = req.params;
+      const driverId = String(req.params.id);
       const { status, note, vehicleStatus } = req.body;
       if (!['approved', 'rejected', 'pending'].includes(status)) return res.status(400).json({ message: "Invalid status" });
+      if (status === 'approved') {
+        const missingDocuments = await getDriverDocumentFailures(driverId);
+        if (missingDocuments.length) {
+          return res.status(400).json({
+            message: "Required driver documents are missing.",
+            missingDocuments,
+          });
+        }
+      }
       await rawDb.execute(rawSql`
         UPDATE users SET
           verification_status=${status},
           vehicle_status=${vehicleStatus || status},
           rejection_note=${note || null},
           updated_at=NOW()
-        WHERE id=${id}::uuid AND user_type='driver'
+        WHERE id=${driverId}::uuid AND user_type='driver'
       `);
       if (status === 'approved') {
-        await rawDb.execute(rawSql`UPDATE users SET is_active=true WHERE id=${id}::uuid`);
+        await rawDb.execute(rawSql`UPDATE users SET is_active=true WHERE id=${driverId}::uuid`);
         // Always grant 30-day free period on approval (no subscription/commission for first month)
         await rawDb.execute(rawSql`
           UPDATE users
           SET onboard_date = COALESCE(onboard_date, NOW()),
               free_period_end = COALESCE(free_period_end, NOW() + INTERVAL '30 days'),
               launch_free_active = true
-          WHERE id=${id}::uuid AND user_type='driver'
+          WHERE id=${driverId}::uuid AND user_type='driver'
         `).catch(dbCatch("db"));
       }
       // Send FCM notification if token exists
-      const tokenR = await rawDb.execute(rawSql`SELECT fcm_token, full_name FROM users WHERE id=${id}::uuid`).catch(() => ({ rows: [] }));
+      const tokenR = await rawDb.execute(rawSql`SELECT fcm_token, full_name FROM users WHERE id=${driverId}::uuid`).catch(() => ({ rows: [] }));
       const driverRow = (tokenR.rows[0] as any);
       if (driverRow?.fcm_token) {
         try {

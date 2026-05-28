@@ -184,11 +184,29 @@ class _RegisterScreenState extends State<RegisterScreen> {
       for (var entry in docs.entries) {
         if (entry.value != null) {
           final b64 = await _fileToBase64(entry.value);
-          await http.post(
+          final uploadRes = await http.post(
             Uri.parse('${ApiConfig.baseUrl}/api/app/driver/upload-document-base64'),
             headers: headers,
             body: jsonEncode({'docType': entry.key, 'imageData': b64}),
           );
+          if (uploadRes.statusCode != 200) {
+            String msg = 'Failed to upload ${entry.key}';
+            try {
+              if ((uploadRes.headers['content-type'] ?? '').contains('application/json')) {
+                final decoded = jsonDecode(uploadRes.body);
+                msg = decoded['message'] ?? msg;
+              }
+            } catch (_) {}
+            throw Exception(msg);
+          }
+          try {
+            final decoded = jsonDecode(uploadRes.body);
+            if (decoded is! Map || decoded['success'] != true) {
+              throw Exception('Failed to upload ${entry.key}');
+            }
+          } catch (_) {
+            throw Exception('Failed to upload ${entry.key}');
+          }
         }
       }
 
