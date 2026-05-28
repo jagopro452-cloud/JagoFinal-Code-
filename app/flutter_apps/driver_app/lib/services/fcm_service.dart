@@ -13,6 +13,7 @@ const String _tripAlertChannelName = 'Trip Alerts';
 const String _tripAlertChannelDescription = 'Incoming ride and parcel requests';
 const String _tripDataKey = 'pending_trip_data';
 const String _parcelDataKey = 'pending_parcel_data';
+const String _poolDataKey = 'pending_pool_data';
 const String _alertActionKey = 'pending_driver_alert_action';
 const int _tripNotificationId = 42;
 const int _parcelNotificationId = 43;
@@ -22,7 +23,8 @@ const String _parcelOpenActionId = 'parcel_open';
 
 bool _isTripAlert(Map<String, dynamic> data) => (data['type'] ?? '') == 'new_trip';
 bool _isParcelAlert(Map<String, dynamic> data) => (data['type'] ?? '') == 'new_parcel';
-bool _isDriverAlert(Map<String, dynamic> data) => _isTripAlert(data) || _isParcelAlert(data);
+bool _isPoolAlert(Map<String, dynamic> data) => (data['type'] ?? '').toString().startsWith('pool_');
+bool _isDriverAlert(Map<String, dynamic> data) => _isTripAlert(data) || _isParcelAlert(data) || _isPoolAlert(data);
 
 Future<void> _persistPendingAlert(Map<String, dynamic> data) async {
   try {
@@ -32,6 +34,9 @@ Future<void> _persistPendingAlert(Map<String, dynamic> data) async {
     }
     if (_isParcelAlert(data)) {
       await prefs.setString(_parcelDataKey, jsonEncode(data));
+    }
+    if (_isPoolAlert(data)) {
+      await prefs.setString(_poolDataKey, jsonEncode(data));
     }
   } catch (_) {}
 }

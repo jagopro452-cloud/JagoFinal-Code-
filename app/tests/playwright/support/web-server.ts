@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
+import type net from "node:net";
 
 const rootDir = process.cwd();
 const distDir = path.join(rootDir, "dist", "public");
@@ -18,6 +19,7 @@ function ensureBuildExists() {
 async function main() {
   ensureBuildExists();
   const indexHtml = await fs.promises.readFile(path.join(distDir, "index.html"), "utf8");
+  const connections = new Set<net.Socket>();
   const server = http.createServer(async (req, res) => {
     try {
       const requestPath = decodeURIComponent((req.url || "/").split("?")[0] || "/");
@@ -65,8 +67,19 @@ async function main() {
     }
   });
 
+  server.on("connection", (socket) => {
+    connections.add(socket);
+    socket.on("close", () => {
+      connections.delete(socket);
+    });
+  });
+
   const shutdown = () => {
     server.close(() => process.exit(0));
+    for (const socket of connections) {
+      socket.destroy();
+    }
+    setTimeout(() => process.exit(0), 1_000).unref();
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);

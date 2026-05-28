@@ -479,19 +479,27 @@ class _TrackingScreenState extends State<TrackingScreen>
 
   void _handleStatusTransition(String newStatus) {
     if (newStatus == 'accepted' || newStatus == 'driver_assigned') {
+      _searchTimeoutTimer?.cancel();
+      _nearbyDriversTimer?.cancel();
       _showStatusBanner('Pilot accepted your ride', JT.primary);
       _announceStatus('accepted');
       _updateMapMarkers();
     } else if (newStatus == 'arrived') {
+      _searchTimeoutTimer?.cancel();
+      _nearbyDriversTimer?.cancel();
       _showStatusBanner('Your pilot has arrived', const Color(0xFF10B981));
       _announceStatus('arrived');
       _updateMapMarkers();
     } else if (newStatus == 'in_progress' || newStatus == 'on_the_way') {
+      _searchTimeoutTimer?.cancel();
+      _nearbyDriversTimer?.cancel();
       _animateToDestination();
       _showStatusBanner('Ride started • Have a safe journey!', JT.primary);
       _fetchRouteForStatus();
       _updateMapMarkers();
     } else if (newStatus == 'completed') {
+      _searchTimeoutTimer?.cancel();
+      _nearbyDriversTimer?.cancel();
       _showStatusBanner('Trip Completed • Thank you!', const Color(0xFF10B981));
       setState(() => _polylines.clear());
       _updateMapMarkers();
@@ -511,8 +519,13 @@ class _TrackingScreenState extends State<TrackingScreen>
         }
       });
     } else if (newStatus == 'cancelled') {
+      _searchTimeoutTimer?.cancel();
+      _nearbyDriversTimer?.cancel();
       _showStatusBanner('Trip Cancelled', const Color(0xFFDC2626));
       setState(() => _polylines.clear());
+    } else if (newStatus == 'searching') {
+      _startSearchTimeoutTimer();
+      _startNearbyDriversPolling();
     }
   }
 

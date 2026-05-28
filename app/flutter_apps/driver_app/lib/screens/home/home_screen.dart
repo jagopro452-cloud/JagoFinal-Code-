@@ -32,6 +32,9 @@ import '../profile/support_chat_screen.dart';
 import '../onboarding/model_selection_screen.dart';
 import '../earnings/earnings_screen.dart';
 import '../parcel/parcel_delivery_screen.dart';
+import '../profile/activated_services_screen.dart';
+import '../local_pool/local_pool_screen.dart';
+import '../outstation_pool/outstation_pool_trip_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -158,16 +161,84 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, 
       final data = jsonDecode(res.body) as Map<String, dynamic>;
       final trip = data['trip'];
       if (trip == null) return;
-      final status = trip['currentStatus'] ?? trip['current_status'] ?? '';
-      if (!['accepted', 'arrived', 'on_the_way', 'driver_assigned'].contains(status)) return;
+      final tripData = Map<String, dynamic>.from(trip as Map);
+      final status = tripData['currentStatus'] ?? tripData['current_status'] ?? '';
+      final serviceType = (tripData['type'] ??
+              tripData['tripType'] ??
+              tripData['serviceType'] ??
+              tripData['service_type'] ??
+              '')
+          .toString()
+          .toLowerCase();
+      final isParcel = serviceType.contains('parcel') || serviceType.contains('cargo');
+      final validStatuses = isParcel
+          ? ['accepted', 'driver_assigned', 'arrived', 'in_transit']
+          : ['accepted', 'arrived', 'on_the_way', 'in_progress', 'driver_assigned'];
+      if (!validStatuses.contains(status)) return;
       if (!mounted) return;
       // Navigate directly to trip screen — driver was mid-trip when app crashed
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(
-          builder: (_) => TripScreen(trip: trip),
+          builder: (_) => isParcel
+              ? ParcelDeliveryScreen(order: tripData)
+              : TripScreen(trip: tripData),
         ),
       );
+      return;
+    } catch (_) {}
+
+    try {
+      final headers = await AuthService.getHeaders();
+      final poolSessionRes = await http.get(
+        Uri.parse(ApiConfig.localPoolSessionActive),
+        headers: headers,
+      );
+      if (poolSessionRes.statusCode == 200) {
+        final payload = jsonDecode(poolSessionRes.body) as Map<String, dynamic>;
+        final data = payload['data'] is Map<String, dynamic> ? payload['data'] as Map<String, dynamic> : payload;
+        if (data['session'] != null && mounted) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (_) => const LocalPoolScreen()),
+          );
+          return;
+        }
+      }
+    } catch (_) {}
+
+    try {
+      final headers = await AuthService.getHeaders();
+      final ridesRes = await http.get(
+        Uri.parse('${ApiConfig.baseUrl}/api/app/driver/outstation-pool/rides'),
+        headers: headers,
+      );
+      if (ridesRes.statusCode != 200) return;
+      final payload = jsonDecode(ridesRes.body) as Map<String, dynamic>;
+      final rawItems = payload['data'] is List
+          ? payload['data'] as List
+          : payload['rides'] is List
+              ? payload['rides'] as List
+              : const [];
+      final items = rawItems
+          .whereType<Map>()
+          .map((item) => Map<String, dynamic>.from(item))
+          .toList();
+      final activeRide = items.cast<Map<String, dynamic>?>().firstWhere(
+            (ride) {
+              final state = ride?['status']?.toString() ?? '';
+              return state == 'scheduled' || state == 'active';
+            },
+            orElse: () => null,
+          );
+      if (activeRide != null && mounted) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (_) => OutstationPoolTripScreen(ride: activeRide),
+          ),
+        );
+      }
     } catch (_) {}
   }
 
@@ -204,6 +275,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, 
           setState(() => _incomingParcel = parcelData);
           _showIncomingParcel();
         }
+      }
+
+      final pendingPoolStr = prefs.getString('pending_pool_data');
+      if (pendingPoolStr != null && pendingPoolStr.isNotEmpty) {
+        await prefs.remove('pending_pool_data');
+        await _recoverActiveTrip();
       }
     } catch (_) {}
   }
@@ -963,25 +1040,39 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, 
       _socket.setActiveTrip(tripId);
     }
 
-    Map<String, dynamic>? fullTrip;
-    try {
-      final hdrs = await AuthService.getHeaders();
-      final res = await http.get(
-        Uri.parse(ApiConfig.driverActiveTrip),
-        headers: hdrs,
-      ).timeout(const Duration(seconds: 30));
-      if (res.statusCode == 200) {
+    Future<Map<String, dynamic>?> fetchAcceptedTrip() async {
+      try {
+        final hdrs = await AuthService.getHeaders();
+        final res = await http.get(
+          Uri.parse(ApiConfig.driverActiveTrip),
+          headers: hdrs,
+        ).timeout(const Duration(seconds: 30));
+        if (res.statusCode != 200) return null;
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         final activeTrip = data['trip'];
-        if (activeTrip is Map) {
-          final serverTrip = Map<String, dynamic>.from(activeTrip);
-          final serverTripId = (serverTrip['id'] ?? serverTrip['tripId'] ?? '').toString();
-          if (serverTripId == tripId) {
-            fullTrip = Map<String, dynamic>.from(trip)..addAll(serverTrip);
-          }
+        if (activeTrip is! Map) return null;
+        final serverTrip = Map<String, dynamic>.from(activeTrip);
+        final serverTripId =
+            (serverTrip['id'] ?? serverTrip['tripId'] ?? '').toString();
+        if (serverTripId != tripId) return null;
+        return Map<String, dynamic>.from(trip)..addAll(serverTrip);
+      } catch (_) {
+        return null;
+      }
+    }
+
+    Map<String, dynamic>? fullTrip = await fetchAcceptedTrip();
+    if (fullTrip == null) {
+      for (final delayMs in const [350, 900, 1600]) {
+        await Future.delayed(Duration(milliseconds: delayMs));
+        if (!mounted) return;
+        fullTrip = await fetchAcceptedTrip();
+        if (fullTrip != null) {
+          accepted = true;
+          break;
         }
       }
-    } catch (_) {}
+    }
     if (!mounted) return;
     if (fullTrip == null && accepted) {
       // Fallback: use what we have from the socket/notification payload
@@ -1870,6 +1961,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin, 
                 _drawerItem(Icons.person_outline_rounded, 'Profile', null, () {
                   Navigator.pop(context);
                   Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfileScreen()));
+                }),
+                _drawerItem(Icons.verified_user_outlined, 'Activated Services', null, () {
+                  Navigator.pop(context);
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => const ActivatedServicesScreen()));
                 }),
                 _drawerItem(Icons.health_and_safety_outlined, 'Safety & Fatigue', null, () {
                   Navigator.pop(context);

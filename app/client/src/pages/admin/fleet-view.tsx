@@ -207,6 +207,10 @@ function createDriverIcon(L: any, status: string) {
   });
 }
 
+function asArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? value : [];
+}
+
 export default function FleetViewPage() {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstance = useRef<any>(null);
@@ -230,22 +234,26 @@ export default function FleetViewPage() {
   });
   const { data: zones = [] } = useQuery<any[]>({ queryKey: ["/api/zones"] });
 
-  const filtered = (trips as any[]).filter((t: any) => {
+  const tripItems = asArray<any>(trips);
+  const fleetDriverItems = asArray<any>(fleetDrivers);
+  const zoneItems = asArray<any>(zones);
+
+  const filtered = tripItems.filter((t: any) => {
     const typeMatch = filter === "all" ? true : t.type === filter;
     const zoneMatch = zoneFilter === "all" ? true : t.zoneId === zoneFilter;
     return typeMatch && zoneMatch;
   });
-  const rideCount = trips.filter((t: any) => t.type === "ride").length;
-  const parcelCount = trips.filter((t: any) => t.type === "parcel").length;
+  const rideCount = tripItems.filter((t: any) => t.type === "ride").length;
+  const parcelCount = tripItems.filter((t: any) => t.type === "parcel").length;
 
-  const filteredDrivers = (fleetDrivers as any[]).filter(d => {
+  const filteredDrivers = fleetDriverItems.filter((d) => {
     if (zoneFilter !== "all" && d.zoneId !== zoneFilter) return false;
     if (driverStatusFilter === "active") return d.status === "active";
     if (driverStatusFilter === "inactive") return d.status !== "active";
     return true;
   });
-  const onlineDriverCount = (fleetDrivers as any[]).filter(d => d.status === "active").length;
-  const offlineDriverCount = (fleetDrivers as any[]).length - onlineDriverCount;
+  const onlineDriverCount = fleetDriverItems.filter((d) => d.status === "active").length;
+  const offlineDriverCount = fleetDriverItems.length - onlineDriverCount;
 
   const TILES: Record<string, { url: string; attr: string }> = {
     voyager: {
@@ -488,22 +496,22 @@ export default function FleetViewPage() {
   }, []);
 
   const tripStats = [
-    { label: "Live Trips", val: trips.length, icon: "bi-broadcast-pin", color: "#ef4444", bg: "linear-gradient(135deg,#ef444415,#fca5a515)" },
+    { label: "Live Trips", val: tripItems.length, icon: "bi-broadcast-pin", color: "#ef4444", bg: "linear-gradient(135deg,#ef444415,#fca5a515)" },
     { label: "Rides", val: rideCount, icon: "bi-car-front-fill", color: "#1a73e8", bg: "linear-gradient(135deg,#1a73e815,#93c5fd15)" },
     { label: "Parcels", val: parcelCount, icon: "bi-box-seam-fill", color: "#16a34a", bg: "linear-gradient(135deg,#16a34a15,#86efac15)" },
     { label: "Total Trips", val: allData?.total || 0, icon: "bi-graph-up-arrow", color: "#8b5cf6", bg: "linear-gradient(135deg,#8b5cf615,#c4b5fd15)" },
   ];
   const driverStats = [
-    { label: "Total Drivers", val: (fleetDrivers as any[]).length, icon: "bi-people-fill", color: "#0f172a", bg: "linear-gradient(135deg,#0f172a15,#64748b15)" },
+    { label: "Total Drivers", val: fleetDriverItems.length, icon: "bi-people-fill", color: "#0f172a", bg: "linear-gradient(135deg,#0f172a15,#64748b15)" },
     { label: "Online", val: onlineDriverCount, icon: "bi-circle-fill", color: "#16a34a", bg: "linear-gradient(135deg,#16a34a15,#86efac15)" },
     { label: "Offline", val: offlineDriverCount, icon: "bi-circle", color: "#94a3b8", bg: "linear-gradient(135deg,#94a3b815,#cbd5e115)" },
-    { label: "Zones", val: (zones as any[]).length, icon: "bi-map-fill", color: "#7c3aed", bg: "linear-gradient(135deg,#7c3aed15,#c4b5fd15)" },
+    { label: "Zones", val: zoneItems.length, icon: "bi-map-fill", color: "#7c3aed", bg: "linear-gradient(135deg,#7c3aed15,#c4b5fd15)" },
   ];
   const stats = viewMode === "drivers" ? driverStats : tripStats;
   const activeZoneName =
     zoneFilter === "all"
       ? "All zones"
-      : ((zones as any[]).find((zone: any) => zone.id === zoneFilter)?.name || "Selected zone");
+      : (zoneItems.find((zone: any) => zone.id === zoneFilter)?.name || "Selected zone");
 
   return (
     <>
@@ -556,12 +564,12 @@ export default function FleetViewPage() {
                 </button>
               </div>
               {/* Zone filter */}
-              {(zones as any[]).length > 0 && (
+              {zoneItems.length > 0 && (
                 <select className="form-select form-select-sm" style={{ fontSize: 11, maxWidth: 150 }}
                   value={zoneFilter} onChange={e => setZoneFilter(e.target.value)}
                   data-testid="select-zone-filter">
                   <option value="all">All Zones</option>
-                  {(zones as any[]).map((z: any) => (
+                  {zoneItems.map((z: any) => (
                     <option key={z.id} value={z.id}>{z.name}</option>
                   ))}
                 </select>
@@ -679,7 +687,7 @@ export default function FleetViewPage() {
                 {viewMode === "trips" ? (
                   <div className="d-flex gap-1">
                     {(["all","ride","parcel"] as const).map(f => {
-                      const cnt = f === "all" ? trips.length : f === "ride" ? rideCount : parcelCount;
+                      const cnt = f === "all" ? tripItems.length : f === "ride" ? rideCount : parcelCount;
                       const active = filter === f;
                       return (
                         <button key={f} className="btn btn-sm flex-fill fw-semibold"
@@ -697,7 +705,7 @@ export default function FleetViewPage() {
                 ) : (
                   <div className="d-flex gap-1">
                     {(["all","active","inactive"] as const).map(f => {
-                      const cnt = f === "all" ? (fleetDrivers as any[]).length : f === "active" ? onlineDriverCount : offlineDriverCount;
+                      const cnt = f === "all" ? fleetDriverItems.length : f === "active" ? onlineDriverCount : offlineDriverCount;
                       const active = driverStatusFilter === f;
                       return (
                         <button key={f} className="btn btn-sm flex-fill fw-semibold"

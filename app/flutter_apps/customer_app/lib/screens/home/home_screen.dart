@@ -18,6 +18,8 @@ import '../profile/profile_screen.dart';
 import '../booking/booking_screen.dart';
 import '../booking/map_location_picker.dart';
 import '../tracking/tracking_screen.dart';
+import '../tracking/parcel_tracking_screen.dart';
+import '../tracking/local_pool_status_screen.dart';
 import '../booking/intercity_booking_screen.dart';
 import '../offers/offers_screen.dart';
 import '../profile/support_chat_screen.dart';
@@ -287,13 +289,15 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       final pendingStr = prefs.getString('pending_notification');
       if (pendingStr != null && pendingStr.isNotEmpty) {
         await prefs.remove('pending_notification');
-        final data = jsonDecode(pendingStr) as Map<String, dynamic>;
-        final type = data['type']?.toString() ?? '';
-        final tripId = data['tripId']?.toString() ?? '';
-        if (!mounted || tripId.isEmpty) return;
-        if (type == 'trip_accepted' ||
-            type == 'driver_assigned' ||
-            type == 'driver_arrived') {
+      final data = jsonDecode(pendingStr) as Map<String, dynamic>;
+      final type = data['type']?.toString() ?? '';
+      final tripId = data['tripId']?.toString() ?? '';
+      final orderId = data['orderId']?.toString() ?? '';
+      if (!mounted) return;
+      if (type == 'trip_accepted' ||
+          type == 'driver_assigned' ||
+          type == 'driver_arrived') {
+          if (tripId.isEmpty) return;
           // Verify trip is still active — prevents stale FCM from causing blank screen
           try {
             final verifyHeaders = await AuthService.getHeaders();
@@ -316,6 +320,51 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               context,
               MaterialPageRoute(
                   builder: (_) => TrackingScreen(tripId: tripId)));
+        } else if (type.toString().startsWith('pool_')) {
+          final module = data['module']?.toString() ?? '';
+          final referenceId = data['referenceId']?.toString() ?? data['bookingId']?.toString() ?? data['requestId']?.toString() ?? '';
+          if (referenceId.isEmpty) return;
+          if (module == 'local_pool') {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (_) => LocalPoolStatusScreen(
+                  requestId: referenceId,
+                  pickupAddress: data['pickupAddress']?.toString() ?? '',
+                  dropAddress: data['dropAddress']?.toString() ?? '',
+                ),
+              ),
+            );
+            return;
+          }
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => OutstationPoolBookingDetailScreen(
+                bookingId: referenceId,
+                initialBooking: referenceId == orderId || data['booking'] is Map<String, dynamic>
+                    ? (data['booking'] as Map<String, dynamic>?)
+                    : null,
+              ),
+            ),
+          );
+        } else if (type.contains('parcel') || orderId.isNotEmpty) {
+          final active = await TripService.getActiveBooking();
+          final booking = active['booking'];
+          final bookingType =
+              active['bookingType']?.toString().trim().toLowerCase() ?? '';
+          if (bookingType != 'parcel' && bookingType != 'cargo') return;
+          if (booking is! Map<String, dynamic>) return;
+          final activeOrderId =
+              booking['id']?.toString() ?? booking['orderId']?.toString() ?? '';
+          if (activeOrderId.isEmpty) return;
+          if (orderId.isNotEmpty && activeOrderId != orderId) return;
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => ParcelTrackingScreen(orderId: activeOrderId),
+            ),
+          );
         }
       }
     } catch (_) {}
@@ -323,39 +372,84 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Future<void> _checkActiveTrip() async {
     try {
-      final headers = await AuthService.getHeaders();
-      final r =
-          await http.get(Uri.parse(ApiConfig.activeTrip), headers: headers);
+      final active = await TripService.getActiveBooking();
       if (!mounted) return;
-      if (r.statusCode == 401) {
-        _handleUnauthorized();
+      final booking = active['booking'];
+      final bookingType =
+          active['bookingType']?.toString().trim().toLowerCase() ?? '';
+      if (booking is! Map<String, dynamic> || bookingType.isEmpty) {
+        setState(() => _activeTrip = null);
         return;
       }
-      if (r.statusCode == 200) {
-        final data = jsonDecode(r.body);
-        final trip = data['trip'] as Map<String, dynamic>?;
-        if (trip != null) {
-          final status = trip['currentStatus']?.toString() ?? '';
-          if (status != 'completed' && status != 'cancelled') {
-            setState(() => _activeTrip = trip);
-            // Start auto-cancel timer if searching and no pilot found yet
-            if (status == 'searching') {
-              _startSearchingTimer(trip['id']?.toString() ?? '');
-            }
-            // Fix 7: if driver already assigned/in-progress, go straight to TrackingScreen
-            if (['accepted', 'arrived', 'on_the_way', 'driver_assigned']
-                .contains(status)) {
-              final tripId = trip['id']?.toString() ?? '';
-              if (tripId.isNotEmpty && mounted) {
-                Navigator.pushReplacement(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => TrackingScreen(tripId: tripId),
-                  ),
-                );
-              }
-            }
-          }
+      final status = booking['currentStatus']?.toString() ??
+          booking['current_status']?.toString() ??
+          '';
+      if (status == 'completed' || status == 'cancelled') {
+        setState(() => _activeTrip = null);
+        return;
+      }
+
+      if (bookingType == 'parcel' || bookingType == 'cargo') {
+        final orderId =
+            booking['id']?.toString() ?? booking['orderId']?.toString() ?? '';
+        if (orderId.isNotEmpty) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => ParcelTrackingScreen(orderId: orderId),
+            ),
+          );
+        }
+        return;
+      }
+
+      if (bookingType == 'local_pool') {
+        final requestId = booking['id']?.toString() ?? booking['requestId']?.toString() ?? '';
+        if (requestId.isNotEmpty) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => LocalPoolStatusScreen(
+                requestId: requestId,
+                pickupAddress: booking['pickupAddress']?.toString() ?? booking['pickup_address']?.toString() ?? '',
+                dropAddress: booking['dropAddress']?.toString() ?? booking['drop_address']?.toString() ?? '',
+              ),
+            ),
+          );
+        }
+        return;
+      }
+
+      if (bookingType == 'outstation_pool') {
+        final bookingId = booking['id']?.toString() ?? booking['bookingId']?.toString() ?? '';
+        if (bookingId.isNotEmpty) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => OutstationPoolBookingDetailScreen(
+                bookingId: bookingId,
+                initialBooking: booking,
+              ),
+            ),
+          );
+        }
+        return;
+      }
+
+      setState(() => _activeTrip = booking);
+      if (status == 'searching') {
+        _startSearchingTimer(booking['id']?.toString() ?? '');
+      }
+      if (['accepted', 'arrived', 'on_the_way', 'driver_assigned', 'in_progress']
+          .contains(status)) {
+        final tripId = booking['id']?.toString() ?? '';
+        if (tripId.isNotEmpty && mounted) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => TrackingScreen(tripId: tripId),
+            ),
+          );
         }
       }
     } catch (_) {}
@@ -402,7 +496,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         }
         setState(() => _activeTrip = trip);
         // Driver accepted while socket was down → navigate to tracking
-        if (['accepted', 'arrived', 'on_the_way', 'driver_assigned']
+        if (['accepted', 'arrived', 'on_the_way', 'driver_assigned', 'in_progress']
             .contains(status)) {
           _statePollTimer?.cancel();
           _searchingTimer?.cancel();
@@ -614,6 +708,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     } else if (state == AppLifecycleState.resumed) {
       // App came back to foreground — refresh pickup location and restart polling
       _getLocation();
+      _checkActiveTrip();
       if (_nearbyDriversTimer == null) {
         _nearbyDriversTimer = Timer.periodic(
             const Duration(seconds: 10), (_) => _fetchNearbyDrivers());

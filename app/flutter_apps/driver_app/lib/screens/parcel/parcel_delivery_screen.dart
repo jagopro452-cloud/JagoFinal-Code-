@@ -1243,6 +1243,19 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
   Widget _buildCompletedView() {
     final fare = double.tryParse(_order['total_fare']?.toString() ?? '0') ?? 0;
     final earnings = _driverEarnings > 0 ? _driverEarnings : fare * 0.85;
+    final commission = fare - earnings;
+    final paymentMethod =
+        (_order['payment_method'] ?? _order['paymentMethod'] ?? 'online')
+            .toString()
+            .trim()
+            .toLowerCase();
+    final paymentLabel = paymentMethod == 'cash'
+        ? 'Cash'
+        : paymentMethod == 'wallet'
+            ? 'Wallet'
+            : paymentMethod == 'upi'
+                ? 'UPI'
+                : 'Online';
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -1285,6 +1298,95 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
               ]),
             ]),
           ),
+          const SizedBox(height: 18),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: JT.surface,
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: JT.primary.withValues(alpha: 0.1)),
+              boxShadow: JT.cardShadow,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Delivery Summary',
+                  style: GoogleFonts.poppins(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w500,
+                    color: JT.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _completedSummaryChip(
+                        'Payment',
+                        paymentLabel,
+                        paymentMethod == 'cash'
+                            ? const Color(0xFFF59E0B)
+                            : JT.success,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _completedSummaryChip(
+                        'Commission',
+                        '₹${commission.toStringAsFixed(0)}',
+                        JT.primary,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: paymentMethod == 'cash'
+                  ? const Color(0xFFFFF7E8)
+                  : JT.primary.withValues(alpha: 0.06),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: paymentMethod == 'cash'
+                    ? const Color(0xFFF59E0B).withValues(alpha: 0.24)
+                    : JT.primary.withValues(alpha: 0.12),
+              ),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(
+                  paymentMethod == 'cash'
+                      ? Icons.payments_rounded
+                      : Icons.account_balance_wallet_rounded,
+                  color: paymentMethod == 'cash'
+                      ? const Color(0xFFF59E0B)
+                      : JT.primary,
+                  size: 20,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    paymentMethod == 'cash'
+                        ? 'Collect the parcel amount from the customer before closing this delivery.'
+                        : 'Payment is already settled. Your earnings will reflect in the normal payout flow.',
+                    style: GoogleFonts.poppins(
+                      fontSize: 13,
+                      height: 1.45,
+                      color: JT.textPrimary,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
           const SizedBox(height: 28),
           SizedBox(
             width: double.infinity,
@@ -1305,6 +1407,38 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
   }
 
   // ── Shared Widgets ────────────────────────────────────────────────────────
+  Widget _completedSummaryChip(String label, String value, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withValues(alpha: 0.18)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: GoogleFonts.poppins(
+              fontSize: 11,
+              color: JT.textSecondary,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            value,
+            style: GoogleFonts.poppins(
+              fontSize: 15,
+              fontWeight: FontWeight.w500,
+              color: color,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildAddressCard({
     required IconData icon,
     required Color color,

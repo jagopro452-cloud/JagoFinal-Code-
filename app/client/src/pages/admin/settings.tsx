@@ -150,7 +150,13 @@ const settingGroups = [
       { key: "razorpay_key_id", label: "Razorpay Key ID" },
       { key: "razorpay_key_secret", label: "Razorpay Key Secret" },
       { key: "payment_gateway_mode", label: "Mode (test / live)" },
-      { key: "fast2sms_api_key", label: "Fast2SMS API Key (OTP)" },
+      { key: "fast2sms_api_key", label: "Fast2SMS API Key (OTP Fallback)" },
+      { key: "smslogin_api_url", label: "SMSLogin API URL" },
+      { key: "smslogin_api_key", label: "SMSLogin API Key" },
+      { key: "smslogin_sender_id", label: "SMSLogin Sender ID" },
+      { key: "smslogin_route", label: "SMSLogin Route (Optional)" },
+      { key: "smslogin_template_id", label: "SMSLogin Template ID (Optional)" },
+      { key: "smslogin_entity_id", label: "SMSLogin Entity ID (Optional)" },
     ],
   },
   {
@@ -241,7 +247,7 @@ function OtpSettingsPanel() {
         <label className="form-label fw-semibold fs-14">Primary OTP Provider</label>
         <div className="row g-3">
           {[
-            { val: "sms", icon: "bi-chat-dots-fill", label: "SMS OTP", desc: "Send OTP via Fast2SMS / Twilio" },
+            { val: "sms", icon: "bi-chat-dots-fill", label: "SMS OTP", desc: "Send OTP via SMSLogin, Twilio or Fast2SMS" },
             { val: "firebase", icon: "bi-phone-vibrate-fill", label: "Firebase OTP", desc: "Use Firebase Phone Authentication" },
           ].map(opt => (
             <div key={opt.val} className="col-md-6">
@@ -266,7 +272,7 @@ function OtpSettingsPanel() {
       {/* Enable/Disable toggles */}
       <div className="mb-4">
         <label className="form-label fw-semibold fs-14">Provider Controls</label>
-        <Toggle label="SMS OTP Enabled" desc="Allow OTP delivery via SMS providers (Fast2SMS / Twilio)" field="smsEnabled" />
+        <Toggle label="SMS OTP Enabled" desc="Allow OTP delivery via SMS providers (SMSLogin / Twilio / Fast2SMS)" field="smsEnabled" />
         <Toggle label="Firebase OTP Enabled" desc="Allow Firebase Phone Authentication as OTP method" field="firebaseEnabled" />
         <Toggle label="Auto-Fallback Enabled" desc="If primary provider fails, automatically switch to the other provider" field="fallbackEnabled" />
       </div>

@@ -9,8 +9,18 @@ import '../../services/socket_service.dart';
 class TripChatSheet extends StatefulWidget {
   final String tripId;
   final String senderName;
+  final String chatScope;
+  final String? poolModule;
+  final String title;
 
-  const TripChatSheet({super.key, required this.tripId, required this.senderName});
+  const TripChatSheet({
+    super.key,
+    required this.tripId,
+    required this.senderName,
+    this.chatScope = 'trip',
+    this.poolModule,
+    this.title = 'Trip Chat',
+  });
 
   @override
   State<TripChatSheet> createState() => _TripChatSheetState();
@@ -26,7 +36,7 @@ class _TripChatSheetState extends State<TripChatSheet> {
   @override
   void initState() {
     super.initState();
-    _subs.add(_socket.onChatMessage.listen((msg) {
+    _subs.add((widget.chatScope == 'pool' ? _socket.onPoolChatMessage : _socket.onChatMessage).listen((msg) {
       if (!mounted) return;
       // Skip echo of own messages (already added locally in _send)
       if (msg['senderType']?.toString().toLowerCase() == 'driver') return;
@@ -34,7 +44,7 @@ class _TripChatSheetState extends State<TripChatSheet> {
       _scrollToBottom();
     }));
 
-    _subs.add(_socket.onMessageHistory.listen((data) {
+    _subs.add((widget.chatScope == 'pool' ? _socket.onPoolMessageHistory : _socket.onMessageHistory).listen((data) {
       if (!mounted) return;
       final msgs = data['messages'] as List<dynamic>? ?? [];
       setState(() {
@@ -44,8 +54,13 @@ class _TripChatSheetState extends State<TripChatSheet> {
       _scrollToBottom();
     }));
 
-    _socket.setActiveTrip(widget.tripId);
-    _socket.loadChatHistory(widget.tripId);
+    if (widget.chatScope == 'pool' && widget.poolModule != null) {
+      _socket.joinPoolChat(module: widget.poolModule!, referenceId: widget.tripId);
+      _socket.loadPoolChatHistory(module: widget.poolModule!, referenceId: widget.tripId);
+    } else {
+      _socket.setActiveTrip(widget.tripId);
+      _socket.loadChatHistory(widget.tripId);
+    }
   }
 
   void _scrollToBottom() {
@@ -60,11 +75,20 @@ class _TripChatSheetState extends State<TripChatSheet> {
   void _send() {
     final text = _msgCtrl.text.trim();
     if (text.isEmpty) return;
-    _socket.sendChatMessage(
-      tripId: widget.tripId,
-      message: text,
-      senderName: widget.senderName,
-    );
+    if (widget.chatScope == 'pool' && widget.poolModule != null) {
+      _socket.sendPoolChatMessage(
+        module: widget.poolModule!,
+        referenceId: widget.tripId,
+        message: text,
+        senderName: widget.senderName,
+      );
+    } else {
+      _socket.sendChatMessage(
+        tripId: widget.tripId,
+        message: text,
+        senderName: widget.senderName,
+      );
+    }
     setState(() {
       _messages.add({
         'message': text,
@@ -101,7 +125,7 @@ class _TripChatSheetState extends State<TripChatSheet> {
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-            Text('Trip Chat', style: GoogleFonts.poppins(fontSize: 16, fontWeight: FontWeight.w500, color: JT.textPrimary)),
+            Text(widget.title, style: GoogleFonts.poppins(fontSize: 16, fontWeight: FontWeight.w500, color: JT.textPrimary)),
             GestureDetector(
               onTap: () => Navigator.pop(context),
               child: Container(

@@ -32,6 +32,40 @@ const SEARCH_TIMEOUT_MIN = 5;     // cancel search if no match in 5 min
 const MATCHER_INTERVAL_MS = 20_000; // re-run matcher every 20s
 let matcherStarted = false;
 const DRIVER_ACCEPT_TIMEOUT_SEC = 45;
+const DEFAULT_PRE_DEPARTURE_REFUND_PCT = 100;
+const DEFAULT_POST_DEPARTURE_REFUND_PCT = 0;
+
+async function getLatestFcmToken(userId: string | null | undefined): Promise<string | null> {
+  if (!userId) return null;
+  const r = await rawDb.execute(rawSql`
+    SELECT fcm_token
+    FROM user_devices
+    WHERE user_id = ${userId}::uuid
+      AND fcm_token IS NOT NULL
+      AND fcm_token != ''
+    ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+    LIMIT 1
+  `).catch(() => ({ rows: [] as any[] }));
+  return ((r.rows[0] as any)?.fcm_token || null) as string | null;
+}
+
+async function sendPoolPush(
+  userId: string | null | undefined,
+  title: string,
+  body: string,
+  data: Record<string, string>,
+) {
+  const token = await getLatestFcmToken(userId);
+  if (!token) return false;
+  return sendFcmNotification({
+    fcmToken: token,
+    title,
+    body,
+    channelId: "trip_alerts_v2",
+    sound: "trip_alert",
+    data,
+  }).catch(() => false);
+}
 
 function normalizePoolKey(value: unknown): string {
   return String(value || "")
@@ -84,6 +118,87 @@ function poolResponse(
 
 function generateBoardingOtp(): string {
   return String(1000 + Math.floor(Math.random() * 9000));
+}
+
+async function getPoolRefundPolicy() {
+  const r = await rawDb.execute(rawSql`
+    SELECT key_name, value
+    FROM business_settings
+    WHERE key_name IN (
+      'pool_cancel_refund_before_departure_pct',
+      'pool_cancel_refund_after_departure_pct'
+    )
+  `).catch(() => ({ rows: [] as any[] }));
+  const settings = new Map<string, number>();
+  for (const row of r.rows as any[]) {
+    const parsed = Number(row.value);
+    if (Number.isFinite(parsed)) settings.set(String(row.key_name), parsed);
+  }
+  return {
+    beforeDeparturePct: settings.get("pool_cancel_refund_before_departure_pct") ?? DEFAULT_PRE_DEPARTURE_REFUND_PCT,
+    afterDeparturePct: settings.get("pool_cancel_refund_after_departure_pct") ?? DEFAULT_POST_DEPARTURE_REFUND_PCT,
+  };
+}
+
+async function hasActivePoolBlock(userA: string, userB: string): Promise<boolean> {
+  if (!userA || !userB) return false;
+  const blockedR = await rawDb.execute(rawSql`
+    SELECT 1
+    FROM pool_user_blocks
+    WHERE active = true
+      AND (
+        (blocker_user_id = ${userA}::uuid AND blocked_user_id = ${userB}::uuid)
+        OR
+        (blocker_user_id = ${userB}::uuid AND blocked_user_id = ${userA}::uuid)
+      )
+    LIMIT 1
+  `).catch(() => ({ rows: [] as any[] }));
+  return blockedR.rows.length > 0;
+}
+
+function buildRefundTimeline(amount: number, refundStatus: string) {
+  const eligible = amount > 0;
+  return [
+    {
+      title: "Cancellation requested",
+      state: "done",
+      detail: eligible ? "Seat released and refund request created." : "Seat released. No refund is applicable.",
+    },
+    {
+      title: "Admin refund review",
+      state: eligible ? (refundStatus === "approved" || refundStatus === "completed" ? "done" : "active") : "skipped",
+      detail: eligible ? "Operations verifies whether the trip had started." : "Skipped because refund is not applicable.",
+    },
+    {
+      title: "Refund settlement",
+      state: refundStatus === "completed" ? "done" : eligible ? "pending" : "skipped",
+      detail: eligible ? "Amount is credited to wallet or original payment channel." : "No settlement required.",
+    },
+  ];
+}
+
+function toBool(value: unknown): boolean {
+  return value === true || value === "true" || value === 1 || value === "1";
+}
+
+function buildUserSafetySnapshot(row: any, prefix = "") {
+  const openIssueCount = Number(row?.[`${prefix}open_issue_count`] ?? row?.open_issue_count ?? 0);
+  const totalReportCount = Number(row?.[`${prefix}report_count`] ?? row?.report_count ?? 0);
+  const hasActiveBlock = toBool(row?.[`${prefix}has_active_block`] ?? row?.has_active_block);
+  const isVerified = toBool(row?.[`${prefix}is_verified`] ?? row?.is_verified);
+  const isHighRisk = hasActiveBlock || openIssueCount >= 2 || totalReportCount >= 3;
+  let badgeLabel: string | null = null;
+  if (hasActiveBlock) badgeLabel = "Blocked User";
+  else if (isHighRisk) badgeLabel = "High Risk User";
+  else if (openIssueCount > 0 || totalReportCount > 0) badgeLabel = "Reported User";
+  return {
+    isVerified,
+    openIssueCount,
+    totalReportCount,
+    hasActiveBlock,
+    isHighRisk,
+    badgeLabel,
+  };
 }
 
 // ── Schema ───────────────────────────────────────────────────────────────────
@@ -264,16 +379,17 @@ function detourKm(
 
 // ── Fare calc ─────────────────────────────────────────────────────────────────
 
-function calcPoolFare(distKm: number, seats: number): { farePerSeat: number; subtotalFare: number; totalFare: number } {
-  const BASE = 18;
-  const PER_KM = 8;
-  const MIN_FARE = 40;
-  const raw = Math.max(MIN_FARE, BASE + PER_KM * distKm);
-  const seatDiscountFactor = seats === 2 ? 0.73 : 0.76;
-  const poolPrice = Math.round(raw * seatDiscountFactor * 100) / 100;
-  const subtotalFare = Math.round(poolPrice * seats * 100) / 100;
+async function calcPoolFare(distKm: number, seats: number): Promise<{ farePerSeat: number; subtotalFare: number; totalFare: number }> {
+  const baseFare = await getPoolSettingNumber("base_fare_per_seat", 20);
+  const perKmFare = await getPoolSettingNumber("fare_per_km_per_seat", 5);
+  const minFare = await getPoolSettingNumber("min_fare_per_seat", 30);
+  const maxFare = await getPoolSettingNumber("max_fare_per_seat", 500);
+  const rawFarePerSeat = baseFare + (perKmFare * distKm);
+  const clampedFarePerSeat = Math.min(Math.max(rawFarePerSeat, minFare), maxFare);
+  const farePerSeat = Math.round(clampedFarePerSeat * 100) / 100;
+  const subtotalFare = Math.round(farePerSeat * seats * 100) / 100;
   return {
-    farePerSeat: poolPrice,
+    farePerSeat,
     subtotalFare,
     totalFare: subtotalFare,
   };
@@ -450,6 +566,7 @@ async function matchRequest(requestId: string): Promise<boolean> {
     req.vehicle_category_id || null,
   );
   if (!match) return false;
+  if (await hasActivePoolBlock(String(req.customer_id), String(match.driverId))) return false;
 
   // Atomically assign request to session and decrement available_seats
   let assignedPickupOrder = 1;
@@ -828,16 +945,37 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
 
       const session = sessionR.rows[0] as any;
       const passR = await rawDb.execute(rawSql`
-        SELECT prr.*, u.full_name as customer_name, u.phone as customer_phone
+        SELECT prr.*, u.full_name as customer_name, u.phone as customer_phone,
+               CASE WHEN COALESCE(u.verification_status, '') IN ('verified', 'approved') THEN true ELSE false END AS is_verified,
+               (
+                 SELECT COUNT(*)::int
+                 FROM pool_issue_cases pic
+                 WHERE pic.reported_user_id = u.id
+               ) AS report_count,
+               (
+                 SELECT COUNT(*)::int
+                 FROM pool_issue_cases pic
+                 WHERE pic.reported_user_id = u.id
+                   AND pic.status IN ('open', 'under_review')
+               ) AS open_issue_count,
+               EXISTS(
+                 SELECT 1
+                 FROM pool_user_blocks pub
+                 WHERE pub.active = true
+                   AND pub.blocked_user_id = u.id
+               ) AS has_active_block
         FROM pool_ride_requests prr
         JOIN users u ON u.id = prr.customer_id
         WHERE COALESCE(prr.session_id, prr.proposed_session_id) = ${session.id}::uuid
-          AND prr.status IN ('pending_driver_accept', 'matched', 'picked_up')
+          AND prr.status IN ('pending_driver_accept', 'matched', 'picked_up', 'dropped')
         ORDER BY prr.pickup_order ASC
       `);
       res.json(poolResponse(true, "POOL_SESSION_ACTIVE", "Active pool session loaded", {
         session,
-        passengers: passR.rows,
+        passengers: (passR.rows as any[]).map((row) => ({
+          ...row,
+          safety: buildUserSafetySnapshot(row),
+        })),
       }));
     } catch (e: any) {
       res.status(500).json(poolResponse(false, "POOL_SESSION_FETCH_FAILED", e.message || "Could not load pool session", {}, true));
@@ -893,6 +1031,18 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
         routePlan,
         message: "Driver confirmed your pool seat. Please be ready at pickup.",
       });
+      void sendPoolPush(
+        String(row.customer_id),
+        "Pool booking confirmed",
+        "Your local pool seat is confirmed.",
+        {
+          type: "pool_booking_confirmed",
+          module: "local_pool",
+          referenceId: requestId,
+          requestId,
+          sessionId: String(row.locked_session_id),
+        },
+      );
       io.to(`user:${driver.id}`).emit("pool:route_updated", {
         sessionId: String(row.locked_session_id),
         routePlan,
@@ -1231,11 +1381,12 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
       }
 
       const requestedSeats = parseInt(String(seatsRequested), 10) || 1;
-      if (requestedSeats < 1 || requestedSeats > 2) {
+      const maxSeatsPerBooking = Math.max(1, Math.round(await getPoolSettingNumber("max_seats_per_booking", 2)));
+      if (requestedSeats < 1 || requestedSeats > maxSeatsPerBooking) {
         return res.status(400).json(poolResponse(
           false,
           "POOL_SEAT_LIMIT",
-          "You can book only 1 or 2 seats per pool booking",
+          `You can book only 1 to ${maxSeatsPerBooking} seats per pool booking`,
         ));
       }
       const seats = requestedSeats;
@@ -1244,7 +1395,7 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
       const dLat = parseFloat(dropLat);
       const dLng = parseFloat(dropLng);
       const distKm = haversineKmPool(pLat, pLng, dLat, dLng);
-      const { farePerSeat, subtotalFare, totalFare } = calcPoolFare(distKm, seats);
+      const { farePerSeat, subtotalFare, totalFare } = await calcPoolFare(distKm, seats);
       let revenuePreview: any = null;
       try {
         revenuePreview = await calculateRevenueBreakdown(totalFare, "city_pool");
@@ -1309,7 +1460,7 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
           platformDeduction,
           revenueModel,
           driverEarnings,
-          note: `Dynamic pool fare — Rs ${farePerSeat.toFixed(0)}/seat x ${seats} = Rs ${totalFare.toFixed(0)}`,
+          note: `Pool fare — Rs ${farePerSeat.toFixed(0)}/seat x ${seats} = Rs ${totalFare.toFixed(0)}`,
         },
       }));
     } catch (e: any) {
@@ -1326,9 +1477,27 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
 
       const r = await rawDb.execute(rawSql`
         SELECT prr.*,
-          u.full_name as driver_name, u.phone as driver_phone,
+          dps.driver_id, u.full_name as driver_name, u.phone as driver_phone,
           dd.vehicle_number, dd.vehicle_model, dd.avg_rating,
-          dps.current_lat as driver_lat, dps.current_lng as driver_lng
+          dps.current_lat as driver_lat, dps.current_lng as driver_lng,
+          CASE WHEN COALESCE(u.verification_status, '') IN ('verified', 'approved') THEN true ELSE false END AS driver_is_verified,
+          (
+            SELECT COUNT(*)::int
+            FROM pool_issue_cases pic
+            WHERE pic.reported_user_id = dps.driver_id
+          ) AS driver_report_count,
+          (
+            SELECT COUNT(*)::int
+            FROM pool_issue_cases pic
+            WHERE pic.reported_user_id = dps.driver_id
+              AND pic.status IN ('open', 'under_review')
+          ) AS driver_open_issue_count,
+          EXISTS(
+            SELECT 1
+            FROM pool_user_blocks pub
+            WHERE pub.active = true
+              AND pub.blocked_user_id = dps.driver_id
+          ) AS driver_has_active_block
         FROM pool_ride_requests prr
         LEFT JOIN driver_pool_sessions dps ON dps.id = prr.session_id
         LEFT JOIN users u ON u.id = dps.driver_id
@@ -1338,7 +1507,12 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
       `);
       if (!r.rows.length) return res.status(404).json(poolResponse(false, "POOL_STATUS_NOT_FOUND", "Booking not found"));
 
-      res.json(poolResponse(true, "POOL_STATUS_LOADED", "Pool booking loaded", { booking: r.rows[0] }));
+      res.json(poolResponse(true, "POOL_STATUS_LOADED", "Pool booking loaded", {
+        booking: {
+          ...(r.rows[0] as any),
+          driverSafety: buildUserSafetySnapshot(r.rows[0], "driver_"),
+        },
+      }));
     } catch (e: any) {
       res.status(500).json(poolResponse(false, "POOL_STATUS_FAILED", e.message || "Could not load pool status", {}, true));
     }
@@ -1350,9 +1524,11 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
     try {
       const customer = req.currentUser;
       const requestId = String(req.params.requestId);
+      const reason = String(req.body?.reason || "Customer changed plans").trim().slice(0, 300);
 
       const r = await rawDb.execute(rawSql`
-        SELECT prr.status, prr.seats_requested, COALESCE(prr.session_id, prr.proposed_session_id) AS session_id
+        SELECT prr.status, prr.seats_requested, prr.total_fare, prr.payment_method,
+               COALESCE(prr.session_id, prr.proposed_session_id) AS session_id
         FROM pool_ride_requests prr
         WHERE prr.id = ${requestId}::uuid AND prr.customer_id = ${customer.id}::uuid
         LIMIT 1
@@ -1367,11 +1543,37 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
         return res.json(poolResponse(true, "POOL_ALREADY_CLOSED", "Already completed/cancelled"));
       }
 
+      const fare = parseFloat(booking.total_fare || 0) || 0;
+      const policy = await getPoolRefundPolicy();
+      const refundPct = booking.status === "searching" || booking.status === "matched" || booking.status === "pending_driver_accept"
+        ? policy.beforeDeparturePct
+        : policy.afterDeparturePct;
+      const refundAmount = Math.round(fare * Math.max(0, refundPct) / 100 * 100) / 100;
+      const refundStatus = refundAmount > 0 ? "pending" : "not_applicable";
+
       await rawDb.execute(rawSql`
         UPDATE pool_ride_requests
-        SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW()
+        SET status = 'cancelled',
+            cancel_reason = ${reason},
+            refund_amount = ${refundAmount},
+            cancelled_at = NOW(),
+            updated_at = NOW()
         WHERE id = ${requestId}::uuid AND customer_id = ${customer.id}::uuid
       `);
+
+      if (refundAmount > 0) {
+        await rawDb.execute(rawSql`
+          INSERT INTO refund_requests (customer_id, amount, reason, payment_method, status, admin_note)
+          VALUES (
+            ${customer.id}::uuid,
+            ${refundAmount},
+            ${`Local pool cancellation: ${reason}`},
+            ${booking.payment_method || "wallet"},
+            'pending',
+            ${`Local pool booking ${requestId} cancelled before trip start`}
+          )
+        `).catch(() => undefined);
+      }
 
       // Free seats if matched to a session
       if (booking.session_id) {
@@ -1392,13 +1594,216 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
             requestId,
             message: "A passenger cancelled their booking.",
           });
+          void sendPoolPush(
+            String(drv.driver_id),
+            "Pool booking cancelled",
+            "A passenger cancelled their local pool booking.",
+            {
+              type: "pool_booking_cancelled",
+              module: "local_pool",
+              referenceId: requestId,
+              requestId,
+            },
+          );
         }
         await emitSeatUpdate(String(booking.session_id));
       }
 
-      res.json(poolResponse(true, "POOL_CANCELLED", "Pool booking cancelled"));
+      io.to(`user:${customer.id}`).emit("pool:refund_updated", {
+        module: "local_pool",
+        referenceId: requestId,
+        requestId,
+        refundAmount,
+        refundStatus,
+        status: "cancelled",
+      });
+      void sendPoolPush(
+        String(customer.id),
+        "Pool booking cancelled",
+        refundAmount > 0 ? "Your refund request has been raised." : "Your local pool booking has been cancelled.",
+        {
+          type: "pool_refund_update",
+          module: "local_pool",
+          referenceId: requestId,
+          requestId,
+          refundAmount: String(refundAmount),
+          refundStatus: String(refundStatus),
+        },
+      );
+
+      res.json(poolResponse(true, "POOL_CANCELLED", "Pool booking cancelled", {
+        refundAmount,
+        refundStatus,
+        refundTimeline: buildRefundTimeline(refundAmount, refundStatus),
+        cancellationCharge: Math.max(0, fare - refundAmount),
+      }));
     } catch (e: any) {
       res.status(500).json(poolResponse(false, "POOL_CANCEL_FAILED", e.message || "Could not cancel pool booking", {}, true));
+    }
+  });
+
+  app.get("/api/app/customer/pool/co-passengers/:requestId", authApp, async (req: any, res: any) => {
+    try {
+      const customer = req.currentUser;
+      const requestId = String(req.params.requestId);
+      const ownR = await rawDb.execute(rawSql`
+        SELECT COALESCE(session_id, proposed_session_id) AS session_id
+        FROM pool_ride_requests
+        WHERE id = ${requestId}::uuid AND customer_id = ${customer.id}::uuid
+        LIMIT 1
+      `);
+      if (!ownR.rows.length) return res.status(404).json(poolResponse(false, "POOL_CO_PASSENGERS_NOT_FOUND", "Booking not found"));
+      const sessionId = (ownR.rows[0] as any)?.session_id;
+      if (!sessionId) {
+        return res.json(poolResponse(true, "POOL_CO_PASSENGERS_EMPTY", "No co-passengers yet", {
+          passengers: [],
+          occupancy: { passengerCount: 0, seatsBooked: 0 },
+        }));
+      }
+      const coR = await rawDb.execute(rawSql`
+        SELECT prr.id,
+               u.full_name AS passenger_name,
+               CASE WHEN COALESCE(u.verification_status, '') IN ('verified', 'approved') THEN true ELSE false END AS is_verified,
+               prr.pickup_address,
+               prr.drop_address,
+               prr.seats_requested,
+               prr.status,
+               (
+                 SELECT COUNT(*)::int
+                 FROM pool_issue_cases pic
+                 WHERE pic.reported_user_id = u.id
+               ) AS report_count,
+               (
+                 SELECT COUNT(*)::int
+                 FROM pool_issue_cases pic
+                 WHERE pic.reported_user_id = u.id
+                   AND pic.status IN ('open', 'under_review')
+               ) AS open_issue_count,
+               EXISTS(
+                 SELECT 1
+                 FROM pool_user_blocks pub
+                 WHERE pub.active = true
+                   AND pub.blocked_user_id = u.id
+               ) AS has_active_block
+        FROM pool_ride_requests prr
+        JOIN users u ON u.id = prr.customer_id
+        WHERE COALESCE(prr.session_id, prr.proposed_session_id) = ${String(sessionId)}::uuid
+          AND prr.status NOT IN ('cancelled')
+        ORDER BY prr.created_at ASC
+      `);
+      const passengers = (coR.rows as any[]).map((row) => ({
+        id: row.id,
+        passengerName: row.passenger_name,
+        isVerified: row.is_verified === true,
+        pickupPoint: row.pickup_address || "Pickup on route",
+        dropPoint: row.drop_address || "Drop on route",
+        seatsBooked: parseInt(row.seats_requested) || 1,
+        status: row.status,
+        safety: buildUserSafetySnapshot(row),
+      }));
+      const seatsBooked = passengers.reduce((sum, row) => sum + (row.seatsBooked || 0), 0);
+      res.json(poolResponse(true, "POOL_CO_PASSENGERS_LOADED", "Co-passengers loaded", {
+        passengers,
+        occupancy: {
+          passengerCount: passengers.length,
+          seatsBooked,
+        },
+      }));
+    } catch (e: any) {
+      res.status(500).json(poolResponse(false, "POOL_CO_PASSENGERS_FAILED", e.message || "Could not load co-passengers", {}, true));
+    }
+  });
+
+  app.post("/api/app/customer/pool/requests/:requestId/rate-driver", authApp, async (req: any, res: any) => {
+    try {
+      const customer = req.currentUser;
+      const requestId = String(req.params.requestId);
+      const overall = Number(req.body?.overallRating);
+      const safety = Number(req.body?.safetyRating || overall);
+      const cleanliness = Number(req.body?.cleanlinessRating || overall);
+      const behaviour = Number(req.body?.behaviourRating || overall);
+      const punctuality = Number(req.body?.punctualityRating || overall);
+      const note = String(req.body?.note || "").slice(0, 1000);
+      if (![overall, safety, cleanliness, behaviour, punctuality].every((value) => Number.isFinite(value) && value >= 1 && value <= 5)) {
+        return res.status(400).json(poolResponse(false, "POOL_RATING_INVALID", "All ratings must be between 1 and 5"));
+      }
+      const ownR = await rawDb.execute(rawSql`
+        SELECT prr.id, prr.session_id, dps.driver_id
+        FROM pool_ride_requests prr
+        JOIN driver_pool_sessions dps ON dps.id = prr.session_id
+        WHERE prr.id = ${requestId}::uuid
+          AND prr.customer_id = ${customer.id}::uuid
+          AND prr.status = 'dropped'
+        LIMIT 1
+      `);
+      if (!ownR.rows.length) return res.status(404).json(poolResponse(false, "POOL_RATING_NOT_FOUND", "Completed pool trip not found"));
+      const own = ownR.rows[0] as any;
+      const inserted = await rawDb.execute(rawSql`
+        INSERT INTO pool_ratings (
+          module, reference_type, reference_id, ride_id, from_user_id, to_user_id,
+          rating_role, overall_rating, safety_rating, cleanliness_rating,
+          behaviour_rating, punctuality_rating, note
+        )
+        VALUES (
+          'local_pool', 'request', ${requestId}::uuid, ${own.session_id}::uuid, ${customer.id}::uuid, ${own.driver_id}::uuid,
+          'customer_to_driver', ${overall}, ${safety}, ${cleanliness}, ${behaviour}, ${punctuality}, ${note}
+        )
+        ON CONFLICT (reference_type, reference_id, from_user_id, rating_role) DO NOTHING
+        RETURNING *
+      `);
+      if (!inserted.rows.length) return res.status(409).json(poolResponse(false, "POOL_RATING_EXISTS", "Rating already submitted"));
+      await rawDb.execute(rawSql`
+        UPDATE users
+        SET rating = (COALESCE(rating, 0) * COALESCE(total_ratings, 0) + ${overall}) / (COALESCE(total_ratings, 0) + 1),
+            total_ratings = COALESCE(total_ratings, 0) + 1
+        WHERE id = ${own.driver_id}::uuid
+      `).catch(() => undefined);
+      res.json(poolResponse(true, "POOL_RATING_SAVED", "Pool rating saved", { rating: inserted.rows[0] }));
+    } catch (e: any) {
+      res.status(500).json(poolResponse(false, "POOL_RATING_FAILED", e.message || "Could not save pool rating", {}, true));
+    }
+  });
+
+  app.post("/api/app/driver/pool/requests/:requestId/rate-passenger", authApp, async (req: any, res: any) => {
+    try {
+      const driver = req.currentUser;
+      const requestId = String(req.params.requestId);
+      const overall = Number(req.body?.overallRating);
+      const safety = Number(req.body?.safetyRating || overall);
+      const behaviour = Number(req.body?.behaviourRating || overall);
+      const punctuality = Number(req.body?.punctualityRating || overall);
+      const note = String(req.body?.note || "").slice(0, 1000);
+      if (![overall, safety, behaviour, punctuality].every((value) => Number.isFinite(value) && value >= 1 && value <= 5)) {
+        return res.status(400).json(poolResponse(false, "POOL_RATING_INVALID", "All ratings must be between 1 and 5"));
+      }
+      const ownR = await rawDb.execute(rawSql`
+        SELECT prr.id, prr.session_id, prr.customer_id
+        FROM pool_ride_requests prr
+        JOIN driver_pool_sessions dps ON dps.id = prr.session_id
+        WHERE prr.id = ${requestId}::uuid
+          AND dps.driver_id = ${driver.id}::uuid
+          AND prr.status = 'dropped'
+        LIMIT 1
+      `);
+      if (!ownR.rows.length) return res.status(404).json(poolResponse(false, "POOL_RATING_NOT_FOUND", "Completed pool trip not found"));
+      const own = ownR.rows[0] as any;
+      const inserted = await rawDb.execute(rawSql`
+        INSERT INTO pool_ratings (
+          module, reference_type, reference_id, ride_id, from_user_id, to_user_id,
+          rating_role, overall_rating, safety_rating, cleanliness_rating,
+          behaviour_rating, punctuality_rating, note
+        )
+        VALUES (
+          'local_pool', 'request', ${requestId}::uuid, ${own.session_id}::uuid, ${driver.id}::uuid, ${own.customer_id}::uuid,
+          'driver_to_customer', ${overall}, ${safety}, ${overall}, ${behaviour}, ${punctuality}, ${note}
+        )
+        ON CONFLICT (reference_type, reference_id, from_user_id, rating_role) DO NOTHING
+        RETURNING *
+      `);
+      if (!inserted.rows.length) return res.status(409).json(poolResponse(false, "POOL_RATING_EXISTS", "Rating already submitted"));
+      res.json(poolResponse(true, "POOL_RATING_SAVED", "Passenger rating saved", { rating: inserted.rows[0] }));
+    } catch (e: any) {
+      res.status(500).json(poolResponse(false, "POOL_RATING_FAILED", e.message || "Could not save passenger rating", {}, true));
     }
   });
 

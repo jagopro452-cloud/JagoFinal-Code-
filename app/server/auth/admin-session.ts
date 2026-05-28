@@ -21,6 +21,74 @@ type SessionContext = {
   userAgent?: string | null;
 };
 
+let adminAuthSchemaReady: Promise<void> | null = null;
+
+async function ensureAdminAuthSchemaInner() {
+  await rawDb.execute(rawSql`
+    CREATE TABLE IF NOT EXISTS admin_sessions (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      admin_id UUID NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+      token TEXT NOT NULL UNIQUE,
+      device_id TEXT NOT NULL,
+      ip_address TEXT,
+      user_agent TEXT,
+      expires_at TIMESTAMP NOT NULL,
+      revoked BOOLEAN NOT NULL DEFAULT false,
+      revoked_at TIMESTAMP,
+      last_active_at TIMESTAMP DEFAULT NOW(),
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  await rawDb.execute(rawSql`
+    CREATE TABLE IF NOT EXISTS admin_refresh_tokens (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      admin_id UUID NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+      session_id UUID NOT NULL REFERENCES admin_sessions(id) ON DELETE CASCADE,
+      token TEXT NOT NULL UNIQUE,
+      device_id TEXT NOT NULL,
+      ip_address TEXT,
+      user_agent TEXT,
+      expires_at TIMESTAMP NOT NULL,
+      revoked BOOLEAN NOT NULL DEFAULT false,
+      revoked_at TIMESTAMP,
+      replaced_by_token TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  await rawDb.execute(rawSql`ALTER TABLE admin_sessions ADD COLUMN IF NOT EXISTS device_id TEXT`).catch(() => undefined);
+  await rawDb.execute(rawSql`ALTER TABLE admin_sessions ADD COLUMN IF NOT EXISTS ip_address TEXT`).catch(() => undefined);
+  await rawDb.execute(rawSql`ALTER TABLE admin_sessions ADD COLUMN IF NOT EXISTS user_agent TEXT`).catch(() => undefined);
+  await rawDb.execute(rawSql`ALTER TABLE admin_sessions ADD COLUMN IF NOT EXISTS revoked BOOLEAN NOT NULL DEFAULT false`).catch(() => undefined);
+  await rawDb.execute(rawSql`ALTER TABLE admin_sessions ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMP`).catch(() => undefined);
+  await rawDb.execute(rawSql`ALTER TABLE admin_sessions ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMP DEFAULT NOW()`).catch(() => undefined);
+  await rawDb.execute(rawSql`ALTER TABLE admin_sessions ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()`).catch(() => undefined);
+
+  await rawDb.execute(rawSql`ALTER TABLE admin_refresh_tokens ADD COLUMN IF NOT EXISTS device_id TEXT`).catch(() => undefined);
+  await rawDb.execute(rawSql`ALTER TABLE admin_refresh_tokens ADD COLUMN IF NOT EXISTS ip_address TEXT`).catch(() => undefined);
+  await rawDb.execute(rawSql`ALTER TABLE admin_refresh_tokens ADD COLUMN IF NOT EXISTS user_agent TEXT`).catch(() => undefined);
+  await rawDb.execute(rawSql`ALTER TABLE admin_refresh_tokens ADD COLUMN IF NOT EXISTS revoked BOOLEAN NOT NULL DEFAULT false`).catch(() => undefined);
+  await rawDb.execute(rawSql`ALTER TABLE admin_refresh_tokens ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMP`).catch(() => undefined);
+  await rawDb.execute(rawSql`ALTER TABLE admin_refresh_tokens ADD COLUMN IF NOT EXISTS replaced_by_token TEXT`).catch(() => undefined);
+  await rawDb.execute(rawSql`ALTER TABLE admin_refresh_tokens ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()`).catch(() => undefined);
+
+  await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_admin_sessions_token ON admin_sessions(token)`).catch(() => undefined);
+  await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_admin_sessions_admin_id ON admin_sessions(admin_id)`).catch(() => undefined);
+  await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_admin_refresh_tokens_token ON admin_refresh_tokens(token)`).catch(() => undefined);
+  await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_admin_refresh_tokens_session_id ON admin_refresh_tokens(session_id)`).catch(() => undefined);
+}
+
+async function ensureAdminAuthSchema() {
+  if (!adminAuthSchemaReady) {
+    adminAuthSchemaReady = ensureAdminAuthSchemaInner().catch((error) => {
+      adminAuthSchemaReady = null;
+      throw error;
+    });
+  }
+  await adminAuthSchemaReady;
+}
+
 function base64UrlEncode(input: Buffer | string) {
   return Buffer.from(input)
     .toString("base64")
@@ -82,6 +150,7 @@ function createOpaqueToken(adminId: string, bytes = 48) {
 }
 
 async function findAdminRole(adminId: string) {
+  await ensureAdminAuthSchema();
   const result = await rawDb.execute(rawSql`
     SELECT role
     FROM admins
@@ -98,6 +167,7 @@ async function createAdminSessionRecord(
   expiresAtIso: string,
   context: SessionContext,
 ) {
+  await ensureAdminAuthSchema();
   const result = await rawDb.execute(rawSql`
     INSERT INTO admin_sessions (admin_id, token, device_id, ip_address, user_agent, expires_at, last_active_at)
     VALUES (
@@ -121,6 +191,7 @@ async function createAdminRefreshTokenRecord(
   expiresAtIso: string,
   context: SessionContext,
 ) {
+  await ensureAdminAuthSchema();
   await rawDb.execute(rawSql`
     INSERT INTO admin_refresh_tokens (admin_id, session_id, token, device_id, ip_address, user_agent, expires_at, revoked)
     VALUES (
@@ -137,6 +208,7 @@ async function createAdminRefreshTokenRecord(
 }
 
 async function findAdminSessionByToken(token: string) {
+  await ensureAdminAuthSchema();
   const result = await rawDb.execute(rawSql`
     SELECT s.id, s.admin_id, s.device_id, s.expires_at, a.role
     FROM admin_sessions s
@@ -151,6 +223,7 @@ async function findAdminSessionByToken(token: string) {
 }
 
 async function findAdminRefreshToken(token: string) {
+  await ensureAdminAuthSchema();
   const result = await rawDb.execute(rawSql`
     SELECT rt.id, rt.admin_id, rt.session_id, rt.token, rt.device_id, rt.expires_at, rt.revoked, a.is_active
     FROM admin_refresh_tokens rt
@@ -164,6 +237,7 @@ async function findAdminRefreshToken(token: string) {
 }
 
 async function revokeAdminSessionById(sessionId: string) {
+  await ensureAdminAuthSchema();
   await rawDb.execute(rawSql`
     UPDATE admin_sessions
     SET revoked=true, revoked_at=NOW()
@@ -173,6 +247,7 @@ async function revokeAdminSessionById(sessionId: string) {
 }
 
 async function revokeAdminRefreshTokensBySession(sessionId: string) {
+  await ensureAdminAuthSchema();
   await rawDb.execute(rawSql`
     UPDATE admin_refresh_tokens
     SET revoked=true, revoked_at=NOW()
@@ -182,6 +257,7 @@ async function revokeAdminRefreshTokensBySession(sessionId: string) {
 }
 
 async function revokeAdminRefreshToken(token: string, replacedByToken?: string | null) {
+  await ensureAdminAuthSchema();
   await rawDb.execute(rawSql`
     UPDATE admin_refresh_tokens
     SET revoked=true,
@@ -193,6 +269,7 @@ async function revokeAdminRefreshToken(token: string, replacedByToken?: string |
 }
 
 async function touchAdminSession(token: string) {
+  await ensureAdminAuthSchema();
   await rawDb.execute(rawSql`
     UPDATE admin_sessions
     SET last_active_at=NOW()

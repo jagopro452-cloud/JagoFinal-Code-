@@ -444,10 +444,33 @@ class AuthService {
     String otp,
     String newPassword,
   ) async {
-    return {
-      'success': false,
-      'message': 'OTP password reset is disabled. Contact support.',
-      'code': 'AUTH_OTP_DISABLED',
-    };
+    try {
+      final res = await http
+          .post(
+            Uri.parse(ApiConfig.resetPassword),
+            headers: _base,
+            body: jsonEncode({
+              'phone': phone,
+              'otp': otp,
+              'newPassword': newPassword,
+              'userType': 'customer',
+            }),
+          )
+          .timeout(const Duration(seconds: 30));
+      if (!(res.headers['content-type'] ?? '').contains('application/json')) {
+        return {'success': false, 'message': 'Server error. Please try again.'};
+      }
+      return jsonDecode(res.body) as Map<String, dynamic>;
+    } on TimeoutException {
+      return {
+        'success': false,
+        'message': 'Request timed out. Check your connection.',
+      };
+    } catch (_) {
+      return {
+        'success': false,
+        'message': 'Network error. Check your connection.',
+      };
+    }
   }
 }

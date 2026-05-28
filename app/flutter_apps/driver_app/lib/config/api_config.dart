@@ -130,6 +130,10 @@ class ApiConfig {
   static String localPoolSkipPassenger(String requestId) => '$baseUrl/api/app/driver/pool/passengers/$requestId/skip';
   static String localPoolDrop(String requestId) => '$baseUrl/api/app/driver/pool/passengers/$requestId/drop';
   static String localPoolNoShow(String requestId) => '$baseUrl/api/app/driver/pool/passengers/$requestId/no-show';
+  static String localPoolRatePassenger(String requestId) => '$baseUrl/api/app/driver/pool/requests/$requestId/rate-passenger';
+  static String outstationPoolRatePassenger(String bookingId) => '$baseUrl/api/app/driver/outstation-pool/bookings/$bookingId/rate-passenger';
+  static String get poolBlockUser => '$baseUrl/api/app/driver/pool/block-user';
+  static String get poolShare => '$baseUrl/api/app/driver/pool/share';
 
   // ── Mapping (proxied through server — avoids hardcoded key) ─────────────
   static String get reverseGeocode => '$baseUrl/api/app/reverse-geocode';

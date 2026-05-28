@@ -11,6 +11,8 @@ class CallScreen extends StatefulWidget {
   final String targetUserId;
   final bool isIncoming;
   final String? callerIdForIncoming;
+  final String callScope;
+  final String? poolModule;
 
   const CallScreen({
     super.key,
@@ -19,6 +21,8 @@ class CallScreen extends StatefulWidget {
     required this.targetUserId,
     this.isIncoming = false,
     this.callerIdForIncoming,
+    this.callScope = 'trip',
+    this.poolModule,
   });
 
   @override
@@ -57,6 +61,8 @@ class _CallScreenState extends State<CallScreen> {
         targetUserId: widget.targetUserId,
         tripId: widget.tripId,
         callerName: 'Customer',
+        scope: widget.callScope,
+        module: widget.poolModule,
       );
     }
   }
@@ -85,6 +91,8 @@ class _CallScreenState extends State<CallScreen> {
     await _callService.acceptCall(
       callerId: widget.callerIdForIncoming ?? widget.targetUserId,
       tripId: widget.tripId,
+      scope: widget.callScope,
+      module: widget.poolModule,
     );
   }
 

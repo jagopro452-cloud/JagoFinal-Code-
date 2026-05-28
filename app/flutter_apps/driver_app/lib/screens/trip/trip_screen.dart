@@ -287,6 +287,8 @@ class _TripScreenState extends State<TripScreen>
   bool get _isHeadingToPickup =>
       _status == 'accepted' || _status == 'driver_assigned';
 
+  bool get _isWaitingAtPickup => _status == 'arrived';
+
   bool get _isTripLive =>
       _status == 'in_progress' || _status == 'on_the_way';
 
@@ -297,6 +299,76 @@ class _TripScreenState extends State<TripScreen>
         'in_progress',
         'on_the_way',
       }.contains(_status);
+
+  String get _routeStageTitle {
+    if (_isHeadingToPickup) return 'Pickup Route Ready';
+    if (_isWaitingAtPickup) return 'Waiting at Pickup';
+    if (_isTripLive) return 'Destination Route Ready';
+    return 'Ride Route';
+  }
+
+  String get _routeStageSubtitle {
+    if (_isHeadingToPickup) {
+      return 'Open the pickup route and reach the customer using the in-app map.';
+    }
+    if (_isWaitingAtPickup) {
+      return 'You have arrived. Collect the OTP to unlock the destination route.';
+    }
+    if (_isTripLive) {
+      return 'Destination guidance is live. Follow the map and complete the ride cleanly.';
+    }
+    return 'Route preview is ready.';
+  }
+
+  String get _routeOpenActionLabel {
+    if (_isHeadingToPickup) return 'Open Pickup Map';
+    if (_isWaitingAtPickup) return 'Preview Destination';
+    if (_isTripLive) return 'Open Destination Map';
+    return 'Open Route';
+  }
+
+  String get _routeFocusActionLabel {
+    if (_isHeadingToPickup) return 'Show Pickup In App';
+    if (_isWaitingAtPickup) return 'Keep Pickup Visible';
+    if (_isTripLive) return 'Show Destination In App';
+    return 'Show In App';
+  }
+
+  List<_LifecycleStep> get _lifecycleSteps {
+    final currentIndex = switch (_status) {
+      'driver_assigned' || 'accepted' => 0,
+      'arrived' => 1,
+      'in_progress' || 'on_the_way' => 2,
+      _ => 3,
+    };
+
+    return [
+      _LifecycleStep(
+        label: 'Accepted',
+        icon: Icons.check_circle_rounded,
+        isComplete: currentIndex > 0,
+        isActive: currentIndex == 0,
+      ),
+      _LifecycleStep(
+        label: 'Pickup',
+        icon: Icons.store_mall_directory_rounded,
+        isComplete: currentIndex > 1,
+        isActive: currentIndex == 1,
+      ),
+      _LifecycleStep(
+        label: 'On Trip',
+        icon: Icons.alt_route_rounded,
+        isComplete: currentIndex > 2,
+        isActive: currentIndex == 2,
+      ),
+      _LifecycleStep(
+        label: 'Complete',
+        icon: Icons.payments_rounded,
+        isComplete: currentIndex > 2,
+        isActive: currentIndex >= 3,
+      ),
+    ];
+  }
 
   double _resolveCoord(List<String> keys) {
     for (final key in keys) {
@@ -319,15 +391,6 @@ class _TripScreenState extends State<TripScreen>
             _trip?['destination_address'] ??
             'Destination')
         .toString());
-  }
-
-  String _resolveTargetAddress() {
-    if (_isHeadingToPickup) {
-      return (_trip?['pickupAddress'] ?? _trip?['pickup_address'] ?? '')
-          .toString();
-    }
-    return (_trip?['destinationAddress'] ?? _trip?['destination_address'] ?? '')
-        .toString();
   }
 
   Future<void> _focusRouteOnMap({bool showReadySnack = false}) async {
@@ -1427,6 +1490,7 @@ class _TripScreenState extends State<TripScreen>
     final tripId = _trip?['id'] ?? _trip?['tripId'] ?? '';
     final pm = _trip?['paymentMethod'] ?? _trip?['payment_method'] ?? 'cash';
     final isCash = pm == 'cash';
+    bool paymentConfirmed = !isCash;
     final netEarnings = double.tryParse(driverEarnings) ?? 0.0;
     final commissionAmt = double.tryParse(commission) ?? 0.0;
     final fullFare = double.tryParse(fare) ?? 0.0;
@@ -1515,6 +1579,64 @@ class _TripScreenState extends State<TripScreen>
               ]),
             ),
             const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: JT.surfaceAlt,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: JT.border),
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.receipt_long_rounded,
+                          color: JT.primary, size: 18),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Ride Summary',
+                          style: GoogleFonts.poppins(
+                            color: JT.textPrimary,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      Text(
+                        tripId.toString().isEmpty ? 'Trip' : '#$tripId',
+                        style: GoogleFonts.poppins(
+                          color: JT.textSecondary,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _completionSummaryTile(
+                          'Payment',
+                          isCash ? 'Cash' : 'Online',
+                          isCash ? JT.success : JT.primary,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: _completionSummaryTile(
+                          'Amount',
+                          '₹${fullFare.toStringAsFixed(0)}',
+                          JT.textPrimary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
             // Payment instruction
             if (isCash)
               Container(
@@ -1580,6 +1702,38 @@ class _TripScreenState extends State<TripScreen>
                       ])),
                 ]),
               ),
+            if (isCash) ...[
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: paymentConfirmed
+                      ? null
+                      : () => setS(() => paymentConfirmed = true),
+                  icon: Icon(
+                    paymentConfirmed
+                        ? Icons.check_circle_rounded
+                        : Icons.payments_rounded,
+                    size: 18,
+                  ),
+                  label: Text(
+                    paymentConfirmed
+                        ? 'Cash Collected Confirmed'
+                        : 'Mark Cash Collected',
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: JT.success,
+                    side: BorderSide(
+                      color: JT.success.withValues(alpha: 0.35),
+                    ),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                ),
+              ),
+            ],
             const SizedBox(height: 14),
             // Rating
             Container(
@@ -1644,19 +1798,25 @@ class _TripScreenState extends State<TripScreen>
               height: 56,
               child: ElevatedButton(
                   style: ElevatedButton.styleFrom(
-                      backgroundColor: JT.primary,
-                      foregroundColor: Colors.white,
+                      backgroundColor:
+                          paymentConfirmed ? JT.primary : JT.border,
+                      foregroundColor:
+                          paymentConfirmed ? Colors.white : JT.textSecondary,
                       shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(16)),
                       elevation: 0),
-                  onPressed: () {
+                  onPressed: paymentConfirmed
+                      ? () {
                     Navigator.pop(ctx);
                     Navigator.pushAndRemoveUntil(
                         context,
                         MaterialPageRoute(builder: (_) => const HomeScreen()),
                         (_) => false);
-                  },
-                  child: Text('Back to Home →',
+                  }
+                      : null,
+                  child: Text(isCash
+                      ? 'Cash Confirmed → Close Ride'
+                      : 'Back to Home →',
                       style: GoogleFonts.poppins(
                           fontWeight: FontWeight.w400, fontSize: 16))),
             ),
@@ -1677,6 +1837,39 @@ class _TripScreenState extends State<TripScreen>
               fontSize: 10,
               fontWeight: FontWeight.w400)),
     ]);
+  }
+
+  Widget _completionSummaryTile(String label, String value, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.15)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: GoogleFonts.poppins(
+              color: JT.textSecondary,
+              fontSize: 10,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: GoogleFonts.poppins(
+              color: color,
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   // ── Cancel dialog ─────────────────────────────────────────────────────────
@@ -2084,6 +2277,8 @@ class _TripScreenState extends State<TripScreen>
                     _buildNavigationInstructions(),
                     const SizedBox(height: 10),
                     _buildRouteStageCard(pickup, dest),
+                    const SizedBox(height: 10),
+                    _buildLifecycleProgress(),
                   ],
                 ),
               ),
@@ -2309,12 +2504,9 @@ class _TripScreenState extends State<TripScreen>
   // ── Customer card ─────────────────────────────────────────────────────────
 
   Widget _buildRouteStageCard(String pickup, String dest) {
-    final targetLabel = _resolveTargetLabel();
-    final targetAddress = _resolveTargetAddress();
-    final stageColor = _isTripLive ? JT.success : JT.primary;
-    final stageTitle = _isHeadingToPickup
-        ? 'Pickup Route Live'
-        : 'Destination Route Live';
+    final stageColor =
+        _isTripLive ? JT.success : (_isWaitingAtPickup ? JT.warning : JT.primary);
+    final stageTitle = _routeStageTitle;
 
     return Container(
       padding: const EdgeInsets.all(14),
@@ -2356,7 +2548,7 @@ class _TripScreenState extends State<TripScreen>
                       ),
                     ),
                     Text(
-                      targetAddress.isNotEmpty ? targetAddress : targetLabel,
+                      _routeStageSubtitle,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: GoogleFonts.poppins(
@@ -2394,7 +2586,7 @@ class _TripScreenState extends State<TripScreen>
                   icon: Icons.radio_button_checked_rounded,
                   label: 'Pickup',
                   value: pickup,
-                  active: _isHeadingToPickup,
+                  active: _isHeadingToPickup || _isWaitingAtPickup,
                 ),
               ),
               const SizedBox(width: 10),
@@ -2403,7 +2595,7 @@ class _TripScreenState extends State<TripScreen>
                   icon: Icons.location_on_rounded,
                   label: 'Destination',
                   value: dest,
-                  active: !_isHeadingToPickup,
+                  active: _isTripLive,
                 ),
               ),
             ],
@@ -2415,7 +2607,7 @@ class _TripScreenState extends State<TripScreen>
                 child: OutlinedButton.icon(
                   onPressed: _loading ? null : _openNavigation,
                   icon: const Icon(Icons.center_focus_strong_rounded, size: 18),
-                  label: const Text('View Route'),
+                  label: Text(_routeOpenActionLabel),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: stageColor,
                     side: BorderSide(color: stageColor.withValues(alpha: 0.28)),
@@ -2433,8 +2625,7 @@ class _TripScreenState extends State<TripScreen>
                       ? null
                       : () => _focusRouteOnMap(showReadySnack: true),
                   icon: const Icon(Icons.navigation_rounded, size: 18),
-                  label:
-                      Text(_isTripLive ? 'Focus Destination' : 'Focus Pickup'),
+                  label: Text(_routeFocusActionLabel),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: stageColor,
                     foregroundColor: Colors.white,
@@ -2500,6 +2691,74 @@ class _TripScreenState extends State<TripScreen>
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildLifecycleProgress() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: JT.border),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 10,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          for (int i = 0; i < _lifecycleSteps.length; i++) ...[
+            Expanded(child: _buildLifecycleStep(_lifecycleSteps[i])),
+            if (i != _lifecycleSteps.length - 1)
+              Container(
+                width: 20,
+                height: 2,
+                margin: const EdgeInsets.only(bottom: 18),
+                color: _lifecycleSteps[i].isComplete
+                    ? JT.success.withValues(alpha: 0.45)
+                    : JT.border,
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLifecycleStep(_LifecycleStep step) {
+    final color = step.isComplete
+        ? JT.success
+        : step.isActive
+            ? JT.primary
+            : JT.iconInactive;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 34,
+          height: 34,
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.10),
+            shape: BoxShape.circle,
+            border: Border.all(color: color.withValues(alpha: 0.35)),
+          ),
+          child: Icon(step.icon, size: 18, color: color),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          step.label,
+          textAlign: TextAlign.center,
+          style: GoogleFonts.poppins(
+            color: color,
+            fontSize: 10,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
     );
   }
 
@@ -3063,4 +3322,18 @@ class _TripScreenState extends State<TripScreen>
         };
     }
   }
+}
+
+class _LifecycleStep {
+  final String label;
+  final IconData icon;
+  final bool isComplete;
+  final bool isActive;
+
+  const _LifecycleStep({
+    required this.label,
+    required this.icon,
+    required this.isComplete,
+    required this.isActive,
+  });
 }

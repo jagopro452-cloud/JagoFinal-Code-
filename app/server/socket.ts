@@ -73,6 +73,8 @@ type ActiveCallSession = {
   startedAt: number;
   connectedAt?: number;
   mode: "ride" | "support";
+  scope?: "trip" | "pool";
+  module?: "local_pool" | "outstation_pool";
 };
 
 const activeCallSessions = new Map<string, ActiveCallSession>();
@@ -109,6 +111,79 @@ async function getRideSafetyCallTrip(tripId: string, userA: string, userB: strin
     return { ok: false, message: "Calling is only allowed between the active customer and driver." };
   }
   return { ok: true, tripRow };
+}
+
+function normalizePoolModule(value: unknown): "local_pool" | "outstation_pool" | null {
+  const module = String(value || "").toLowerCase();
+  if (module === "local_pool" || module === "outstation_pool") return module;
+  return null;
+}
+
+async function getPoolCommunicationContext(moduleInput: unknown, referenceId: string, userA: string, userB: string) {
+  const module = normalizePoolModule(moduleInput);
+  if (!module || !referenceId) {
+    return { ok: false as const, message: "Pool communication reference is missing." };
+  }
+
+  if (module === "local_pool") {
+    const r = await rawDb.execute(rawSql`
+      SELECT
+        prr.id,
+        prr.status,
+        prr.customer_id::text AS customer_id,
+        dps.driver_id::text AS driver_id
+      FROM pool_ride_requests prr
+      JOIN driver_pool_sessions dps ON dps.id = COALESCE(prr.session_id, prr.proposed_session_id)
+      WHERE prr.id = ${referenceId}::uuid
+      LIMIT 1
+    `).catch(() => ({ rows: [] as any[] }));
+    const row = r.rows[0] as any;
+    if (!row) return { ok: false as const, message: "Local pool booking not found." };
+    const participants = new Set([String(row.customer_id || ""), String(row.driver_id || "")]);
+    if (!participants.has(userA) || !participants.has(userB)) {
+      return { ok: false as const, message: "Pool communication is only allowed between the matched passenger and driver." };
+    }
+    return {
+      ok: true as const,
+      module,
+      status: String(row.status || ""),
+      customerId: String(row.customer_id || ""),
+      driverId: String(row.driver_id || ""),
+    };
+  }
+
+  const r = await rawDb.execute(rawSql`
+    SELECT
+      opb.id,
+      opb.status,
+      opb.customer_id::text AS customer_id,
+      opr.driver_id::text AS driver_id
+    FROM outstation_pool_bookings opb
+    JOIN outstation_pool_rides opr ON opr.id = opb.ride_id
+    WHERE opb.id = ${referenceId}::uuid
+    LIMIT 1
+  `).catch(() => ({ rows: [] as any[] }));
+  const row = r.rows[0] as any;
+  if (!row) return { ok: false as const, message: "Outstation pool booking not found." };
+  const participants = new Set([String(row.customer_id || ""), String(row.driver_id || "")]);
+  if (!participants.has(userA) || !participants.has(userB)) {
+    return { ok: false as const, message: "Pool communication is only allowed between the booked passenger and driver." };
+  }
+  return {
+    ok: true as const,
+    module,
+    status: String(row.status || ""),
+    customerId: String(row.customer_id || ""),
+    driverId: String(row.driver_id || ""),
+  };
+}
+
+function isPoolChatAllowed(status: string): boolean {
+  return new Set(["matched", "picked_up", "dropped", "confirmed", "completed"]).has(String(status || "").toLowerCase());
+}
+
+function isPoolCallAllowed(status: string): boolean {
+  return new Set(["matched", "picked_up", "confirmed"]).has(String(status || "").toLowerCase());
 }
 
 function findCallSessionForUser(userId: string): ActiveCallSession[] {
@@ -1120,12 +1195,110 @@ export function setupSocket(httpServer: HttpServer) {
       }
     });
 
+    socket.on("pool:join_chat", async (data: { module: string; referenceId: string }) => {
+      try {
+        const referenceId = String(data.referenceId || "");
+        const ctx = await getPoolCommunicationContext(data.module, referenceId, userId, userId);
+        if (!ctx.ok) {
+          socket.emit("call:error", { message: ctx.message });
+          return;
+        }
+        if (!isPoolChatAllowed(ctx.status)) {
+          socket.emit("call:error", { message: "Pool chat is not available for this ride status." });
+          return;
+        }
+        socket.join(`pool:${ctx.module}:${referenceId}`);
+      } catch (e: any) {
+        console.error("[SOCKET] pool:join_chat error:", e.message);
+      }
+    });
+
+    socket.on("pool:send_message", async (data: { module: string; referenceId: string; message: string; senderName: string; senderType: string }) => {
+      try {
+        const referenceId = String(data.referenceId || "");
+        const message = String(data.message || "").trim();
+        if (!referenceId || !message || message.length > 2000) return;
+        const ctx = await getPoolCommunicationContext(data.module, referenceId, userId, userId);
+        if (!ctx.ok) {
+          socket.emit("call:error", { message: ctx.message });
+          return;
+        }
+        if (!isPoolChatAllowed(ctx.status)) {
+          socket.emit("call:error", { message: "Pool chat is not available for this ride status." });
+          return;
+        }
+        const roomId = `pool:${ctx.module}:${referenceId}`;
+        socket.join(roomId);
+        const now = new Date();
+        await rawDb.execute(rawSql`
+          INSERT INTO pool_messages (module, reference_id, sender_id, sender_type, sender_name, message, created_at)
+          VALUES (
+            ${ctx.module},
+            ${referenceId}::uuid,
+            ${userId}::uuid,
+            ${String(data.senderType || userType || "customer")},
+            ${String(data.senderName || "")},
+            ${message},
+            ${now.toISOString()}
+          )
+        `);
+        io.to(roomId).emit("pool:new_message", {
+          module: ctx.module,
+          referenceId,
+          from: userId,
+          senderType: String(data.senderType || userType || "customer"),
+          senderName: String(data.senderName || ""),
+          message,
+          timestamp: now.toISOString(),
+        });
+      } catch (e: any) {
+        console.error("[SOCKET] pool:send_message error:", e.message);
+      }
+    });
+
+    socket.on("pool:get_messages", async (data: { module: string; referenceId: string }) => {
+      try {
+        const referenceId = String(data.referenceId || "");
+        if (!referenceId) return;
+        const ctx = await getPoolCommunicationContext(data.module, referenceId, userId, userId);
+        if (!ctx.ok) {
+          socket.emit("call:error", { message: ctx.message });
+          return;
+        }
+        const roomId = `pool:${ctx.module}:${referenceId}`;
+        socket.join(roomId);
+        const rows = await rawDb.execute(rawSql`
+          SELECT id, sender_id, sender_type, sender_name, message, created_at
+          FROM pool_messages
+          WHERE module = ${ctx.module}
+            AND reference_id = ${referenceId}::uuid
+          ORDER BY created_at ASC
+          LIMIT 200
+        `);
+
+        socket.emit("pool:message_history", {
+          module: ctx.module,
+          referenceId,
+          messages: rows.rows.map((r: any) => ({
+            id: r.id,
+            from: r.sender_id,
+            senderType: r.sender_type,
+            senderName: r.sender_name,
+            message: r.message,
+            timestamp: r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at,
+          })),
+        });
+      } catch (e: any) {
+        console.error("[SOCKET] pool:get_messages error:", e.message);
+      }
+    });
+
     // ── In-app call signaling (WebRTC relay) ──────────────────────────────────
     // Only allowed during active trip: accepted → arrived → on_the_way
     // Phone numbers are MASKED — real numbers never exposed over socket
 
     // Track active call sessions: tripId → { callerId, targetId, startedAt }
-    socket.on("call:initiate", async (data: { targetUserId: string; tripId: string; callerName: string }) => {
+    socket.on("call:initiate", async (data: { targetUserId: string; tripId: string; callerName: string; scope?: string; module?: string }) => {
       try {
         const { targetUserId, tripId, callerName } = data;
         if (!targetUserId || !tripId) {
@@ -1174,6 +1347,45 @@ export function setupSocket(httpServer: HttpServer) {
           return;
         }
 
+        const callScope = data.scope === "pool" ? "pool" : "trip";
+        if (callScope === "pool") {
+          const poolCtx = await getPoolCommunicationContext(data.module, tripId, userId, targetUserId);
+          if (!poolCtx.ok) {
+            socket.emit("call:error", { message: poolCtx.message });
+            return;
+          }
+          if (!isPoolCallAllowed(poolCtx.status)) {
+            socket.emit("call:error", { message: "Calling is only available before or during the active pooled ride." });
+            return;
+          }
+          const existingPoolSession = activeCallSessions.get(tripId);
+          if (existingPoolSession && !isCallSessionParticipant(existingPoolSession, userId, targetUserId)) {
+            socket.emit("call:error", { message: "Another call is already active for this pool ride." });
+            return;
+          }
+          activeCallSessions.set(tripId, {
+            sessionId: tripId,
+            tripId,
+            callerId: userId,
+            targetId: targetUserId,
+            startedAt: Date.now(),
+            mode: "ride",
+            scope: "pool",
+            module: poolCtx.module,
+          });
+          io.to(`user:${targetUserId}`).emit("call:incoming", {
+            callerId: userId,
+            callerName,
+            tripId,
+            callMode: "ride",
+            callScope: "pool",
+            poolModule: poolCtx.module,
+            maskedPhone: null,
+          });
+          console.log(`[CALL] ${userId} -> ${targetUserId} pool session ${poolCtx.module}:${tripId}`);
+          return;
+        }
+
         const tripCheck = await getRideSafetyCallTrip(tripId, userId, targetUserId);
         if (!tripCheck.ok) {
           socket.emit("call:error", { message: tripCheck.message });
@@ -1199,6 +1411,7 @@ export function setupSocket(httpServer: HttpServer) {
           targetId: targetUserId,
           startedAt: Date.now(),
           mode: "ride",
+          scope: "trip",
         });
 
         io.to(`user:${targetUserId}`).emit("call:incoming", {
@@ -1237,13 +1450,30 @@ export function setupSocket(httpServer: HttpServer) {
       }
     });
 
-    socket.on("call:offer", async (data: { targetUserId: string; tripId: string; sdp: any }) => {
+    socket.on("call:offer", async (data: { targetUserId: string; tripId: string; sdp: any; scope?: string; module?: string }) => {
       const session = activeCallSessions.get(data.tripId);
       if (!session) {
         socket.emit("call:error", { message: "Call session is no longer active." });
         return;
       }
       if (session.mode === "ride") {
+        if (session.scope === "pool") {
+          const poolCtx = await getPoolCommunicationContext(session.module, data.tripId, userId, data.targetUserId);
+          if (!poolCtx.ok || !isCallSessionParticipant(session, userId, data.targetUserId) || !isPoolCallAllowed(poolCtx.status)) {
+            activeCallSessions.delete(data.tripId);
+            socket.emit("call:ended", { by: "system", reason: poolCtx.ok ? "Call session ended." : poolCtx.message, callScope: "pool", poolModule: session.module });
+            return;
+          }
+          io.to(`user:${data.targetUserId}`).emit("call:offer", {
+            callerId: userId,
+            tripId: data.tripId,
+            callMode: "ride",
+            callScope: "pool",
+            poolModule: session.module,
+            sdp: data.sdp,
+          });
+          return;
+        }
         const tripCheck = await getRideSafetyCallTrip(data.tripId, userId, data.targetUserId);
         if (!tripCheck.ok || !isCallSessionParticipant(session, userId, data.targetUserId)) {
           activeCallSessions.delete(data.tripId);
@@ -1283,13 +1513,31 @@ export function setupSocket(httpServer: HttpServer) {
       socket.emit("call:error", { message: "You are not allowed to use this support call session." });
     });
 
-    socket.on("call:answer", async (data: { targetUserId: string; tripId: string; sdp: any }) => {
+    socket.on("call:answer", async (data: { targetUserId: string; tripId: string; sdp: any; scope?: string; module?: string }) => {
       const session = activeCallSessions.get(data.tripId);
       if (!session) {
         socket.emit("call:error", { message: "Call session is no longer active." });
         return;
       }
       if (session.mode === "ride") {
+        if (session.scope === "pool") {
+          const poolCtx = await getPoolCommunicationContext(session.module, data.tripId, userId, data.targetUserId);
+          if (!poolCtx.ok || !isCallSessionParticipant(session, userId, data.targetUserId) || !isPoolCallAllowed(poolCtx.status)) {
+            activeCallSessions.delete(data.tripId);
+            socket.emit("call:ended", { by: "system", reason: poolCtx.ok ? "Call session ended." : poolCtx.message, callScope: "pool", poolModule: session.module });
+            return;
+          }
+          session.connectedAt = Date.now();
+          io.to(`user:${data.targetUserId}`).emit("call:answer", {
+            callerId: userId,
+            tripId: data.tripId,
+            callMode: "ride",
+            callScope: "pool",
+            poolModule: session.module,
+            sdp: data.sdp,
+          });
+          return;
+        }
         const tripCheck = await getRideSafetyCallTrip(data.tripId, userId, data.targetUserId);
         if (!tripCheck.ok || !isCallSessionParticipant(session, userId, data.targetUserId)) {
           activeCallSessions.delete(data.tripId);
@@ -1327,13 +1575,30 @@ export function setupSocket(httpServer: HttpServer) {
       });
     });
 
-    socket.on("call:ice", async (data: { targetUserId: string; tripId: string; candidate: any }) => {
+    socket.on("call:ice", async (data: { targetUserId: string; tripId: string; candidate: any; scope?: string; module?: string }) => {
       const session = activeCallSessions.get(data.tripId);
       if (!session) {
         socket.emit("call:error", { message: "Call session is no longer active." });
         return;
       }
       if (session.mode === "ride") {
+        if (session.scope === "pool") {
+          const poolCtx = await getPoolCommunicationContext(session.module, data.tripId, userId, data.targetUserId);
+          if (!poolCtx.ok || !isCallSessionParticipant(session, userId, data.targetUserId) || !isPoolCallAllowed(poolCtx.status)) {
+            activeCallSessions.delete(data.tripId);
+            socket.emit("call:ended", { by: "system", reason: poolCtx.ok ? "Call session ended." : poolCtx.message, callScope: "pool", poolModule: session.module });
+            return;
+          }
+          io.to(`user:${data.targetUserId}`).emit("call:ice", {
+            from: userId,
+            tripId: data.tripId,
+            callMode: "ride",
+            callScope: "pool",
+            poolModule: session.module,
+            candidate: data.candidate,
+          });
+          return;
+        }
         const tripCheck = await getRideSafetyCallTrip(data.tripId, userId, data.targetUserId);
         if (!tripCheck.ok || !isCallSessionParticipant(session, userId, data.targetUserId)) {
           activeCallSessions.delete(data.tripId);
@@ -1382,14 +1647,20 @@ export function setupSocket(httpServer: HttpServer) {
                 : `user:${session.callerId}`;
           io.to(supportTarget).emit("call:ended", { by: userId, tripId, callMode: "support" });
         } else {
-          io.to(`user:${targetUserId}`).emit("call:ended", { by: userId, tripId, callMode: "ride" });
+          io.to(`user:${targetUserId}`).emit("call:ended", {
+            by: userId,
+            tripId,
+            callMode: "ride",
+            callScope: session.scope || "trip",
+            poolModule: session.module,
+          });
         }
       } else {
         io.to(`user:${targetUserId}`).emit("call:ended", { by: userId, tripId });
       }
       if (tripId) {
         activeCallSessions.delete(tripId);
-        if (session?.mode === "ride") {
+        if (session?.mode === "ride" && session.scope !== "pool") {
           await rawDb.execute(rawSql`
             UPDATE call_logs
             SET status='completed', ended_at=NOW(), duration_sec=${durationSec || 0}
@@ -1418,11 +1689,17 @@ export function setupSocket(httpServer: HttpServer) {
               : `user:${session.callerId}`;
         io.to(rejectTarget).emit("call:rejected", { by: userId, tripId, callMode: "support" });
       } else {
-        io.to(`user:${targetUserId}`).emit("call:rejected", { by: userId, tripId, callMode: "ride" });
+        io.to(`user:${targetUserId}`).emit("call:rejected", {
+          by: userId,
+          tripId,
+          callMode: "ride",
+          callScope: session?.scope || "trip",
+          poolModule: session?.module,
+        });
       }
       if (tripId) {
         activeCallSessions.delete(tripId);
-        if (session?.mode === "ride") {
+        if (session?.mode === "ride" && session.scope !== "pool") {
           await rawDb.execute(rawSql`
             UPDATE call_logs
             SET status='rejected', ended_at=NOW()
@@ -1453,6 +1730,8 @@ export function setupSocket(httpServer: HttpServer) {
           by: userId,
           tripId: session.sessionId,
           callMode: session.mode,
+          callScope: session.scope || "trip",
+          poolModule: session.module,
           reason: "disconnect",
         });
       }

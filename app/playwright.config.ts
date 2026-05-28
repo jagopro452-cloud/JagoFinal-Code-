@@ -23,11 +23,12 @@ const isCI = !!process.env.CI;
 const useLiveBackend = process.env.PW_USE_LIVE_BACKEND === "true";
 const shouldUseLocalUi = !useLiveBackend && process.env.PW_SKIP_WEB_SERVER !== "true";
 const shouldUseMockApi = !useLiveBackend && process.env.PW_SKIP_MOCK_API !== "true";
+const runWithTsxImport = (entryPoint: string) => `"${process.execPath}" --import tsx "${entryPoint}"`;
 
 const webServer = [];
 if (shouldUseLocalUi) {
   webServer.push({
-    command: "npm.cmd run dev:playwright:web",
+    command: runWithTsxImport("tests/playwright/support/web-server.ts"),
     cwd: rootDir,
     url: baseURL,
     reuseExistingServer: !isCI,
@@ -36,7 +37,7 @@ if (shouldUseLocalUi) {
 }
 if (shouldUseMockApi) {
   webServer.push({
-    command: "npm.cmd run dev:playwright:mock-api",
+    command: runWithTsxImport("tests/playwright/support/mock-server.ts"),
     cwd: rootDir,
     url: `${apiBaseURL}/health`,
     reuseExistingServer: !isCI,

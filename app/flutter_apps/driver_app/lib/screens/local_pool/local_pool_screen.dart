@@ -1,11 +1,16 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import '../../config/api_config.dart';
+import '../../config/jago_theme.dart';
 import '../../services/auth_service.dart';
 import '../../services/socket_service.dart';
+import '../call/call_screen.dart';
+import '../chat/trip_chat_sheet.dart';
 
 class LocalPoolScreen extends StatefulWidget {
   const LocalPoolScreen({super.key});
@@ -18,9 +23,11 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
   final SocketService _socket = SocketService();
   final TextEditingController _otpCtrl = TextEditingController();
   Timer? _poller;
+  Timer? _locationTimer;
   StreamSubscription<Map<String, dynamic>>? _newPassengerSub;
   StreamSubscription<Map<String, dynamic>>? _seatSub;
   StreamSubscription<Map<String, dynamic>>? _cancelSub;
+  StreamSubscription<Map<String, dynamic>>? _callIncomingSub;
 
   bool _loading = true;
   bool _starting = false;
@@ -50,9 +57,11 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
   @override
   void dispose() {
     _poller?.cancel();
+    _locationTimer?.cancel();
     _newPassengerSub?.cancel();
     _seatSub?.cancel();
     _cancelSub?.cancel();
+    _callIncomingSub?.cancel();
     _otpCtrl.dispose();
     super.dispose();
   }
@@ -64,6 +73,31 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
       setState(() => _seatState = event);
     });
     _cancelSub = _socket.onPoolPassengerCancelled.listen((_) => _load(silent: true));
+    _callIncomingSub = _socket.onCallIncoming.listen((event) {
+      final scope = event['callScope']?.toString();
+      final poolModule = event['poolModule']?.toString();
+      final referenceId = event['tripId']?.toString() ?? '';
+      if (scope != 'pool' || poolModule != 'local_pool' || !mounted) return;
+      final passenger = _passengers.cast<Map<String, dynamic>?>().firstWhere(
+        (item) => item?['id']?.toString() == referenceId,
+        orElse: () => null,
+      );
+      if (passenger == null) return;
+      final callerId = event['callerId']?.toString() ?? '';
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => CallScreen(
+            contactName: event['callerName']?.toString() ?? passenger['customer_name']?.toString() ?? 'Passenger',
+            tripId: referenceId,
+            targetUserId: callerId,
+            isIncoming: true,
+            callerIdForIncoming: callerId,
+            callScope: 'pool',
+            poolModule: 'local_pool',
+          ),
+        ),
+      );
+    });
   }
 
   Future<void> _load({bool silent = false}) async {
@@ -82,13 +116,19 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
       final body = jsonDecode(res.body);
       if (res.statusCode == 200) {
         final data = (body['data'] is Map<String, dynamic>) ? body['data'] as Map<String, dynamic> : body;
+        final session = data['session'] as Map<String, dynamic>?;
         if (!mounted) return;
         setState(() {
-          _session = data['session'] as Map<String, dynamic>?;
+          _session = session;
           _passengers = List<dynamic>.from(data['passengers'] ?? const []);
           _loading = false;
           _error = null;
         });
+        if (session != null) {
+          _startLocationUpdates();
+        } else {
+          _locationTimer?.cancel();
+        }
       } else {
         if (!mounted) return;
         setState(() {
@@ -142,6 +182,7 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
         headers: headers,
       ).timeout(const Duration(seconds: 12));
       if (res.statusCode == 200) {
+        _locationTimer?.cancel();
         await _load();
       }
     } finally {
@@ -251,6 +292,163 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
     }
   }
 
+  void _startLocationUpdates() {
+    if (_locationTimer != null) return;
+    _syncCurrentLocation();
+    _locationTimer = Timer.periodic(const Duration(seconds: 8), (_) => _syncCurrentLocation());
+  }
+
+  Future<void> _syncCurrentLocation() async {
+    if (_session == null) {
+      _locationTimer?.cancel();
+      _locationTimer = null;
+      return;
+    }
+    try {
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+      ).timeout(const Duration(seconds: 5));
+      final headers = await AuthService.getHeaders();
+      await http.patch(
+        Uri.parse(ApiConfig.localPoolLocation),
+        headers: headers,
+        body: jsonEncode({
+          'lat': pos.latitude,
+          'lng': pos.longitude,
+          'bearingDeg': pos.heading.isFinite ? pos.heading : null,
+        }),
+      ).timeout(const Duration(seconds: 5));
+    } catch (_) {
+      // Keep local pool UI responsive even if GPS/network pauses briefly.
+    }
+  }
+
+  Future<void> _sharePassenger(Map<String, dynamic> passenger) async {
+    try {
+      final headers = await AuthService.getHeaders();
+      headers['Content-Type'] = 'application/json';
+      final res = await http.post(
+        Uri.parse(ApiConfig.poolShare),
+        headers: headers,
+        body: jsonEncode({'module': 'local_pool', 'referenceId': passenger['id']?.toString()}),
+      ).timeout(const Duration(seconds: 12));
+      final body = jsonDecode(res.body);
+      if (res.statusCode == 200) {
+        await Clipboard.setData(ClipboardData(text: body['shareText']?.toString() ?? 'JAGO Pool trip'));
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Passenger trip summary copied to clipboard')),
+        );
+      }
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not prepare share summary')),
+      );
+    }
+  }
+
+  void _openPassengerChat(Map<String, dynamic> passenger) {
+    final requestId = passenger['id']?.toString() ?? '';
+    if (requestId.isEmpty) return;
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => TripChatSheet(
+        tripId: requestId,
+        senderName: 'Driver',
+        chatScope: 'pool',
+        poolModule: 'local_pool',
+        title: 'Passenger Chat',
+      ),
+    );
+  }
+
+  void _startPassengerCall(Map<String, dynamic> passenger) {
+    final requestId = passenger['id']?.toString() ?? '';
+    final customerId = passenger['customer_id']?.toString() ?? '';
+    if (requestId.isEmpty || customerId.isEmpty) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => CallScreen(
+          contactName: passenger['customer_name']?.toString() ?? 'Passenger',
+          tripId: requestId,
+          targetUserId: customerId,
+          callScope: 'pool',
+          poolModule: 'local_pool',
+        ),
+      ),
+    );
+  }
+
+  Future<void> _blockPassenger(Map<String, dynamic> passenger) async {
+    final blockedUserId = passenger['customer_id']?.toString() ?? '';
+    if (blockedUserId.isEmpty) return;
+    try {
+      final headers = await AuthService.getHeaders();
+      headers['Content-Type'] = 'application/json';
+      final res = await http.post(
+        Uri.parse(ApiConfig.poolBlockUser),
+        headers: headers,
+        body: jsonEncode({
+          'blockedUserId': blockedUserId,
+          'module': 'local_pool',
+          'referenceType': 'request',
+          'referenceId': passenger['id']?.toString(),
+          'reason': 'Blocked from local pool driver console',
+        }),
+      ).timeout(const Duration(seconds: 12));
+      final body = jsonDecode(res.body);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(body['message']?.toString() ?? 'Passenger blocked from future pool matching')),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not block passenger right now')),
+      );
+    }
+  }
+
+  Future<void> _sendPoolSos() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Pool SOS'),
+        content: const Text('Send emergency alert for this active local pool session?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Send SOS')),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      final headers = await AuthService.getHeaders();
+      await http.post(
+        Uri.parse(ApiConfig.sos),
+        headers: {...headers, 'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'tripId': _session?['id']?.toString(),
+          'lat': _session?['current_lat'],
+          'lng': _session?['current_lng'],
+          'message': 'Driver SOS alert during local pool session',
+        }),
+      ).timeout(const Duration(seconds: 12));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Pool SOS sent to JAGO safety operations')),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('SOS failed. Call emergency services immediately.')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -285,6 +483,10 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
                         _buildAcceptingControl(),
                         const SizedBox(height: 14),
                         _buildMetrics(),
+                        const SizedBox(height: 14),
+                        _buildSafetyActions(),
+                        const SizedBox(height: 14),
+                        _buildSeatDeck(),
                         const SizedBox(height: 14),
                         _buildPassengers(),
                       ],
@@ -404,6 +606,87 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
     );
   }
 
+  Widget _buildSafetyActions() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: _border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Pool Safety & Share', style: GoogleFonts.poppins(fontSize: 14, fontWeight: FontWeight.w600, color: _textPri)),
+          const SizedBox(height: 6),
+          Text('Use live safety operations, share pool details, and enforce passenger blocking from one place.', style: GoogleFonts.poppins(fontSize: 12, color: _textSec)),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              _actionPill(Icons.sos_rounded, 'Pool SOS', _sendPoolSos, const Color(0xFFDC2626)),
+              if (_passengers.isNotEmpty)
+                _actionPill(Icons.share_outlined, 'Share First Rider', () => _sharePassenger(_passengers.first as Map<String, dynamic>), _primary),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSeatDeck() {
+    final maxSeats =
+        int.tryParse('${_seatState?['maxSeats'] ?? _session?['max_seats'] ?? _maxSeats}') ?? _maxSeats;
+    final available =
+        int.tryParse('${_seatState?['availableSeats'] ?? _session?['available_seats'] ?? maxSeats}') ??
+            maxSeats;
+    final occupied = (maxSeats - available).clamp(0, maxSeats);
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: _border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Seat Occupancy Map',
+            style: GoogleFonts.poppins(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: _textPri,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Driver seat plus live passenger capacity for this rolling pool session.',
+            style: GoogleFonts.poppins(fontSize: 12, color: _textSec),
+          ),
+          const SizedBox(height: 14),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              _seatTile('D', 'Driver', _primary),
+              ...List.generate(maxSeats, (index) {
+                final isOccupied = index < occupied;
+                return _seatTile(
+                  'S${index + 1}',
+                  isOccupied ? 'Occupied' : 'Open',
+                  isOccupied ? const Color(0xFFF59E0B) : const Color(0xFF16A34A),
+                );
+              }),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _acceptPassenger(String requestId) async {
     await _postSimple(ApiConfig.localPoolAcceptPassenger(requestId), const {});
   }
@@ -466,6 +749,40 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
     );
   }
 
+  Widget _seatTile(String label, String subtitle, Color color) {
+    return Container(
+      width: 78,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withValues(alpha: 0.18)),
+      ),
+      child: Column(
+        children: [
+          Icon(Icons.event_seat_rounded, size: 18, color: color),
+          const SizedBox(height: 6),
+          Text(
+            label,
+            style: GoogleFonts.poppins(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: _textPri,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            subtitle,
+            style: GoogleFonts.poppins(
+              fontSize: 10.5,
+              color: _textSec,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildPassengers() {
     if (_passengers.isEmpty) {
       return Container(
@@ -488,6 +805,8 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
   Widget _buildPassengerCard(Map<String, dynamic> p) {
     final status = p['status']?.toString() ?? 'matched';
     final requestId = p['id']?.toString() ?? '';
+    final safety = p['safety'] is Map<String, dynamic> ? p['safety'] as Map<String, dynamic> : null;
+    final safetyLabel = safety?['badgeLabel']?.toString();
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(16),
@@ -510,7 +829,14 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(p['customer_name']?.toString() ?? 'Passenger', style: GoogleFonts.poppins(fontWeight: FontWeight.w600, color: _textPri)),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(p['customer_name']?.toString() ?? 'Passenger', style: GoogleFonts.poppins(fontWeight: FontWeight.w600, color: _textPri)),
+                        ),
+                        if (safetyLabel != null) _userSafetyBadge(safetyLabel),
+                      ],
+                    ),
                     const SizedBox(height: 2),
                     Text('${p['seats_requested'] ?? 1} seat(s) · ₹${double.tryParse('${p['total_fare'] ?? 0}')?.toStringAsFixed(0) ?? '0'}', style: GoogleFonts.poppins(fontSize: 12, color: _textSec)),
                   ],
@@ -566,7 +892,53 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
                     child: Text('Drop Passenger', style: GoogleFonts.poppins(color: Colors.white, fontWeight: FontWeight.w600)),
                   ),
                 ),
+              ] else if (status == 'dropped') ...[
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: requestId.isEmpty ? null : () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => _LocalPassengerRatingScreen(
+                          requestId: requestId,
+                          passengerName: p['customer_name']?.toString() ?? 'Passenger',
+                        ),
+                      ),
+                    ),
+                    style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFF59E0B), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                    child: Text('Rate Passenger', style: GoogleFonts.poppins(color: Colors.white, fontWeight: FontWeight.w600)),
+                  ),
+                ),
               ],
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              OutlinedButton.icon(
+                onPressed: requestId.isEmpty ? null : () => _openPassengerChat(p),
+                style: OutlinedButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                icon: const Icon(Icons.chat_bubble_outline_rounded, size: 16),
+                label: Text('Chat', style: GoogleFonts.poppins(fontWeight: FontWeight.w600, fontSize: 12)),
+              ),
+              OutlinedButton.icon(
+                onPressed: (p['customer_id']?.toString().isEmpty ?? true) ? null : () => _startPassengerCall(p),
+                style: OutlinedButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                icon: const Icon(Icons.call_rounded, size: 16),
+                label: Text('Call', style: GoogleFonts.poppins(fontWeight: FontWeight.w600, fontSize: 12)),
+              ),
+              OutlinedButton.icon(
+                onPressed: requestId.isEmpty ? null : () => _sharePassenger(p),
+                style: OutlinedButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                icon: const Icon(Icons.share_outlined, size: 16),
+                label: Text('Share', style: GoogleFonts.poppins(fontWeight: FontWeight.w600, fontSize: 12)),
+              ),
+              OutlinedButton.icon(
+                onPressed: (p['customer_id']?.toString().isEmpty ?? true) ? null : () => _blockPassenger(p),
+                style: OutlinedButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                icon: const Icon(Icons.block_outlined, size: 16),
+                label: Text('Block', style: GoogleFonts.poppins(fontWeight: FontWeight.w600, fontSize: 12)),
+              ),
             ],
           ),
         ],
@@ -599,6 +971,186 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
       child: Text(
         status.replaceAll('_', ' '),
         style: GoogleFonts.poppins(fontSize: 11, fontWeight: FontWeight.w600, color: color),
+      ),
+    );
+  }
+}
+
+Widget _userSafetyBadge(String label) {
+  final color = label == 'Blocked User'
+      ? JT.error
+      : label == 'High Risk User'
+          ? JT.warning
+          : JT.primary;
+  return Container(
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+    decoration: BoxDecoration(
+      color: color.withValues(alpha: 0.12),
+      borderRadius: BorderRadius.circular(999),
+      border: Border.all(color: color.withValues(alpha: 0.2)),
+    ),
+    child: Text(
+      label,
+      style: GoogleFonts.poppins(fontSize: 11, fontWeight: FontWeight.w600, color: color),
+    ),
+  );
+}
+
+Widget _actionPill(IconData icon, String label, Future<void> Function() onTap, Color color) {
+  return InkWell(
+    onTap: onTap,
+    borderRadius: BorderRadius.circular(14),
+    child: Ink(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withValues(alpha: 0.20)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: color, size: 18),
+          const SizedBox(width: 8),
+          Text(label, style: GoogleFonts.poppins(fontSize: 12.5, fontWeight: FontWeight.w600, color: color)),
+        ],
+      ),
+    ),
+  );
+}
+
+class _LocalPassengerRatingScreen extends StatefulWidget {
+  final String requestId;
+  final String passengerName;
+
+  const _LocalPassengerRatingScreen({
+    required this.requestId,
+    required this.passengerName,
+  });
+
+  @override
+  State<_LocalPassengerRatingScreen> createState() => _LocalPassengerRatingScreenState();
+}
+
+class _LocalPassengerRatingScreenState extends State<_LocalPassengerRatingScreen> {
+  final _noteCtrl = TextEditingController();
+  final Map<String, int> _ratings = {
+    'Safety': 5,
+    'Behaviour': 5,
+    'Punctuality': 5,
+    'Overall': 5,
+  };
+  bool _loading = false;
+
+  @override
+  void dispose() {
+    _noteCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_loading) return;
+    setState(() => _loading = true);
+    try {
+      final headers = await AuthService.getHeaders();
+      headers['Content-Type'] = 'application/json';
+      final res = await http.post(
+        Uri.parse(ApiConfig.localPoolRatePassenger(widget.requestId)),
+        headers: headers,
+        body: jsonEncode({
+          'overallRating': _ratings['Overall'],
+          'safetyRating': _ratings['Safety'],
+          'behaviourRating': _ratings['Behaviour'],
+          'punctualityRating': _ratings['Punctuality'],
+          'note': _noteCtrl.text.trim(),
+        }),
+      ).timeout(const Duration(seconds: 15));
+      final body = jsonDecode(res.body);
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Passenger rating submitted')));
+        Navigator.pop(context, body);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(body['message']?.toString() ?? 'Could not submit rating')));
+      }
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Network issue while submitting rating')));
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: JT.bgSoft,
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        elevation: 0,
+        surfaceTintColor: Colors.transparent,
+        title: Text('Rate Passenger', style: JT.h4),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          Container(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: JT.border),
+              boxShadow: JT.cardShadow,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(widget.passengerName, style: JT.h4),
+                const SizedBox(height: 6),
+                Text('Driver-side passenger rating is saved only once after trip completion.', style: JT.body),
+                const SizedBox(height: 16),
+                ..._ratings.keys.map((label) => Padding(
+                  padding: const EdgeInsets.only(bottom: 14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(label, style: JT.bodyPrimary),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: List.generate(5, (index) {
+                          final star = index + 1;
+                          return IconButton(
+                            onPressed: () => setState(() => _ratings[label] = star),
+                            padding: EdgeInsets.zero,
+                            visualDensity: VisualDensity.compact,
+                            icon: Icon(
+                              star <= (_ratings[label] ?? 5) ? Icons.star_rounded : Icons.star_outline_rounded,
+                              color: JT.warning,
+                            ),
+                          );
+                        }),
+                      ),
+                    ],
+                  ),
+                )),
+                TextField(
+                  controller: _noteCtrl,
+                  minLines: 3,
+                  maxLines: 4,
+                  decoration: InputDecoration(
+                    hintText: 'Add optional notes',
+                    filled: true,
+                    fillColor: JT.surfaceAlt,
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide(color: JT.border)),
+                    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide(color: JT.border)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+          JT.gradientButton(label: _loading ? 'Submitting...' : 'Submit Rating', onTap: _submit, loading: _loading),
+        ],
       ),
     );
   }

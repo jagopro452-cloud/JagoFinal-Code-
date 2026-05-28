@@ -1,10 +1,17 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import '../../config/api_config.dart';
 import '../../config/jago_theme.dart';
 import '../../services/auth_service.dart';
+import '../../services/socket_service.dart';
+import '../call/call_screen.dart';
+import '../chat/trip_chat_sheet.dart';
+import '../profile/support_chat_screen.dart';
+import '../tracking/pool_experience_screens.dart';
 
 class OutstationPoolScreen extends StatefulWidget {
   const OutstationPoolScreen({super.key});
@@ -418,12 +425,24 @@ class _RideCard extends StatelessWidget {
     ),
   );
 
-  void _showBookDialog(BuildContext context, Map<String, dynamic> ride, double farePerSeat, int maxSeats) {
-    showModalBottomSheet(
+  Future<void> _showBookDialog(BuildContext context, Map<String, dynamic> ride, double farePerSeat, int maxSeats) async {
+    final booking = await showModalBottomSheet<Map<String, dynamic>>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => _BookBottomSheet(ride: ride, farePerSeat: farePerSeat, maxSeats: maxSeats),
+    );
+    if (!context.mounted || booking == null) return;
+    final bookingId = booking['id']?.toString() ?? '';
+    if (bookingId.isEmpty) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => OutstationPoolBookingDetailScreen(
+          bookingId: bookingId,
+          initialBooking: booking,
+        ),
+      ),
     );
   }
 }
@@ -496,7 +515,7 @@ class _BookBottomSheetState extends State<_BookBottomSheet> {
         headers: {...headers, 'Content-Type': 'application/json'},
         body: jsonEncode({
           'rideId': rideId,
-          'seats': _seats,
+          'seatsBooked': _seats,
           'paymentMethod': _paymentMethod,
           'pickupLat': pickupLat,
           'pickupLng': pickupLng,
@@ -505,7 +524,7 @@ class _BookBottomSheetState extends State<_BookBottomSheet> {
           'pickupAddress': _pickupCtrl.text.trim().isNotEmpty
               ? _pickupCtrl.text.trim()
               : (widget.ride['fromCity']?.toString() ?? widget.ride['from_city']?.toString() ?? 'Pickup point'),
-          'dropAddress': _dropCtrl.text.trim().isNotEmpty
+          'dropoffAddress': _dropCtrl.text.trim().isNotEmpty
               ? _dropCtrl.text.trim()
               : (widget.ride['toCity']?.toString() ?? widget.ride['to_city']?.toString() ?? 'Drop point'),
         }),
@@ -518,7 +537,10 @@ class _BookBottomSheetState extends State<_BookBottomSheet> {
       }
       final body = jsonDecode(res.body) as Map<String, dynamic>;
       if (res.statusCode == 200 && body['success'] == true) {
-        Navigator.of(context).pop();
+        final booking = body['booking'];
+        Navigator.of(context).pop(
+          booking is Map<String, dynamic> ? booking : null,
+        );
         final totalFare = body['totalFare'];
         final bookingMessage = body['message']?.toString() ?? 'Booking confirmed!';
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -614,6 +636,52 @@ class _BookBottomSheetState extends State<_BookBottomSheet> {
               ],
             ),
 
+            const SizedBox(height: 14),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: JT.bgSoft,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: JT.border),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Seat Availability',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: JT.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: List.generate(widget.maxSeats, (index) {
+                      final isSelectable = index < _maxSelectableSeats;
+                      final isSelected = index < _seats;
+                      return _seatStatusChip(
+                        label: 'S${index + 1}',
+                        subtitle: isSelected
+                            ? 'Selected'
+                            : isSelectable
+                                ? 'Open'
+                                : 'Reserved',
+                        color: isSelected
+                            ? JT.primary
+                            : isSelectable
+                                ? JT.success
+                                : JT.textTertiary,
+                      );
+                    }),
+                  ),
+                ],
+              ),
+            ),
+
             const SizedBox(height: 16),
 
             // Optional pickup/drop addresses
@@ -671,6 +739,44 @@ class _BookBottomSheetState extends State<_BookBottomSheet> {
       child: Icon(icon, color: JT.primary, size: 18),
     ),
   );
+
+  Widget _seatStatusChip({
+    required String label,
+    required String subtitle,
+    required Color color,
+  }) {
+    return Container(
+      width: 84,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withValues(alpha: 0.16)),
+      ),
+      child: Column(
+        children: [
+          Icon(Icons.event_seat_rounded, size: 18, color: color),
+          const SizedBox(height: 6),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: JT.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            subtitle,
+            style: TextStyle(
+              fontSize: 10.5,
+              color: JT.textSecondary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _payBtn(String value, IconData icon, String label) => Expanded(
     child: GestureDetector(
@@ -816,7 +922,17 @@ class _BookingsTabState extends State<_BookingsTab> {
           String formattedCreated = '';
           try { formattedCreated = DateFormat('dd MMM, h:mm a').format(DateTime.parse(createdAt).toLocal()); } catch (_) {}
 
-          return Container(
+          return GestureDetector(
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => OutstationPoolBookingDetailScreen(
+                  bookingId: b['id']?.toString() ?? '',
+                  initialBooking: b,
+                ),
+              ),
+            ),
+            child: Container(
             margin: const EdgeInsets.only(bottom: 12),
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
@@ -874,8 +990,826 @@ class _BookingsTabState extends State<_BookingsTab> {
                 ],
               ],
             ),
+          ),
           );
         },
+      ),
+    );
+  }
+}
+
+class OutstationPoolBookingDetailScreen extends StatefulWidget {
+  final String bookingId;
+  final Map<String, dynamic>? initialBooking;
+
+  const OutstationPoolBookingDetailScreen({
+    super.key,
+    required this.bookingId,
+    this.initialBooking,
+  });
+
+  @override
+  State<OutstationPoolBookingDetailScreen> createState() =>
+      _OutstationPoolBookingDetailScreenState();
+}
+
+class _OutstationPoolBookingDetailScreenState
+    extends State<OutstationPoolBookingDetailScreen> {
+  final SocketService _socket = SocketService();
+  Map<String, dynamic>? _booking;
+  bool _loading = true;
+  String? _error;
+  StreamSubscription<Map<String, dynamic>>? _callIncomingSub;
+  StreamSubscription<Map<String, dynamic>>? _driverLocationSub;
+  StreamSubscription<Map<String, dynamic>>? _seatUpdateSub;
+  StreamSubscription<Map<String, dynamic>>? _poolStatusSub;
+  StreamSubscription<Map<String, dynamic>>? _refundUpdateSub;
+  StreamSubscription<Map<String, dynamic>>? _safetyUpdateSub;
+  LatLng? _driverLatLng;
+
+  @override
+  void initState() {
+    super.initState();
+    _booking = widget.initialBooking;
+    _callIncomingSub = _socket.onCallIncoming.listen((event) {
+      final scope = event['callScope']?.toString();
+      final poolModule = event['poolModule']?.toString();
+      final referenceId = event['tripId']?.toString() ?? '';
+      if (scope != 'pool' || poolModule != 'outstation_pool' || referenceId != widget.bookingId || !mounted) return;
+      final callerId = event['callerId']?.toString() ?? '';
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => CallScreen(
+            contactName: event['callerName']?.toString() ?? 'Driver',
+            tripId: widget.bookingId,
+            targetUserId: callerId,
+            isIncoming: true,
+            callerIdForIncoming: callerId,
+            callScope: 'pool',
+            poolModule: 'outstation_pool',
+          ),
+        ),
+      );
+    });
+    _driverLocationSub = _socket.onPoolDriverLocation.listen((event) {
+      if ((event['module']?.toString() ?? '') != 'outstation_pool') return;
+      final rideId = event['rideId']?.toString() ?? '';
+      final bookingRideId = _booking?['rideId']?.toString() ?? _booking?['ride_id']?.toString() ?? '';
+      if (rideId.isNotEmpty && bookingRideId.isNotEmpty && rideId != bookingRideId) return;
+      final lat = double.tryParse('${event['lat'] ?? ''}');
+      final lng = double.tryParse('${event['lng'] ?? ''}');
+      if (lat == null || lng == null || !mounted) return;
+      setState(() => _driverLatLng = LatLng(lat, lng));
+    });
+    _seatUpdateSub = _socket.onPoolSeatUpdate.listen((event) {
+      if ((event['module']?.toString() ?? '') != 'outstation_pool' || !mounted) return;
+      final rideId = event['rideId']?.toString() ?? '';
+      final bookingRideId = _booking?['rideId']?.toString() ?? _booking?['ride_id']?.toString() ?? '';
+      if (rideId.isNotEmpty && bookingRideId.isNotEmpty && rideId != bookingRideId) return;
+      _load();
+    });
+    _poolStatusSub = _socket.onPoolStatus.listen((event) {
+      if ((event['module']?.toString() ?? '') != 'outstation_pool' || !mounted) return;
+      final referenceId = event['referenceId']?.toString() ?? event['bookingId']?.toString() ?? '';
+      if (referenceId.isNotEmpty && referenceId != widget.bookingId) return;
+      final nextStatus = event['status']?.toString() ?? '';
+      if (_booking != null && nextStatus.isNotEmpty) {
+        setState(() {
+          _booking = {
+            ..._booking!,
+            'status': nextStatus,
+            if (event['refundAmount'] != null) 'refundAmount': event['refundAmount'],
+            if (event['refundStatus'] != null) 'refundStatus': event['refundStatus'],
+          };
+        });
+      }
+      _load();
+    });
+    _refundUpdateSub = _socket.onPoolRefundUpdated.listen((event) {
+      if ((event['module']?.toString() ?? '') != 'outstation_pool' || !mounted) return;
+      final referenceId = event['referenceId']?.toString() ?? event['bookingId']?.toString() ?? '';
+      if (referenceId != widget.bookingId) return;
+      _load();
+    });
+    _safetyUpdateSub = _socket.onPoolSafetyUpdated.listen((event) {
+      if ((event['module']?.toString() ?? '') != 'outstation_pool' || !mounted) return;
+      final referenceId = event['referenceId']?.toString() ?? '';
+      if (referenceId != widget.bookingId) return;
+      _load();
+    });
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _callIncomingSub?.cancel();
+    _driverLocationSub?.cancel();
+    _seatUpdateSub?.cancel();
+    _poolStatusSub?.cancel();
+    _refundUpdateSub?.cancel();
+    _safetyUpdateSub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final headers = await AuthService.getHeaders();
+      final res = await http.get(
+        Uri.parse(ApiConfig.outstationPoolBookings),
+        headers: headers,
+      ).timeout(const Duration(seconds: 15));
+      if (!mounted) return;
+      if (res.statusCode == 401) {
+        await AuthService.handle401();
+        return;
+      }
+      if (res.statusCode != 200) {
+        setState(() {
+          _loading = false;
+          _error = 'Could not load booking details.';
+        });
+        return;
+      }
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      final bookings = (body['data'] as List<dynamic>? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .toList();
+      final match = bookings.cast<Map<String, dynamic>?>().firstWhere(
+            (item) => item?['id']?.toString() == widget.bookingId,
+            orElse: () => widget.initialBooking,
+          );
+      setState(() {
+        _booking = match;
+        final lat = double.tryParse('${match?['current_lat'] ?? ''}');
+        final lng = double.tryParse('${match?['current_lng'] ?? ''}');
+        if (lat != null && lng != null) {
+          _driverLatLng = LatLng(lat, lng);
+        }
+        _loading = false;
+        if (match == null) {
+          _error = 'This booking is no longer available.';
+        }
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = 'Network error while loading booking details.';
+      });
+    }
+  }
+
+  Color _statusColor(String status) {
+    switch (status) {
+      case 'confirmed':
+        return JT.success;
+      case 'cancelled':
+        return JT.error;
+      case 'dropped':
+      case 'completed':
+        return JT.primary;
+      default:
+        return JT.warning;
+    }
+  }
+
+  String _statusMessage(String status) {
+    switch (status) {
+      case 'confirmed':
+        return 'Your seat is confirmed. Keep this page handy for pickup readiness and support.';
+      case 'dropped':
+      case 'completed':
+        return 'This pool trip is completed. You can review the booking summary or contact support.';
+      case 'cancelled':
+        return 'This booking was cancelled. If payment was already collected, support can help with refund follow-up.';
+      default:
+        return 'We are keeping your pooled booking details ready here.';
+    }
+  }
+
+  String _paymentHint(String paymentMethod, String paymentStatus) {
+    if (paymentStatus == 'paid') {
+      return 'Payment is already settled through ${paymentMethod.toUpperCase()}.';
+    }
+    if (paymentMethod == 'cash') {
+      return 'Pay the driver at boarding time and keep the receipt reference safe.';
+    }
+    return 'Payment is still pending. Contact support if the status does not update after pickup.';
+  }
+
+  Future<void> _openCancellationFlow() async {
+    final booking = _booking;
+    if (booking == null) return;
+    final result = await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PoolCancellationScreen(
+          title: 'Cancel Pool Booking',
+          bookingId: widget.bookingId,
+          isOutstation: true,
+          routeLabel:
+              '${booking['fromCity'] ?? booking['from_city'] ?? ''} -> ${booking['toCity'] ?? booking['to_city'] ?? ''}',
+          seatsBooked: int.tryParse('${booking['seatsBooked'] ?? booking['seats_booked'] ?? 1}') ?? 1,
+          totalFare: double.tryParse(
+                booking['totalFare']?.toString() ?? booking['total_fare']?.toString() ?? '0',
+              ) ??
+              0,
+        ),
+      ),
+    );
+    if (result is Map && mounted) {
+      setState(() {
+        _booking = {
+          ...?_booking,
+          'status': 'cancelled',
+          if (result['refundAmount'] != null) 'refundAmount': result['refundAmount'],
+        };
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(result['message']?.toString() ?? 'Booking cancelled')),
+      );
+    }
+  }
+
+  void _openPoolChat() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => TripChatSheet(
+        tripId: widget.bookingId,
+        senderName: 'Customer',
+        chatScope: 'pool',
+        poolModule: 'outstation_pool',
+        title: 'Pool Chat',
+      ),
+    );
+  }
+
+  void _startPoolCall(String driverName, String driverId) {
+    if (driverId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Driver call is not available right now')),
+      );
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => CallScreen(
+          contactName: driverName.isEmpty ? 'Driver' : driverName,
+          tripId: widget.bookingId,
+          targetUserId: driverId,
+          callScope: 'pool',
+          poolModule: 'outstation_pool',
+        ),
+      ),
+    );
+  }
+
+  Widget _infoTile(IconData icon, String label, String value) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: JT.cardShadow,
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(
+              color: JT.primary.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, color: JT.primary, size: 18),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label, style: JT.caption.copyWith(color: JT.textSecondary)),
+                const SizedBox(height: 4),
+                Text(value.isEmpty ? 'Not available yet' : value, style: JT.bodyPrimary),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _actionChip({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: Ink(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: JT.surfaceAlt,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: JT.border),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: JT.primary, size: 18),
+            const SizedBox(width: 8),
+            Text(label, style: JT.caption.copyWith(color: JT.textPrimary, fontWeight: FontWeight.w600)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _liveMapCard() {
+    final booking = _booking;
+    final pickupLat = double.tryParse('${booking?['pickup_lat'] ?? ''}');
+    final pickupLng = double.tryParse('${booking?['pickup_lng'] ?? ''}');
+    final dropLat = double.tryParse('${booking?['drop_lat'] ?? ''}');
+    final dropLng = double.tryParse('${booking?['drop_lng'] ?? ''}');
+    final pickup = (pickupLat != null && pickupLng != null) ? LatLng(pickupLat, pickupLng) : null;
+    final drop = (dropLat != null && dropLng != null) ? LatLng(dropLat, dropLng) : null;
+    final center = _driverLatLng ?? pickup ?? drop;
+    if (center == null) {
+      return _infoTile(
+        Icons.map_rounded,
+        'Live Movement',
+        'Driver live map will appear once route GPS starts syncing.',
+      );
+    }
+
+    final markers = <Marker>{
+      if (pickup != null)
+        Marker(
+          markerId: const MarkerId('pickup'),
+          position: pickup,
+          infoWindow: const InfoWindow(title: 'Pickup'),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+        ),
+      if (drop != null)
+        Marker(
+          markerId: const MarkerId('drop'),
+          position: drop,
+          infoWindow: const InfoWindow(title: 'Drop'),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+        ),
+      if (_driverLatLng != null)
+        Marker(
+          markerId: const MarkerId('driver'),
+          position: _driverLatLng!,
+          infoWindow: const InfoWindow(title: 'Driver'),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
+        ),
+    };
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: JT.cardShadow,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: JT.primary.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(Icons.map_rounded, color: JT.primary, size: 18),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Live Movement', style: JT.bodyPrimary),
+                    const SizedBox(height: 4),
+                    Text(
+                      _driverLatLng == null
+                          ? 'Waiting for driver GPS update.'
+                          : 'Driver position is syncing live for this pool trip.',
+                      style: JT.caption.copyWith(color: JT.textSecondary),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(14),
+            child: SizedBox(
+              height: 200,
+              child: GoogleMap(
+                initialCameraPosition: CameraPosition(target: center, zoom: 12.8),
+                markers: markers,
+                myLocationEnabled: false,
+                myLocationButtonEnabled: false,
+                zoomControlsEnabled: false,
+                compassEnabled: false,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final booking = _booking;
+    final status = booking?['status']?.toString() ?? 'pending';
+    final paymentMethod =
+        booking?['paymentMethod']?.toString() ?? booking?['payment_method']?.toString() ?? 'cash';
+    final paymentStatus =
+        booking?['paymentStatus']?.toString() ?? booking?['payment_status']?.toString() ?? 'pending';
+    final fare = double.tryParse(
+          booking?['totalFare']?.toString() ?? booking?['total_fare']?.toString() ?? '0',
+        ) ??
+        0;
+    final seats =
+        int.tryParse('${booking?['seatsBooked'] ?? booking?['seats_booked'] ?? 1}') ?? 1;
+    final route =
+        '${booking?['fromCity'] ?? booking?['from_city'] ?? ''} → ${booking?['toCity'] ?? booking?['to_city'] ?? ''}';
+    final driverName =
+        booking?['driverName']?.toString() ?? booking?['driver_name']?.toString() ?? '';
+    final driverPhone =
+        booking?['driverPhone']?.toString() ?? booking?['driver_phone']?.toString() ?? '';
+    final departureDate =
+        booking?['departureDate']?.toString() ?? booking?['departure_date']?.toString() ?? '';
+    final departureTime =
+        booking?['departureTime']?.toString() ?? booking?['departure_time']?.toString() ?? '';
+    final pickupAddress =
+        booking?['pickupAddress']?.toString() ?? booking?['pickup_address']?.toString() ?? '';
+    final dropoffAddress =
+        booking?['dropoffAddress']?.toString() ?? booking?['dropoff_address']?.toString() ?? '';
+    final driverSafety = booking?['driverSafety'] is Map<String, dynamic>
+        ? booking!['driverSafety'] as Map<String, dynamic>
+        : null;
+    final driverSafetyLabel = driverSafety?['badgeLabel']?.toString();
+    final driverId =
+        booking?['driverId']?.toString() ?? booking?['driver_id']?.toString() ?? '';
+
+    return Scaffold(
+      backgroundColor: JT.bgSoft,
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        elevation: 0,
+        surfaceTintColor: Colors.transparent,
+        title: Text('Pool Booking', style: JT.h5),
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator(color: JT.primary))
+          : _error != null
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.cloud_off_rounded, size: 50, color: JT.textSecondary),
+                        const SizedBox(height: 12),
+                        Text(_error!, textAlign: TextAlign.center, style: JT.body),
+                        const SizedBox(height: 16),
+                        JT.gradientButton(label: 'Retry', onTap: _load),
+                      ],
+                    ),
+                  ),
+                )
+              : RefreshIndicator(
+                  onRefresh: _load,
+                  color: JT.primary,
+                  child: ListView(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(18),
+                        decoration: BoxDecoration(
+                          gradient: JT.grad,
+                          borderRadius: BorderRadius.circular(22),
+                          boxShadow: JT.btnShadowHover,
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.16),
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                              child: Text(
+                                status.toUpperCase(),
+                                style: JT.caption.copyWith(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 14),
+                            Text(route, style: JT.h4.copyWith(color: Colors.white)),
+                            const SizedBox(height: 6),
+                            Text(
+                              _statusMessage(status),
+                              style: JT.smallText.copyWith(color: Colors.white.withValues(alpha: 0.92)),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Row(
+                        children: [
+                          Expanded(child: _infoTile(Icons.event_seat_rounded, 'Seats', '$seats booked')),
+                          const SizedBox(width: 12),
+                          Expanded(child: _infoTile(Icons.currency_rupee_rounded, 'Total Fare', '₹${fare.toStringAsFixed(0)}')),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      _infoTile(
+                        Icons.calendar_today_rounded,
+                        'Departure',
+                        '${departureDate.isEmpty ? 'TBD' : departureDate}${departureTime.isNotEmpty ? ' • $departureTime' : ''}',
+                      ),
+                      const SizedBox(height: 12),
+                      _infoTile(Icons.trip_origin_rounded, 'Pickup Point', pickupAddress),
+                      const SizedBox(height: 12),
+                      _infoTile(Icons.location_on_rounded, 'Drop Point', dropoffAddress),
+                      const SizedBox(height: 12),
+                      _liveMapCard(),
+                      const SizedBox(height: 12),
+                      _infoTile(
+                        Icons.person_rounded,
+                        'Driver',
+                        driverName.isEmpty
+                            ? 'Driver details will appear once assigned.'
+                            : '$driverName${driverPhone.isNotEmpty ? ' • $driverPhone' : ''}',
+                      ),
+                      if (driverSafetyLabel != null) ...[
+                        const SizedBox(height: 12),
+                        _safetyNotice(driverSafetyLabel),
+                      ],
+                      if (status == 'confirmed' || status == 'completed' || status == 'cancelled' || status == 'dropped' || status == 'picked_up') ...[
+                        const SizedBox(height: 12),
+                        Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(18),
+                            boxShadow: JT.cardShadow,
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('Pool Actions', style: JT.h5),
+                              const SizedBox(height: 12),
+                              Wrap(
+                                spacing: 10,
+                                runSpacing: 10,
+                                children: [
+                                  _actionChip(
+                                    icon: Icons.chat_bubble_outline_rounded,
+                                    label: 'Chat Driver',
+                                    onTap: _openPoolChat,
+                                  ),
+                                  if (status == 'confirmed' || status == 'picked_up')
+                                    _actionChip(
+                                      icon: Icons.call_rounded,
+                                      label: 'Call Driver',
+                                      onTap: () => _startPoolCall(driverName, driverId),
+                                    ),
+                                  _actionChip(
+                                    icon: Icons.people_alt_rounded,
+                                    label: 'Co-Passengers',
+                                    onTap: () => Navigator.of(context).push(
+                                      MaterialPageRoute(
+                                        builder: (_) => CoPassengerScreen(
+                                          title: 'Co-Passengers',
+                                          referenceId: widget.bookingId,
+                                          isOutstation: true,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  _actionChip(
+                                    icon: Icons.report_gmailerrorred_rounded,
+                                    label: 'Report Issue',
+                                    onTap: () => Navigator.of(context).push(
+                                      MaterialPageRoute(
+                                        builder: (_) => ReportIssueScreen(
+                                          referenceId: widget.bookingId,
+                                          module: 'outstation_pool',
+                                          referenceType: 'booking',
+                                          title: 'Report Pool Issue',
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  _actionChip(
+                                    icon: Icons.support_agent_rounded,
+                                    label: 'Support',
+                                    onTap: () => Navigator.of(context).push(
+                                      MaterialPageRoute(
+                                        builder: (_) => PoolSupportScreen(
+                                          module: 'outstation_pool',
+                                          referenceId: widget.bookingId,
+                                          title: 'Pool Support',
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  _actionChip(
+                                    icon: Icons.shield_outlined,
+                                    label: 'Safety',
+                                    onTap: () => Navigator.of(context).push(
+                                      MaterialPageRoute(
+                                        builder: (_) => PoolSafetyScreen(
+                                          title: 'Pool Safety',
+                                          module: 'outstation_pool',
+                                          referenceId: widget.bookingId,
+                                          tripId: widget.bookingId,
+                                          driverName: booking?['driverName']?.toString() ?? booking?['driver_name']?.toString() ?? '',
+                                          vehicleInfo: '${booking?['vehicleModel'] ?? booking?['vehicle_model'] ?? ''} ${booking?['vehicleNumber'] ?? booking?['vehicle_number'] ?? ''}'.trim(),
+                                          liveStatus: status,
+                                          blockedUserId: booking?['driverId']?.toString() ?? booking?['driver_id']?.toString(),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  _actionChip(
+                                    icon: Icons.timeline_rounded,
+                                    label: 'Dispute',
+                                    onTap: () => Navigator.of(context).push(
+                                      MaterialPageRoute(
+                                        builder: (_) => PoolDisputeTimelineScreen(
+                                          title: 'Dispute Timeline',
+                                          module: 'outstation_pool',
+                                          referenceId: widget.bookingId,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  if (status == 'confirmed')
+                                    _actionChip(
+                                      icon: Icons.cancel_rounded,
+                                      label: 'Cancel Booking',
+                                      onTap: _openCancellationFlow,
+                                    ),
+                                  if (status == 'completed' || status == 'dropped')
+                                    _actionChip(
+                                      icon: Icons.star_rounded,
+                                      label: 'Rate Driver',
+                                      onTap: () => Navigator.of(context).push(
+                                        MaterialPageRoute(
+                                          builder: (_) => PoolRatingScreen(
+                                            title: 'Rate Pool Driver',
+                                            referenceId: widget.bookingId,
+                                            isOutstation: true,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(18),
+                          boxShadow: JT.cardShadow,
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Payment & Refund Timeline', style: JT.h5),
+                            const SizedBox(height: 10),
+                            _timelineRow(
+                              'Booking confirmed',
+                              'Seat locked under ${status.toUpperCase()} status.',
+                              _statusColor(status),
+                            ),
+                            _timelineRow(
+                              paymentStatus == 'paid' ? 'Payment settled' : 'Payment pending',
+                              _paymentHint(paymentMethod.toLowerCase(), paymentStatus.toLowerCase()),
+                              paymentStatus == 'paid' ? JT.success : JT.warning,
+                            ),
+                            _timelineRow(
+                              'Support / refund follow-up',
+                              status == 'cancelled'
+                                  ? 'Cancellation-related refund checks go through Jago support.'
+                                  : 'Use support if pickup, seat, or payment status looks incorrect.',
+                              status == 'cancelled' ? JT.error : JT.primary,
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(18),
+                          boxShadow: JT.cardShadow,
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Need Help?', style: JT.h5),
+                            const SizedBox(height: 6),
+                            Text(
+                              'For seat issues, pickup confusion, cancellation, refund, or driver concerns, reach Jago support from here.',
+                              style: JT.body,
+                            ),
+                            const SizedBox(height: 14),
+                            JT.gradientButton(
+                              label: 'Open Support Chat',
+                              onTap: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(builder: (_) => const SupportChatScreen()),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+    );
+  }
+
+  Widget _timelineRow(String title, String subtitle, Color color) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 12,
+            height: 12,
+            margin: const EdgeInsets.only(top: 4),
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: JT.subtitle1),
+                const SizedBox(height: 2),
+                Text(subtitle, style: JT.smallText),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _safetyNotice(String label) {
+    final color = label == 'Blocked User'
+        ? JT.error
+        : label == 'High Risk User'
+            ? JT.warning
+            : JT.primary;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withValues(alpha: 0.18)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.shield_outlined, color: color, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              '$label visibility is enabled for your safety. Use Safety or Support if you need help.',
+              style: JT.smallText.copyWith(color: color),
+            ),
+          ),
+        ],
       ),
     );
   }

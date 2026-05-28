@@ -46,6 +46,12 @@ import {
   revokeAppSession,
 } from "./auth/app-session";
 import {
+  deleteOtpCode,
+  findLatestOtpCode,
+  incrementOtpAttempts,
+  replaceOtpCode,
+} from "./auth/otp.repo";
+import {
   authenticateAdminAccessToken,
   issueAdminSession as issueAdminJwtSession,
   refreshAdminSession,
@@ -3147,7 +3153,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const { db: ltDb } = await import("./db");
       const { sql: ltSql } = await import("drizzle-orm");
-      const r = await ltDb.execute(ltSql`
+      const rideR = await ltDb.execute(ltSql`
         SELECT
           t.id, t.ref_id, t.trip_type,
           t.pickup_address, t.destination_address,
@@ -3175,7 +3181,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ORDER BY t.created_at DESC
       `);
 
-      const trips = r.rows.map((t: any) => {
+      const rideTrips = rideR.rows.map((t: any) => {
         const normalizedTripType =
           t.trip_type === "parcel" || t.trip_type === "delivery" ? "parcel" : "ride";
         const pickupLat = Number(t.pickup_lat);
@@ -3222,7 +3228,158 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         };
       });
 
-      res.json(trips);
+      const localPoolR = await ltDb.execute(ltSql`
+        SELECT
+          prr.id,
+          prr.pickup_address,
+          prr.drop_address,
+          prr.pickup_lat,
+          prr.pickup_lng,
+          prr.drop_lat,
+          prr.drop_lng,
+          prr.total_fare,
+          prr.distance_km,
+          prr.payment_method,
+          prr.status,
+          prr.created_at,
+          u.full_name as customer_name,
+          u.phone as customer_phone,
+          dps.driver_id,
+          dps.current_lat as driver_lat,
+          dps.current_lng as driver_lng,
+          dps.heading as driver_heading,
+          dps.speed as driver_speed,
+          dps.updated_at as driver_location_updated_at,
+          dps.pool_vehicle_type as vehicle_type
+        FROM pool_ride_requests prr
+        JOIN users u ON u.id = prr.customer_id
+        LEFT JOIN driver_pool_sessions dps ON dps.id = COALESCE(prr.session_id, prr.proposed_session_id)
+        WHERE prr.status IN ('matched', 'picked_up')
+          AND prr.pickup_lat IS NOT NULL
+          AND prr.drop_lat IS NOT NULL
+        ORDER BY prr.created_at DESC
+      `).catch(() => ({ rows: [] as any[] }));
+
+      const localPoolTrips = localPoolR.rows.map((t: any) => {
+        const pickupLat = Number(t.pickup_lat);
+        const pickupLng = Number(t.pickup_lng);
+        const destinationLat = Number(t.drop_lat);
+        const destinationLng = Number(t.drop_lng);
+        const currentLat = t.driver_lat !== null && t.driver_lat !== undefined ? Number(t.driver_lat) : pickupLat;
+        const currentLng = t.driver_lng !== null && t.driver_lng !== undefined ? Number(t.driver_lng) : pickupLng;
+        const segmentLat = destinationLat - pickupLat;
+        const segmentLng = destinationLng - pickupLng;
+        const segmentLengthSq = segmentLat * segmentLat + segmentLng * segmentLng;
+        const projectedProgress = segmentLengthSq > 0
+          ? ((currentLat - pickupLat) * segmentLat + (currentLng - pickupLng) * segmentLng) / segmentLengthSq
+          : 0;
+        const progressPct = Math.max(0, Math.min(100, Math.round(projectedProgress * 100)));
+        return {
+          id: t.id,
+          refId: t.id,
+          type: "ride",
+          rawType: "local_pool",
+          module: "local_pool",
+          vehicleType: t.vehicle_type || "Pool",
+          customerName: t.customer_name || "Customer",
+          customerPhone: t.customer_phone,
+          zoneId: null,
+          zoneName: "Local Pool",
+          pickupAddress: t.pickup_address,
+          destinationAddress: t.drop_address,
+          pickupLat,
+          pickupLng,
+          destinationLat,
+          destinationLng,
+          currentLat,
+          currentLng,
+          progress: progressPct,
+          estimatedFare: t.total_fare,
+          estimatedDistance: t.distance_km,
+          paymentMethod: t.payment_method,
+          status: t.status,
+          driverHeading: t.driver_heading !== null && t.driver_heading !== undefined ? Number(t.driver_heading) : null,
+          driverSpeed: t.driver_speed !== null && t.driver_speed !== undefined ? Number(t.driver_speed) : null,
+          driverLocationUpdatedAt: t.driver_location_updated_at,
+          telemetryLive: t.driver_lat !== null && t.driver_lng !== null,
+        };
+      });
+
+      const outstationPoolR = await ltDb.execute(ltSql`
+        SELECT
+          opb.id,
+          opb.pickup_address,
+          opb.dropoff_address,
+          opb.pickup_lat,
+          opb.pickup_lng,
+          opb.drop_lat,
+          opb.drop_lng,
+          opb.total_fare,
+          opb.segment_km,
+          opb.payment_method,
+          opb.status,
+          opb.created_at,
+          u.full_name as customer_name,
+          u.phone as customer_phone,
+          opr.current_lat as driver_lat,
+          opr.current_lng as driver_lng,
+          opr.vehicle_model as vehicle_type,
+          opr.updated_at as driver_location_updated_at
+        FROM outstation_pool_bookings opb
+        JOIN users u ON u.id = opb.customer_id
+        JOIN outstation_pool_rides opr ON opr.id = opb.ride_id
+        WHERE opb.status IN ('confirmed', 'picked_up')
+          AND opb.pickup_lat IS NOT NULL
+          AND opb.drop_lat IS NOT NULL
+        ORDER BY opb.created_at DESC
+      `).catch(() => ({ rows: [] as any[] }));
+
+      const outstationPoolTrips = outstationPoolR.rows.map((t: any) => {
+        const pickupLat = Number(t.pickup_lat);
+        const pickupLng = Number(t.pickup_lng);
+        const destinationLat = Number(t.drop_lat);
+        const destinationLng = Number(t.drop_lng);
+        const currentLat = t.driver_lat !== null && t.driver_lat !== undefined ? Number(t.driver_lat) : pickupLat;
+        const currentLng = t.driver_lng !== null && t.driver_lng !== undefined ? Number(t.driver_lng) : pickupLng;
+        const segmentLat = destinationLat - pickupLat;
+        const segmentLng = destinationLng - pickupLng;
+        const segmentLengthSq = segmentLat * segmentLat + segmentLng * segmentLng;
+        const projectedProgress = segmentLengthSq > 0
+          ? ((currentLat - pickupLat) * segmentLat + (currentLng - pickupLng) * segmentLng) / segmentLengthSq
+          : 0;
+        const progressPct = Math.max(0, Math.min(100, Math.round(projectedProgress * 100)));
+        return {
+          id: t.id,
+          refId: t.id,
+          type: "ride",
+          rawType: "outstation_pool",
+          module: "outstation_pool",
+          vehicleType: t.vehicle_type || "Pool",
+          customerName: t.customer_name || "Customer",
+          customerPhone: t.customer_phone,
+          zoneId: null,
+          zoneName: "Outstation Pool",
+          pickupAddress: t.pickup_address,
+          destinationAddress: t.dropoff_address,
+          pickupLat,
+          pickupLng,
+          destinationLat,
+          destinationLng,
+          currentLat,
+          currentLng,
+          progress: progressPct,
+          estimatedFare: t.total_fare,
+          estimatedDistance: t.segment_km,
+          paymentMethod: t.payment_method,
+          status: t.status,
+          driverHeading: null,
+          driverSpeed: null,
+          driverLocationUpdatedAt: t.driver_location_updated_at,
+          telemetryLive: t.driver_lat !== null && t.driver_lng !== null,
+        };
+      });
+
+      res.json([...rideTrips, ...localPoolTrips, ...outstationPoolTrips]);
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -7170,6 +7327,49 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           console.log(`[REFUND-APPROVED] ?${refundAmt} credited to customer ${refund.customer_id}, refund ${id}`);
         }
       }
+      const refund = r.rows[0] as any;
+      const reasonText = String(refund?.reason || "");
+      const poolBookingMatch = reasonText.match(/(Outstation|Local) pool cancellation:\s*/i);
+      const referenceIdMatch = reasonText.match(/booking\s+([0-9a-f-]{36})/i) || String(refund?.admin_note || "").match(/booking\s+([0-9a-f-]{36})/i);
+      if (poolBookingMatch && refund?.customer_id && referenceIdMatch?.[1]) {
+        const module = /outstation/i.test(poolBookingMatch[1]) ? "outstation_pool" : "local_pool";
+        const payload = {
+          module,
+          referenceId: String(referenceIdMatch[1]),
+          refundId: String(refund.id || id),
+          refundAmount: String(refund.amount || 0),
+          refundStatus: String(status),
+          status: String(status),
+        };
+        io.to(`user:${refund.customer_id}`).emit("pool:refund_updated", payload);
+        const tokenR = await rawDb.execute(rawSql`
+          SELECT fcm_token
+          FROM user_devices
+          WHERE user_id = ${refund.customer_id}::uuid
+            AND fcm_token IS NOT NULL
+            AND fcm_token != ''
+          ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+          LIMIT 1
+        `).catch(() => ({ rows: [] as any[] }));
+        const fcmToken = (tokenR.rows[0] as any)?.fcm_token;
+        if (fcmToken) {
+          await sendFcmNotification({
+            fcmToken,
+            title: "Pool refund update",
+            body: status === "approved" ? "Your pool refund was approved." : status === "denied" ? "Your pool refund was rejected." : "Your pool refund is under review.",
+            dataOnly: true,
+            channelId: "trip_alerts_v2",
+            sound: "trip_alert",
+            data: {
+              type: "pool_refund_update",
+              module,
+              referenceId: String(referenceIdMatch[1]),
+              refundId: String(refund.id || id),
+              refundStatus: String(status),
+            },
+          }).catch(() => false);
+        }
+      }
       res.json(camelize(r.rows[0]));
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
@@ -8669,22 +8869,115 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // -- FORGOT PASSWORD (manual support reset, no OTP/Firebase) ---------------
+  // -- APP: Forgot Password / Reset Password ---------------------------------
   app.post("/api/app/forgot-password", otpLimiter, async (req, res) => {
     try {
       const { phone, userType = "customer" } = req.body;
       if (!phone) return res.status(400).json({ message: "Phone number is required" });
-      const phoneStr = phone.toString().replace(/\D/g, "");
-      if (phoneStr.length < 10) return res.status(400).json({ message: "Invalid phone number" });
-      const userRes = await rawDb.execute(rawSql`SELECT id FROM users WHERE phone=${phoneStr} AND user_type=${userType} LIMIT 1`);
+      const phoneStr = String(phone).replace(/\D/g, "").slice(-10);
+      const normalizedUserType = String(userType).trim().toLowerCase() === "driver" ? "driver" : "customer";
+      if (phoneStr.length !== 10) return res.status(400).json({ message: "Invalid phone number" });
+      const userRes = await rawDb.execute(rawSql`
+        SELECT id
+        FROM users
+        WHERE (phone=${phoneStr} OR mobile=${phoneStr})
+          AND user_type=${normalizedUserType}
+        LIMIT 1
+      `);
       if (!userRes.rows.length) return res.status(404).json({ message: "No account found with this phone number." });
-      console.log(`[RESET] ${phoneStr.slice(-4).padStart(phoneStr.length, '*')} -> support password reset`);
+
+      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+      const otpHash = await hashPassword(otp);
+      await replaceOtpCode({
+        phone: phoneStr,
+        countryCode: "+91",
+        otpHash,
+        expiresInSeconds: 5 * 60,
+        maxAttempts: 5,
+      });
+
+      const smsSent = await sendCustomSms(
+        phoneStr,
+        `Your JAGO password reset OTP is ${otp}. It is valid for 5 minutes. Do not share it.`,
+        { purpose: `${normalizedUserType}_password_reset`, userType: normalizedUserType },
+      );
+
+      if (!smsSent) {
+        return res.status(503).json({ message: "OTP delivery unavailable. Please try again." });
+      }
+
+      const response: Record<string, any> = {
+        success: true,
+        provider: "otp",
+        message: "Password reset OTP sent successfully.",
+      };
+      if (isDevOtpResponseEnabled) {
+        response.otp = otp;
+        response.dev = true;
+      }
+      res.json(response);
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  app.post("/api/app/reset-password", otpLimiter, async (req, res) => {
+    try {
+      const { phone, otp, newPassword, userType = "customer" } = req.body;
+      if (!phone || !otp || !newPassword) {
+        return res.status(400).json({ message: "Phone number, OTP and new password are required" });
+      }
+
+      const phoneStr = String(phone).replace(/\D/g, "").slice(-10);
+      const normalizedUserType = String(userType).trim().toLowerCase() === "driver" ? "driver" : "customer";
+      const passwordStr = String(newPassword);
+      if (phoneStr.length !== 10) return res.status(400).json({ message: "Invalid phone number" });
+      if (!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/.test(passwordStr)) {
+        return res.status(400).json({ message: "Password must be at least 8 characters and include upper, lower and number" });
+      }
+
+      const userRes = await rawDb.execute(rawSql`
+        SELECT id, full_name
+        FROM users
+        WHERE (phone=${phoneStr} OR mobile=${phoneStr})
+          AND user_type=${normalizedUserType}
+        LIMIT 1
+      `);
+      if (!userRes.rows.length) return res.status(404).json({ message: "No account found with this phone number." });
+
+      const otpRecord = await findLatestOtpCode({ phone: phoneStr, countryCode: "+91" });
+      if (!otpRecord) return res.status(400).json({ message: "Invalid OTP" });
+      if (otpRecord.expiresAt.getTime() <= Date.now()) {
+        await deleteOtpCode(otpRecord.id);
+        return res.status(410).json({ message: "OTP expired" });
+      }
+      if (otpRecord.attempts >= otpRecord.maxAttempts) {
+        return res.status(429).json({ message: "Too many attempts. Please request a new OTP." });
+      }
+
+      const valid = await verifyPassword(String(otp).trim(), otpRecord.otpHash);
+      if (!valid) {
+        await incrementOtpAttempts(otpRecord.id);
+        return res.status(400).json({ message: "Invalid OTP" });
+      }
+
+      await deleteOtpCode(otpRecord.id);
+      const passwordHash = await hashPassword(passwordStr);
+      await rawDb.execute(rawSql`
+        UPDATE users
+        SET password_hash=${passwordHash},
+            phone=${phoneStr},
+            mobile=${phoneStr},
+            name=COALESCE(name, full_name),
+            updated_at=NOW()
+        WHERE id=${(userRes.rows[0] as any).id}::uuid
+      `);
+
       res.json({
         success: true,
-        provider: 'support',
-        message: 'Password reset request received. Support will verify ownership before changing the password.',
+        message: "Password reset successfully. You can now login with your new password.",
       });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+    } catch (e: any) {
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
   });
 
   app.post("/api/app/auth/refresh", async (req, res) => {
@@ -11393,6 +11686,80 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       res.json({ trip });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  app.get("/api/app/customer/active-booking", authApp, async (req, res) => {
+    try {
+      const customer = (req as any).currentUser;
+      const [parcelR, localPoolR, outstationPoolR] = await Promise.all([
+        rawDb.execute(rawSql`
+          SELECT po.*, u.full_name AS driver_name, u.phone AS driver_phone
+          FROM parcel_orders po
+          LEFT JOIN users u ON u.id = po.driver_id
+          WHERE po.customer_id = ${customer.id}::uuid
+            AND po.current_status IN ('pending','searching','driver_assigned','accepted','picked_up','in_transit')
+          ORDER BY po.updated_at DESC, po.created_at DESC
+          LIMIT 1
+        `).catch(() => ({ rows: [] as any[] })),
+        rawDb.execute(rawSql`
+          SELECT prr.*,
+                 dps.current_lat AS driver_lat,
+                 dps.current_lng AS driver_lng,
+                 dps.driver_id,
+                 u.full_name AS driver_name,
+                 u.phone AS driver_phone
+          FROM pool_ride_requests prr
+          LEFT JOIN driver_pool_sessions dps ON dps.id = COALESCE(prr.session_id, prr.proposed_session_id)
+          LEFT JOIN users u ON u.id = dps.driver_id
+          WHERE prr.customer_id = ${customer.id}::uuid
+            AND prr.status IN ('searching','pending_driver_accept','matched','picked_up')
+          ORDER BY prr.updated_at DESC, prr.created_at DESC
+          LIMIT 1
+        `).catch(() => ({ rows: [] as any[] })),
+        rawDb.execute(rawSql`
+          SELECT opb.*,
+                 opr.status AS ride_status,
+                 opr.current_lat,
+                 opr.current_lng,
+                 opr.driver_id,
+                 opr.from_city,
+                 opr.to_city,
+                 opr.departure_date,
+                 opr.departure_time,
+                 u.full_name AS driver_name,
+                 u.phone AS driver_phone
+          FROM outstation_pool_bookings opb
+          JOIN outstation_pool_rides opr ON opr.id = opb.ride_id
+          LEFT JOIN users u ON u.id = opr.driver_id
+          WHERE opb.customer_id = ${customer.id}::uuid
+            AND opb.status IN ('confirmed','picked_up')
+          ORDER BY opb.updated_at DESC, opb.created_at DESC
+          LIMIT 1
+        `).catch(() => ({ rows: [] as any[] })),
+      ]);
+
+      const candidates = [
+        { bookingType: "parcel", booking: parcelR.rows[0] as any },
+        { bookingType: "local_pool", booking: localPoolR.rows[0] as any },
+        { bookingType: "outstation_pool", booking: outstationPoolR.rows[0] as any },
+      ].filter((item) => item.booking);
+
+      if (!candidates.length) return res.json({ booking: null, bookingType: null });
+
+      candidates.sort((a, b) => {
+        const aTime = new Date(a.booking.updated_at || a.booking.created_at || 0).getTime();
+        const bTime = new Date(b.booking.updated_at || b.booking.created_at || 0).getTime();
+        return bTime - aTime;
+      });
+
+      const selected = candidates[0];
+      res.json({
+        booking: camelize(selected.booking),
+        bookingType: selected.bookingType,
+      });
+    } catch (e: any) {
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
   });
 
   // -- TRIP: Get chat message history ---------------------------------------
@@ -14154,6 +14521,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
                u.vehicle_model, u.vehicle_brand, u.vehicle_color, u.vehicle_year,
                u.date_of_birth, u.city, u.selfie_image, u.profile_image, u.created_at,
                u.onboard_date,
+               dd.service_eligibility, dd.parcel_eligibility, dd.pool_eligibility,
+               dd.outstation_eligibility, dd.seat_capacity,
                vc.name as vehicle_category_name, vc.icon as vehicle_category_icon
         FROM users u
         LEFT JOIN driver_details dd ON dd.user_id = u.id
@@ -14237,6 +14606,48 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       res.json({ success: true, status });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  app.patch("/api/admin/drivers/:id/service-activation", requireAdminRole(["admin", "superadmin"]), async (req, res) => {
+    try {
+      const driverId = String(req.params.id);
+      const serviceEligibility = Array.isArray(req.body?.serviceEligibility)
+        ? req.body.serviceEligibility.map((entry: any) => String(entry || "").trim().toLowerCase()).filter(Boolean)
+        : null;
+      const parcelEligibility = req.body?.parcelEligibility;
+      const poolEligibility = req.body?.poolEligibility;
+      const outstationEligibility = req.body?.outstationEligibility;
+      const seatCapacityRaw = req.body?.seatCapacity;
+      const seatCapacity = seatCapacityRaw === undefined || seatCapacityRaw === null || seatCapacityRaw === ""
+        ? null
+        : Math.max(1, Number(seatCapacityRaw) || 1);
+
+      await rawDb.execute(rawSql`
+        INSERT INTO driver_details (user_id, approval_state, service_eligibility, parcel_eligibility, pool_eligibility, outstation_eligibility, seat_capacity, updated_at)
+        VALUES (
+          ${driverId}::uuid,
+          'pending',
+          COALESCE(${serviceEligibility}::text[], '{}'::text[]),
+          COALESCE(${parcelEligibility}::boolean, false),
+          COALESCE(${poolEligibility}::boolean, false),
+          COALESCE(${outstationEligibility}::boolean, false),
+          COALESCE(${seatCapacity}::integer, 1),
+          NOW()
+        )
+        ON CONFLICT (user_id) DO UPDATE SET
+          service_eligibility = COALESCE(${serviceEligibility}::text[], driver_details.service_eligibility),
+          parcel_eligibility = COALESCE(${parcelEligibility}::boolean, driver_details.parcel_eligibility),
+          pool_eligibility = COALESCE(${poolEligibility}::boolean, driver_details.pool_eligibility),
+          outstation_eligibility = COALESCE(${outstationEligibility}::boolean, driver_details.outstation_eligibility),
+          seat_capacity = COALESCE(${seatCapacity}::integer, driver_details.seat_capacity),
+          updated_at = NOW()
+      `);
+
+      const profile = await getDriverDispatchProfile(driverId);
+      res.json({ success: true, profile });
+    } catch (e: any) {
+      res.status(500).json({ message: safeErrMsg(e) });
+    }
   });
 
   // -- Driver: Launch Benefit status endpoint ------------------------------
@@ -18920,8 +19331,55 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   app.get("/api/app/driver/eligible-services", authApp, async (req, res) => {
     try {
       const user = (req as any).currentUser;
-      const services = await getDriverEligibleServices(user.id);
-      res.json({ services });
+      const serviceConfig = await getDriverEligibleServices(user.id);
+      const profile = await getDriverDispatchProfile(user.id);
+      const missingDocuments = await getDriverDocumentFailures(user.id);
+      const serviceKeys = new Set((profile?.serviceEligibility || []).map((value) => String(value || "").toLowerCase()));
+      const modules = [
+        {
+          key: "parcel_delivery",
+          label: "Parcel Delivery",
+          enabled: profile?.parcelEligibility === true,
+          blockedReasons: [
+            ...(missingDocuments.length ? ["documents_missing"] : []),
+            ...(profile && !["approved", "verified"].includes(profile.approvalState) ? ["approval_pending"] : []),
+            ...(profile?.parcelEligibility === true ? [] : ["admin_or_vehicle_not_enabled"]),
+          ],
+        },
+        {
+          key: "city_pool",
+          label: "Local Pool",
+          enabled: profile?.poolEligibility === true && (profile?.seatCapacity || 0) >= 2,
+          blockedReasons: [
+            ...(missingDocuments.length ? ["documents_missing"] : []),
+            ...(profile && !["approved", "verified"].includes(profile.approvalState) ? ["approval_pending"] : []),
+            ...(profile?.poolEligibility === true ? [] : ["admin_or_vehicle_not_enabled"]),
+            ...((profile?.seatCapacity || 0) >= 2 ? [] : ["seat_capacity_low"]),
+          ],
+        },
+        {
+          key: "outstation_pool",
+          label: "Outstation Pool",
+          enabled: profile?.outstationEligibility === true && (profile?.seatCapacity || 0) >= 2,
+          blockedReasons: [
+            ...(missingDocuments.length ? ["documents_missing"] : []),
+            ...(profile && !["approved", "verified"].includes(profile.approvalState) ? ["approval_pending"] : []),
+            ...(profile?.outstationEligibility === true ? [] : ["admin_or_vehicle_not_enabled"]),
+            ...((profile?.seatCapacity || 0) >= 2 ? [] : ["seat_capacity_low"]),
+          ],
+        },
+      ].map((module) => ({
+        ...module,
+        availableByCategory: serviceKeys.has(module.key) || (module.key === "parcel_delivery" && serviceConfig.parcelVehicles.length > 0),
+        blockedReasons: Array.from(new Set(module.blockedReasons)),
+      }));
+      res.json({
+        services: serviceConfig.services,
+        parcelVehicles: serviceConfig.parcelVehicles,
+        dispatchProfile: profile,
+        missingDocuments,
+        modules,
+      });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 

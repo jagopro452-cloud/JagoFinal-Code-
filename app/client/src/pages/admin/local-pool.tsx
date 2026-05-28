@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { adminFetch, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 const STATUS_COLORS: Record<string, string> = {
@@ -12,6 +12,12 @@ const STATUS_COLORS: Record<string, string> = {
   picked_up: "#0891b2",
   dropped: "#16a34a",
   searching: "#d97706",
+  pending: "#d97706",
+  approved: "#16a34a",
+  rejected: "#dc2626",
+  open: "#dc2626",
+  under_review: "#0891b2",
+  resolved: "#16a34a",
 };
 
 function money(value: unknown, digits = 0) {
@@ -111,6 +117,62 @@ export default function LocalPool() {
   });
   const rides = ridesData?.data || [];
 
+  const { data: opsOverview } = useQuery<any>({
+    queryKey: ["/api/admin/pool/operations/overview"],
+    queryFn: () => apiRequest("GET", "/api/admin/pool/operations/overview").then(r => r.json()),
+  });
+
+  const { data: issueData } = useQuery<any>({
+    queryKey: ["/api/admin/pool/issues"],
+    queryFn: () => apiRequest("GET", "/api/admin/pool/issues").then(r => r.json()),
+  });
+  const issues = issueData?.items || [];
+  const { data: poolBlocksData } = useQuery<any>({
+    queryKey: ["/api/admin/pool/blocks"],
+    queryFn: () => apiRequest("GET", "/api/admin/pool/blocks").then(r => r.json()),
+  });
+  const poolBlocks = poolBlocksData?.items || [];
+  const { data: poolRatingsData } = useQuery<any>({
+    queryKey: ["/api/admin/pool/ratings"],
+    queryFn: () => apiRequest("GET", "/api/admin/pool/ratings").then(r => r.json()),
+  });
+  const poolRatings = poolRatingsData?.items || [];
+  const { data: poolSafetyData } = useQuery<any>({
+    queryKey: ["/api/admin/pool/safety-review"],
+    queryFn: () => apiRequest("GET", "/api/admin/pool/safety-review").then(r => r.json()),
+  });
+  const poolSafetyAlerts = poolSafetyData?.alerts || [];
+  const poolSafetySummary = poolSafetyData?.summary || {};
+  const { data: refundData, isLoading: refundsLoading } = useQuery<any>({
+    queryKey: ["/api/refund-requests", "pool-local"],
+    queryFn: () => adminFetch("/api/refund-requests").then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d?.message || "Error"); })),
+  });
+  const poolRefunds = Array.isArray(refundData?.data)
+    ? refundData.data.filter((item: any) => String(item.reason || "").toLowerCase().includes("pool"))
+    : [];
+
+  const updateRefund = useMutation({
+    mutationFn: ({ id, status, adminNote }: { id: string; status: string; adminNote: string }) =>
+      apiRequest("PATCH", `/api/refund-requests/${id}`, { status, adminNote, approvedBy: "Admin" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/refund-requests"] });
+      qc.invalidateQueries({ queryKey: ["/api/refund-requests", "pool-local"] });
+      qc.invalidateQueries({ queryKey: ["/api/admin/pool/operations/overview"] });
+    },
+  });
+
+  const updateIssue = useMutation({
+    mutationFn: ({ id, status, adminMessage, resolutionNote, blockReportedUser }: { id: string; status: string; adminMessage: string; resolutionNote?: string; blockReportedUser?: boolean }) =>
+      apiRequest("PATCH", `/api/admin/pool/issues/${id}`, { status, adminMessage, resolutionNote, blockReportedUser }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/admin/pool/issues"] });
+      qc.invalidateQueries({ queryKey: ["/api/admin/pool/blocks"] });
+      qc.invalidateQueries({ queryKey: ["/api/admin/pool/operations/overview"] });
+      toast({ title: "Pool issue updated" });
+    },
+    onError: (e: any) => toast({ title: "Update failed", description: e.message, variant: "destructive" }),
+  });
+
   const saveSettings = useMutation({
     mutationFn: (d: any) => apiRequest("PATCH", "/api/admin/local-pool/settings", d),
     onSuccess: () => {
@@ -130,6 +192,10 @@ export default function LocalPool() {
     { label: "GST", value: money(stats.totalGst), icon: "bi-receipt-cutoff", color: "#0f766e" },
     { label: "Commission", value: money(stats.totalCommission), icon: "bi-graph-up-arrow", color: "#db2777" },
   ];
+  const totalSeatCapacity = rides.reduce((sum: number, ride: any) => sum + (parseInt(ride.maxSeats) || 0), 0);
+  const occupiedSeats = rides.reduce((sum: number, ride: any) => sum + (parseInt(ride.bookedSeats) || 0), 0);
+  const occupancyPct = totalSeatCapacity > 0 ? Math.round((occupiedSeats / totalSeatCapacity) * 100) : 0;
+  const pendingPoolRefunds = poolRefunds.filter((item: any) => item.status === "pending");
 
   return (
     <div className="container-fluid">
@@ -159,6 +225,371 @@ export default function LocalPool() {
             </div>
           </div>
         ))}
+      </div>
+
+      <div className="card mb-4">
+        <div className="card-body">
+          <div className="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+            <div>
+              <h5 className="mb-1 text-primary">Pool Operations Overview</h5>
+              <div className="text-muted" style={{ fontSize: "0.8rem" }}>Combined view for local + outstation pool refunds, disputes, ratings, and booking health</div>
+            </div>
+            <button className="btn btn-sm btn-outline-primary" onClick={() => {
+              qc.invalidateQueries({ queryKey: ["/api/admin/pool/operations/overview"] });
+              qc.invalidateQueries({ queryKey: ["/api/admin/pool/issues"] });
+            }}>
+              <i className="bi bi-arrow-clockwise me-1"></i>Refresh
+            </button>
+          </div>
+          <div className="row g-3">
+            {[
+              { label: "Outstation Bookings", value: opsOverview?.outstation?.total_bookings ?? 0, color: "#2563eb" },
+              { label: "Local Bookings", value: opsOverview?.local?.total_local_bookings ?? 0, color: "#0891b2" },
+              { label: "Open Reports", value: opsOverview?.issues?.open_issues ?? 0, color: "#dc2626" },
+              { label: "Pool Refunds", value: opsOverview?.refunds?.pending_refunds ?? 0, color: "#d97706" },
+              { label: "Avg Pool Rating", value: Number(opsOverview?.ratings?.avg_rating || 0).toFixed(1), color: "#7c3aed" },
+              { label: "Pool Revenue", value: money((Number(opsOverview?.outstation?.revenue || 0) + Number(opsOverview?.local?.local_revenue || 0)), 0), color: "#16a34a" },
+            ].map((item) => (
+              <div key={item.label} className="col-6 col-md-4 col-lg-2">
+                <div className="h-100 rounded-4 p-3" style={{ background: `${item.color}12`, border: `1px solid ${item.color}26` }}>
+                  <div style={{ fontSize: "0.72rem", color: "#64748b" }}>{item.label}</div>
+                  <div style={{ fontSize: "1.35rem", fontWeight: 700, color: item.color }}>{item.value}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="table-responsive mt-4">
+            <table className="table table-borderless align-middle mb-0" style={{ fontSize: "0.8rem" }}>
+              <thead className="table-light">
+                <tr>
+                  <th>Module</th>
+                  <th>Category</th>
+                  <th>Channel</th>
+                  <th>Customer</th>
+                  <th>Driver</th>
+                  <th>Status</th>
+                  <th className="text-end">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {issues.length === 0 ? (
+                  <tr><td colSpan={7} className="text-center text-muted py-4">No pool reports or disputes yet.</td></tr>
+                ) : issues.slice(0, 8).map((issue: any) => (
+                  <tr key={issue.id}>
+                    <td style={{ textTransform: "capitalize" }}>{String(issue.module || "").replaceAll("_", " ")}</td>
+                    <td>{issue.category || "-"}</td>
+                    <td style={{ textTransform: "capitalize" }}>{String(issue.issue_channel || "").replaceAll("_", " ")}</td>
+                    <td>{issue.customer_name || "-"}</td>
+                    <td>{issue.driver_name || issue.reported_user_name || "-"}</td>
+                    <td><StatusBadge status={issue.status || "open"} /></td>
+                    <td className="text-end">
+                      <div className="d-flex gap-2 justify-content-end flex-wrap">
+                        {issue.status !== "under_review" && (
+                          <button className="btn btn-sm btn-outline-primary" disabled={updateIssue.isPending} onClick={() => updateIssue.mutate({ id: issue.id, status: "under_review", adminMessage: "Operations review started." })}>
+                            Review
+                          </button>
+                        )}
+                        {issue.status !== "resolved" && (
+                          <button className="btn btn-sm btn-success" disabled={updateIssue.isPending} onClick={() => updateIssue.mutate({ id: issue.id, status: "resolved", adminMessage: "Issue resolved by operations.", resolutionNote: "Closed after operations review." })}>
+                            Resolve
+                          </button>
+                        )}
+                        {issue.status !== "rejected" && (
+                          <button className="btn btn-sm btn-outline-danger" disabled={updateIssue.isPending} onClick={() => updateIssue.mutate({ id: issue.id, status: "rejected", adminMessage: "Issue rejected after review.", resolutionNote: "Insufficient evidence for action." })}>
+                            Reject
+                          </button>
+                        )}
+                        {issue.reported_user_id && (
+                          <button className="btn btn-sm btn-outline-dark" disabled={updateIssue.isPending} onClick={() => updateIssue.mutate({ id: issue.id, status: issue.status || "under_review", adminMessage: "Reported user blocked from future pool matching.", resolutionNote: issue.resolution_note || "User blocked by operations.", blockReportedUser: true })}>
+                            Block User
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div className="card mb-4">
+        <div className="card-body">
+          <div className="d-flex justify-content-between align-items-center mb-3">
+            <div>
+              <h5 className="mb-1 text-primary">Blocked Pool Users</h5>
+              <div className="text-muted" style={{ fontSize: "0.8rem" }}>Operations-enforced blocks to prevent future matching</div>
+            </div>
+            <span className="badge bg-dark-subtle text-dark">{poolBlocks.length} active</span>
+          </div>
+          <div className="table-responsive">
+            <table className="table table-borderless align-middle mb-0" style={{ fontSize: "0.8rem" }}>
+              <thead className="table-light">
+                <tr>
+                  <th>Blocked By</th>
+                  <th>Blocked User</th>
+                  <th>Module</th>
+                  <th>Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                {poolBlocks.length === 0 ? (
+                  <tr><td colSpan={4} className="text-center text-muted py-4">No active pool user blocks.</td></tr>
+                ) : poolBlocks.slice(0, 8).map((item: any) => (
+                  <tr key={item.id}>
+                    <td>{item.blocker_name || "-"}</td>
+                    <td>{item.blocked_name || "-"}</td>
+                    <td style={{ textTransform: "capitalize" }}>{String(item.module || "pool").replaceAll("_", " ")}</td>
+                    <td>{item.reason || "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div className="row g-3 mb-4">
+        <div className="col-lg-6">
+          <div className="card h-100">
+            <div className="card-body">
+              <div className="d-flex justify-content-between align-items-center mb-3">
+                <div>
+                  <h5 className="mb-1 text-primary">Pool Ratings Review</h5>
+                  <div className="text-muted" style={{ fontSize: "0.8rem" }}>Latest driver to passenger and passenger to driver pool ratings</div>
+                </div>
+                <span className="badge bg-warning-subtle text-warning">{poolRatings.length} recent</span>
+              </div>
+              <div className="table-responsive">
+                <table className="table table-borderless align-middle mb-0" style={{ fontSize: "0.8rem" }}>
+                  <thead className="table-light">
+                    <tr>
+                      <th>Module</th>
+                      <th>From</th>
+                      <th>To</th>
+                      <th>Overall</th>
+                      <th>Breakdown</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {poolRatings.length === 0 ? (
+                      <tr><td colSpan={5} className="text-center text-muted py-4">No pool ratings yet.</td></tr>
+                    ) : poolRatings.slice(0, 8).map((rating: any) => (
+                      <tr key={rating.id}>
+                        <td style={{ textTransform: "capitalize" }}>{String(rating.module || "").replaceAll("_", " ")}</td>
+                        <td>
+                          <div className="fw-semibold">{rating.from_user_name || "-"}</div>
+                          <div className="text-muted" style={{ fontSize: "0.72rem" }}>{String(rating.rating_role || "").replaceAll("_", " ")}</div>
+                        </td>
+                        <td>{rating.to_user_name || "-"}</td>
+                        <td><span className="badge bg-warning text-dark">{Number(rating.overall_rating || 0).toFixed(1)} / 5</span></td>
+                        <td className="text-muted" style={{ fontSize: "0.72rem" }}>
+                          S:{Number(rating.safety_rating || 0).toFixed(1)} | B:{Number(rating.behaviour_rating || 0).toFixed(1)} | P:{Number(rating.punctuality_rating || 0).toFixed(1)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="col-lg-6">
+          <div className="card h-100">
+            <div className="card-body">
+              <div className="d-flex justify-content-between align-items-center mb-3">
+                <div>
+                  <h5 className="mb-1 text-primary">Pool Safety Review</h5>
+                  <div className="text-muted" style={{ fontSize: "0.8rem" }}>SOS incidents, active disputes, and blocking actions for pool operations</div>
+                </div>
+                <span className="badge bg-danger-subtle text-danger">{poolSafetySummary.active_sos || 0} active SOS</span>
+              </div>
+              <div className="row g-3 mb-3">
+                <div className="col-4">
+                  <div className="rounded-4 p-3" style={{ background: "#fef2f2" }}>
+                    <div style={{ fontSize: "0.72rem", color: "#64748b" }}>Active SOS</div>
+                    <div style={{ fontSize: "1.4rem", fontWeight: 700, color: "#dc2626" }}>{poolSafetySummary.active_sos || 0}</div>
+                  </div>
+                </div>
+                <div className="col-4">
+                  <div className="rounded-4 p-3" style={{ background: "#fff7ed" }}>
+                    <div style={{ fontSize: "0.72rem", color: "#64748b" }}>Open Disputes</div>
+                    <div style={{ fontSize: "1.4rem", fontWeight: 700, color: "#d97706" }}>{poolSafetySummary.open_disputes || 0}</div>
+                  </div>
+                </div>
+                <div className="col-4">
+                  <div className="rounded-4 p-3" style={{ background: "#f8fafc" }}>
+                    <div style={{ fontSize: "0.72rem", color: "#64748b" }}>Blocks</div>
+                    <div style={{ fontSize: "1.4rem", fontWeight: 700, color: "#0f172a" }}>{poolSafetySummary.active_blocks || 0}</div>
+                  </div>
+                </div>
+              </div>
+              <div className="table-responsive">
+                <table className="table table-borderless align-middle mb-0" style={{ fontSize: "0.8rem" }}>
+                  <thead className="table-light">
+                    <tr>
+                      <th>User</th>
+                      <th>Trigger</th>
+                      <th>Note</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {poolSafetyAlerts.length === 0 ? (
+                      <tr><td colSpan={4} className="text-center text-muted py-4">No pool SOS incidents recorded.</td></tr>
+                    ) : poolSafetyAlerts.slice(0, 8).map((alert: any) => (
+                      <tr key={alert.id}>
+                        <td>
+                          <div className="fw-semibold">{alert.user_name || "-"}</div>
+                          <div className="text-muted" style={{ fontSize: "0.72rem" }}>{alert.user_phone || ""}</div>
+                        </td>
+                        <td style={{ textTransform: "capitalize" }}>{alert.triggered_by || "-"}</td>
+                        <td className="text-muted" style={{ maxWidth: 220 }}>{alert.notes || "-"}</td>
+                        <td><StatusBadge status={alert.status || "active"} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="row g-3 mb-4">
+        <div className="col-lg-6">
+          <div className="card h-100">
+            <div className="card-body">
+              <div className="d-flex justify-content-between align-items-center mb-3">
+                <div>
+                  <h5 className="mb-1 text-primary">Seat Occupancy Review</h5>
+                  <div className="text-muted" style={{ fontSize: "0.8rem" }}>Live booked seats vs total local pool capacity</div>
+                </div>
+                <span className="badge bg-primary-subtle text-primary">{occupiedSeats}/{totalSeatCapacity} seats</span>
+              </div>
+              <div className="mb-3">
+                <div style={{ height: 10, background: "#e2e8f0", borderRadius: 999, overflow: "hidden" }}>
+                  <div style={{ width: `${Math.min(100, occupancyPct)}%`, height: "100%", background: "linear-gradient(90deg,#2563eb,#7c3aed)" }}></div>
+                </div>
+              </div>
+              <div className="row g-3 mb-3">
+                <div className="col-4">
+                  <div className="rounded-4 p-3" style={{ background: "#eff6ff" }}>
+                    <div style={{ fontSize: "0.72rem", color: "#64748b" }}>Occupancy</div>
+                    <div style={{ fontSize: "1.4rem", fontWeight: 700, color: "#2563eb" }}>{occupancyPct}%</div>
+                  </div>
+                </div>
+                <div className="col-4">
+                  <div className="rounded-4 p-3" style={{ background: "#f5f3ff" }}>
+                    <div style={{ fontSize: "0.72rem", color: "#64748b" }}>Booked</div>
+                    <div style={{ fontSize: "1.4rem", fontWeight: 700, color: "#7c3aed" }}>{occupiedSeats}</div>
+                  </div>
+                </div>
+                <div className="col-4">
+                  <div className="rounded-4 p-3" style={{ background: "#f8fafc" }}>
+                    <div style={{ fontSize: "0.72rem", color: "#64748b" }}>Capacity</div>
+                    <div style={{ fontSize: "1.4rem", fontWeight: 700, color: "#334155" }}>{totalSeatCapacity}</div>
+                  </div>
+                </div>
+              </div>
+              <div className="table-responsive">
+                <table className="table table-borderless align-middle mb-0" style={{ fontSize: "0.8rem" }}>
+                  <thead className="table-light">
+                    <tr>
+                      <th>Driver</th>
+                      <th>Seats</th>
+                      <th>Utilization</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rides.length === 0 ? (
+                      <tr><td colSpan={3} className="text-center text-muted py-4">No live local pool sessions.</td></tr>
+                    ) : rides.slice(0, 6).map((ride: any) => {
+                      const booked = parseInt(ride.bookedSeats) || 0;
+                      const max = parseInt(ride.maxSeats) || 0;
+                      const pct = max > 0 ? Math.round((booked / max) * 100) : 0;
+                      return (
+                        <tr key={ride.id}>
+                          <td>
+                            <div className="fw-semibold">{ride.driverName || "Driver"}</div>
+                            <div className="text-muted" style={{ fontSize: "0.72rem" }}>{ride.driverPhone || ""}</div>
+                          </td>
+                          <td>{booked}/{max}</td>
+                          <td>
+                            <div className="d-flex align-items-center gap-2">
+                              <div style={{ width: 84, height: 8, borderRadius: 999, background: "#e2e8f0", overflow: "hidden" }}>
+                                <div style={{ width: `${Math.min(100, pct)}%`, height: "100%", background: pct > 80 ? "#16a34a" : pct > 40 ? "#2563eb" : "#d97706" }}></div>
+                              </div>
+                              <span style={{ fontWeight: 700 }}>{pct}%</span>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="col-lg-6">
+          <div className="card h-100">
+            <div className="card-body">
+              <div className="d-flex justify-content-between align-items-center mb-3">
+                <div>
+                  <h5 className="mb-1 text-primary">Pool Refund Review</h5>
+                  <div className="text-muted" style={{ fontSize: "0.8rem" }}>Review pool cancellation refunds without leaving the pool ops page</div>
+                </div>
+                <span className="badge bg-danger-subtle text-danger">{pendingPoolRefunds.length} pending</span>
+              </div>
+              <div className="table-responsive">
+                <table className="table table-borderless align-middle mb-0" style={{ fontSize: "0.8rem" }}>
+                  <thead className="table-light">
+                    <tr>
+                      <th>Customer</th>
+                      <th>Amount</th>
+                      <th>Status</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {refundsLoading ? (
+                      Array(4).fill(0).map((_, i) => (
+                        <tr key={i}>{Array(4).fill(0).map((__, j) => <td key={j}><div style={{ height: 12, background: "#f1f5f9", borderRadius: 4 }} /></td>)}</tr>
+                      ))
+                    ) : poolRefunds.length === 0 ? (
+                      <tr><td colSpan={4} className="text-center text-muted py-4">No pool refund requests yet.</td></tr>
+                    ) : poolRefunds.slice(0, 6).map((item: any) => (
+                      <tr key={item.id}>
+                        <td>
+                          <div className="fw-semibold">{item.customerName || "Customer"}</div>
+                          <div className="text-muted" style={{ fontSize: "0.72rem" }}>{item.reason || "-"}</div>
+                        </td>
+                        <td className="fw-bold text-danger">{money(item.amount, 0)}</td>
+                        <td><StatusBadge status={item.status || "pending"} /></td>
+                        <td className="text-end">
+                          {item.status === "pending" ? (
+                            <div className="d-flex gap-2 justify-content-end">
+                              <button className="btn btn-sm btn-success" disabled={updateRefund.isPending} onClick={() => updateRefund.mutate({ id: item.id, status: "approved", adminNote: "Approved from local pool refund review" })}>
+                                Approve
+                              </button>
+                              <button className="btn btn-sm btn-outline-danger" disabled={updateRefund.isPending} onClick={() => updateRefund.mutate({ id: item.id, status: "rejected", adminNote: "Rejected from local pool refund review" })}>
+                                Reject
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-muted" style={{ fontSize: "0.75rem" }}>Reviewed</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="card">

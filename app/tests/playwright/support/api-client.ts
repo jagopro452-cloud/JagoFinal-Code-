@@ -27,9 +27,9 @@ export class JagoApiClient {
     return response.json();
   }
 
-  async verifyOtp(phone: string, otp: string, userType = "customer") {
+  async verifyOtp(phone: string, otp: string, userType = "customer", deviceId = `${userType}-device-1`) {
     const response = await this.api.post("/auth/otp/verify", {
-      data: { phone, otp, userType, deviceId: `${userType}-device-1` },
+      data: { phone, otp, userType, deviceId },
     });
     return response;
   }

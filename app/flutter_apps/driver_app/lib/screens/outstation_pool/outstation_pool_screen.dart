@@ -52,7 +52,7 @@ class _OutstationPoolScreenState extends State<OutstationPoolScreen>
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
         setState(() {
-          _rides = List<dynamic>.from(data['rides'] ?? data ?? []);
+          _rides = List<dynamic>.from(data['data'] ?? data['rides'] ?? data ?? []);
           _loading = false;
         });
       } else {

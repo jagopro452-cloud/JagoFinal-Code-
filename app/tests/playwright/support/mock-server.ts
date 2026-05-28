@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createRequire } from "node:module";
+import type net from "node:net";
 import { URL } from "node:url";
 import { runtime } from "./runtime";
 
@@ -33,6 +34,7 @@ type BookingRecord = {
 
 const otpStore = new Map<string, OtpRecord>();
 const bookings = new Map<string, BookingRecord>();
+const connections = new Set<net.Socket>();
 
 function nowIso() {
   return new Date().toISOString();
@@ -216,6 +218,13 @@ const httpServer = createServer(async (req, res) => {
   return sendJson(res, 404, { message: "Not found" });
 });
 
+httpServer.on("connection", (socket) => {
+  connections.add(socket);
+  socket.on("close", () => {
+    connections.delete(socket);
+  });
+});
+
 const io = new Server(httpServer, {
   cors: {
     origin: "*",
@@ -263,6 +272,10 @@ const port = Number(process.env.PW_API_PORT || 4010);
 const shutdown = () => {
   io.close();
   httpServer.close(() => process.exit(0));
+  for (const socket of connections) {
+    socket.destroy();
+  }
+  setTimeout(() => process.exit(0), 1_000).unref();
 };
 
 process.on("SIGINT", shutdown);

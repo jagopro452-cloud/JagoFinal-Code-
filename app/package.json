@@ -25,6 +25,7 @@
     "test:coverage": "vitest run --coverage",
     "dev:playwright:mock-api": "tsx tests/playwright/support/mock-server.ts",
     "dev:playwright:web": "tsx tests/playwright/support/web-server.ts",
+    "test:e2e:local": "node scripts/run-playwright-local.cjs test",
     "test:e2e": "playwright test",
     "test:e2e:live": "cross-env PW_ENV=live PW_WORKERS=1 playwright test --grep @live",
     "test:e2e:admin-live": "cross-env PW_ENV=live PW_WORKERS=1 playwright test --grep @admin-live",

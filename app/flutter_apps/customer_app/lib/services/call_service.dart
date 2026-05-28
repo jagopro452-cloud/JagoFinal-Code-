@@ -12,6 +12,8 @@ class CallService {
 
   String? activeCallTripId;
   String? activeCallTargetId;
+  String _activeCallScope = 'trip';
+  String? _activePoolModule;
   DateTime? _callStartTime;
   bool _isSpeakerphone = false;
   bool _endingLocally = false;
@@ -59,6 +61,8 @@ class CallService {
     required String targetUserId,
     required String tripId,
     required String callerName,
+    String scope = 'trip',
+    String? module,
   }) async {
     if (_state != CallState.idle) return;
     final granted = await _ensureMicrophonePermission();
@@ -69,6 +73,8 @@ class CallService {
 
     activeCallTargetId = targetUserId;
     activeCallTripId = tripId;
+    _activeCallScope = scope;
+    _activePoolModule = module;
     _setState(CallState.outgoing);
 
     try {
@@ -77,6 +83,8 @@ class CallService {
         targetUserId: targetUserId,
         tripId: tripId,
         callerName: callerName,
+        scope: scope,
+        module: module,
       );
       final offer = await _peerConnection!.createOffer({
         'offerToReceiveAudio': true,
@@ -86,6 +94,8 @@ class CallService {
       _socket.sendCallOffer(
         targetUserId: targetUserId,
         tripId: tripId,
+        scope: scope,
+        module: module,
         sdp: {'type': offer.type, 'sdp': offer.sdp},
       );
     } catch (_) {
@@ -96,10 +106,14 @@ class CallService {
   Future<void> acceptCall({
     required String callerId,
     required String tripId,
+    String scope = 'trip',
+    String? module,
   }) async {
     if (_state == CallState.idle && callerId.isNotEmpty) {
       activeCallTargetId = callerId;
       activeCallTripId = tripId;
+      _activeCallScope = scope;
+      _activePoolModule = module;
       _setState(CallState.incoming);
     }
     if (_state != CallState.incoming) return;
@@ -112,6 +126,8 @@ class CallService {
 
     activeCallTargetId = callerId;
     activeCallTripId = tripId;
+    _activeCallScope = scope;
+    _activePoolModule = module;
 
     try {
       await _preparePeerConnection();
@@ -126,6 +142,8 @@ class CallService {
       _socket.sendCallAnswer(
         targetUserId: callerId,
         tripId: tripId,
+        scope: scope,
+        module: module,
         sdp: {'type': answer.type, 'sdp': answer.sdp},
       );
       _callStartTime = DateTime.now();
@@ -200,6 +218,8 @@ class CallService {
       _socket.sendIceCandidate(
         targetUserId: targetUserId,
         tripId: tripId,
+        scope: _activeCallScope,
+        module: _activePoolModule,
         candidate: {
           'candidate': candidate.candidate,
           'sdpMid': candidate.sdpMid,
@@ -237,6 +257,8 @@ class CallService {
     if (_state == CallState.connected || _state == CallState.outgoing) return;
     activeCallTargetId = (data['callerId'] ?? data['senderId'] ?? data['userId'])?.toString();
     activeCallTripId = data['tripId']?.toString();
+    _activeCallScope = data['callScope']?.toString() == 'pool' ? 'pool' : 'trip';
+    _activePoolModule = data['poolModule']?.toString();
     _pendingRemoteOffer = null;
     _setState(CallState.incoming);
   }
@@ -245,6 +267,8 @@ class CallService {
     if (_state == CallState.connected) return;
     activeCallTargetId = data['callerId']?.toString();
     activeCallTripId = data['tripId']?.toString() ?? activeCallTripId;
+    _activeCallScope = data['callScope']?.toString() == 'pool' ? 'pool' : _activeCallScope;
+    _activePoolModule = data['poolModule']?.toString() ?? _activePoolModule;
     _pendingRemoteOffer = RTCSessionDescription(
       data['sdp']?['sdp']?.toString(),
       data['sdp']?['type']?.toString(),
@@ -330,6 +354,8 @@ class CallService {
     _pendingRemoteOffer = null;
     activeCallTargetId = null;
     activeCallTripId = null;
+    _activeCallScope = 'trip';
+    _activePoolModule = null;
     _callStartTime = null;
     _isSpeakerphone = false;
     _endingLocally = false;

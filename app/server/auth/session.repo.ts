@@ -8,12 +8,98 @@ export type SessionContext = {
   userAgent?: string | null;
 };
 
+let appAuthSchemaReady: Promise<void> | null = null;
+
+async function ensureAppAuthSchemaInner() {
+  await rawDb.execute(rawSql`
+    CREATE TABLE IF NOT EXISTS sessions (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token TEXT NOT NULL UNIQUE,
+      device_id TEXT NOT NULL,
+      ip_address TEXT,
+      user_agent TEXT,
+      expires_at TIMESTAMP NOT NULL,
+      revoked BOOLEAN NOT NULL DEFAULT false,
+      revoked_at TIMESTAMP,
+      last_active_at TIMESTAMP DEFAULT NOW(),
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  await rawDb.execute(rawSql`
+    CREATE TABLE IF NOT EXISTS refresh_tokens (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      token TEXT NOT NULL UNIQUE,
+      device_id TEXT NOT NULL,
+      ip_address TEXT,
+      user_agent TEXT,
+      expires_at TIMESTAMP NOT NULL,
+      revoked BOOLEAN NOT NULL DEFAULT false,
+      revoked_at TIMESTAMP,
+      replaced_by_token TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  await rawDb.execute(rawSql`
+    CREATE TABLE IF NOT EXISTS otp_request_events (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      phone VARCHAR(20) NOT NULL,
+      country_code VARCHAR(8) NOT NULL DEFAULT '+91',
+      device_id TEXT,
+      ip_address TEXT,
+      user_agent TEXT,
+      user_type VARCHAR(25) NOT NULL DEFAULT 'customer',
+      event_type VARCHAR(20) NOT NULL,
+      outcome VARCHAR(50) NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await rawDb.execute(rawSql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS device_id TEXT`).catch(() => undefined);
+  await rawDb.execute(rawSql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ip_address TEXT`).catch(() => undefined);
+  await rawDb.execute(rawSql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS user_agent TEXT`).catch(() => undefined);
+  await rawDb.execute(rawSql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS revoked BOOLEAN NOT NULL DEFAULT false`).catch(() => undefined);
+  await rawDb.execute(rawSql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMP`).catch(() => undefined);
+  await rawDb.execute(rawSql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMP DEFAULT NOW()`).catch(() => undefined);
+  await rawDb.execute(rawSql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()`).catch(() => undefined);
+
+  await rawDb.execute(rawSql`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS device_id TEXT`).catch(() => undefined);
+  await rawDb.execute(rawSql`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS ip_address TEXT`).catch(() => undefined);
+  await rawDb.execute(rawSql`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS user_agent TEXT`).catch(() => undefined);
+  await rawDb.execute(rawSql`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS revoked BOOLEAN NOT NULL DEFAULT false`).catch(() => undefined);
+  await rawDb.execute(rawSql`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMP`).catch(() => undefined);
+  await rawDb.execute(rawSql`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS replaced_by_token TEXT`).catch(() => undefined);
+  await rawDb.execute(rawSql`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()`).catch(() => undefined);
+
+  await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token)`).catch(() => undefined);
+  await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_sessions_user_active ON sessions(user_id, expires_at) WHERE revoked = false`).catch(() => undefined);
+  await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_token ON refresh_tokens(token)`).catch(() => undefined);
+  await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id, expires_at) WHERE revoked = false`).catch(() => undefined);
+  await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_session_id ON refresh_tokens(session_id)`).catch(() => undefined);
+  await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_otp_request_events_phone_created ON otp_request_events(phone, created_at DESC)`).catch(() => undefined);
+}
+
+export async function ensureAppAuthSchema() {
+  if (!appAuthSchemaReady) {
+    appAuthSchemaReady = ensureAppAuthSchemaInner().catch((error) => {
+      appAuthSchemaReady = null;
+      throw error;
+    });
+  }
+  await appAuthSchemaReady;
+}
+
 export async function createSessionRecord(
   userId: string,
   token: string,
   expiresAtIso: string,
   context: SessionContext,
 ) {
+  await ensureAppAuthSchema();
   const result = await rawDb.execute(rawSql`
     INSERT INTO sessions (user_id, token, device_id, ip_address, user_agent, expires_at, last_active_at)
     VALUES (
@@ -31,6 +117,7 @@ export async function createSessionRecord(
 }
 
 export async function revokeSessionById(sessionId: string) {
+  await ensureAppAuthSchema();
   await rawDb.execute(rawSql`
     UPDATE sessions
     SET revoked=true, revoked_at=NOW()
@@ -40,6 +127,7 @@ export async function revokeSessionById(sessionId: string) {
 }
 
 export async function touchSession(token: string) {
+  await ensureAppAuthSchema();
   await rawDb.execute(rawSql`
     UPDATE sessions
     SET last_active_at=NOW()
@@ -49,6 +137,7 @@ export async function touchSession(token: string) {
 }
 
 export async function findSessionByToken(token: string) {
+  await ensureAppAuthSchema();
   const result = await rawDb.execute(rawSql`
     SELECT s.id, s.user_id, s.device_id, s.expires_at, u.user_type
     FROM sessions s
@@ -63,6 +152,7 @@ export async function findSessionByToken(token: string) {
 }
 
 export async function findSessionById(sessionId: string) {
+  await ensureAppAuthSchema();
   const result = await rawDb.execute(rawSql`
     SELECT s.id, s.user_id, s.device_id, s.expires_at, s.token, u.user_type
     FROM sessions s
@@ -83,6 +173,7 @@ export async function createRefreshTokenRecord(
   expiresAtIso: string,
   context: SessionContext,
 ) {
+  await ensureAppAuthSchema();
   await rawDb.execute(rawSql`
     INSERT INTO refresh_tokens (user_id, session_id, token, device_id, ip_address, user_agent, expires_at, revoked)
     VALUES (
@@ -99,6 +190,7 @@ export async function createRefreshTokenRecord(
 }
 
 export async function findRefreshToken(token: string) {
+  await ensureAppAuthSchema();
   const result = await rawDb.execute(rawSql`
     SELECT rt.id, rt.user_id, rt.session_id, rt.token, rt.device_id, rt.expires_at, rt.revoked, u.is_active
     FROM refresh_tokens rt
@@ -112,6 +204,7 @@ export async function findRefreshToken(token: string) {
 }
 
 export async function revokeRefreshToken(token: string, replacedByToken?: string | null) {
+  await ensureAppAuthSchema();
   await rawDb.execute(rawSql`
     UPDATE refresh_tokens
     SET revoked=true,
@@ -123,6 +216,7 @@ export async function revokeRefreshToken(token: string, replacedByToken?: string
 }
 
 export async function revokeRefreshTokensBySession(sessionId: string) {
+  await ensureAppAuthSchema();
   await rawDb.execute(rawSql`
     UPDATE refresh_tokens
     SET revoked=true, revoked_at=NOW()
@@ -136,6 +230,7 @@ export async function countRecentOtpSendAttempts(params: {
   countryCode: string;
   sinceMinutes: number;
 }): Promise<number> {
+  await ensureAppAuthSchema();
   const result = await rawDb.execute(rawSql`
     SELECT COUNT(*)::int AS count
     FROM otp_request_events
@@ -165,6 +260,7 @@ export async function tryInsertOtpAttemptAtomic(params: {
   maxRequests: number;
   windowMinutes: number;
 }): Promise<{ allowed: boolean; currentCount: number }> {
+  await ensureAppAuthSchema();
   const result = await rawDb.execute(rawSql`
     WITH recent AS (
       SELECT COUNT(*)::int AS cnt
@@ -200,6 +296,7 @@ export async function countDistinctOtpPhonesForDevice(
   deviceId: string,
   sinceMinutes: number,
 ) {
+  await ensureAppAuthSchema();
   const result = await rawDb.execute(rawSql`
     SELECT COUNT(DISTINCT phone)::int AS count
     FROM otp_request_events
@@ -220,6 +317,7 @@ export async function insertOtpRequestEvent(input: {
   eventType: "send" | "verify";
   outcome: string;
 }) {
+  await ensureAppAuthSchema();
   await rawDb.execute(rawSql`
     INSERT INTO otp_request_events (phone, country_code, device_id, ip_address, user_agent, user_type, event_type, outcome)
     VALUES (

@@ -1,11 +1,16 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import '../../config/api_config.dart';
+import '../../config/jago_theme.dart';
 import '../../services/auth_service.dart';
+import '../../services/socket_service.dart';
+import '../call/call_screen.dart';
+import '../chat/trip_chat_sheet.dart';
 
 class OutstationPoolTripScreen extends StatefulWidget {
   final Map<String, dynamic> ride;
@@ -15,11 +20,16 @@ class OutstationPoolTripScreen extends StatefulWidget {
 }
 
 class _OutstationPoolTripScreenState extends State<OutstationPoolTripScreen> {
+  final SocketService _socket = SocketService();
   List<dynamic> _passengers = [];
   bool _loading = true;
   bool _actionLoading = false;
   Timer? _refreshTimer;
   Timer? _locationTimer;
+  StreamSubscription<Map<String, dynamic>>? _callIncomingSub;
+  StreamSubscription<Map<String, dynamic>>? _poolBookingSub;
+  StreamSubscription<Map<String, dynamic>>? _poolSeatSub;
+  StreamSubscription<Map<String, dynamic>>? _poolStatusSub;
 
   static const _primary  = Color(0xFF2D8CFF);
   static const _bg       = Color(0xFFFFFFFF);
@@ -45,6 +55,55 @@ class _OutstationPoolTripScreenState extends State<OutstationPoolTripScreen> {
       Duration(seconds: _isActive ? 20 : 30),
       (_) => _loadPassengers(),
     );
+    _callIncomingSub = _socket.onCallIncoming.listen((event) {
+      final scope = event['callScope']?.toString();
+      final poolModule = event['poolModule']?.toString();
+      final referenceId = event['tripId']?.toString() ?? '';
+      if (scope != 'pool' || poolModule != 'outstation_pool' || !mounted) return;
+      final passenger = _passengers.cast<Map<String, dynamic>?>().firstWhere(
+        (item) => item?['id']?.toString() == referenceId,
+        orElse: () => null,
+      );
+      if (passenger == null) return;
+      final callerId = event['callerId']?.toString() ?? '';
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => CallScreen(
+            contactName: event['callerName']?.toString() ?? passenger['passenger_name']?.toString() ?? 'Passenger',
+            tripId: referenceId,
+            targetUserId: callerId,
+            isIncoming: true,
+            callerIdForIncoming: callerId,
+            callScope: 'pool',
+            poolModule: 'outstation_pool',
+          ),
+        ),
+      );
+    });
+    _poolBookingSub = _socket.onPoolNewPassenger.listen((event) {
+      if ((event['module']?.toString() ?? '') != 'outstation_pool' || !mounted) return;
+      final rideId = event['rideId']?.toString() ?? '';
+      if (rideId.isNotEmpty && rideId != _rideId) return;
+      _loadPassengers();
+      _showSnack('New outstation pool booking synced', isSuccess: true);
+    });
+    _poolSeatSub = _socket.onPoolSeatUpdate.listen((event) {
+      if ((event['module']?.toString() ?? '') != 'outstation_pool' || !mounted) return;
+      final rideId = event['rideId']?.toString() ?? '';
+      if (rideId.isNotEmpty && rideId != _rideId) return;
+      _loadPassengers();
+    });
+    _poolStatusSub = _socket.onPoolStatus.listen((event) {
+      if ((event['module']?.toString() ?? '') != 'outstation_pool' || !mounted) return;
+      final rideId = event['rideId']?.toString() ?? '';
+      if (rideId.isNotEmpty && rideId != _rideId) return;
+      final nextStatus = event['status']?.toString() ?? '';
+      if (nextStatus == 'active') {
+        _ride['status'] = 'active';
+        _startLocationUpdates();
+      }
+      _loadPassengers();
+    });
     if (_isActive) _startLocationUpdates();
   }
 
@@ -52,6 +111,10 @@ class _OutstationPoolTripScreenState extends State<OutstationPoolTripScreen> {
   void dispose() {
     _refreshTimer?.cancel();
     _locationTimer?.cancel();
+    _callIncomingSub?.cancel();
+    _poolBookingSub?.cancel();
+    _poolSeatSub?.cancel();
+    _poolStatusSub?.cancel();
     super.dispose();
   }
 
@@ -194,6 +257,106 @@ class _OutstationPoolTripScreenState extends State<OutstationPoolTripScreen> {
     }
   }
 
+  Future<void> _sharePassenger(Map<String, dynamic> booking) async {
+    try {
+      final headers = await AuthService.getHeaders();
+      headers['Content-Type'] = 'application/json';
+      final res = await http.post(
+        Uri.parse(ApiConfig.poolShare),
+        headers: headers,
+        body: jsonEncode({'module': 'outstation_pool', 'referenceId': booking['id']?.toString()}),
+      ).timeout(const Duration(seconds: 12));
+      final body = jsonDecode(res.body);
+      if (res.statusCode == 200) {
+        await Clipboard.setData(ClipboardData(text: body['shareText']?.toString() ?? 'JAGO Pool trip'));
+        _showSnack('Passenger trip summary copied', isSuccess: true);
+      } else {
+        _showSnack(body['message']?.toString() ?? 'Could not prepare share summary', isSuccess: false);
+      }
+    } catch (_) {
+      _showSnack('Could not prepare share summary', isSuccess: false);
+    }
+  }
+
+  void _openPassengerChat(Map<String, dynamic> booking) {
+    final bookingId = booking['id']?.toString() ?? '';
+    if (bookingId.isEmpty) return;
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => TripChatSheet(
+        tripId: bookingId,
+        senderName: 'Driver',
+        chatScope: 'pool',
+        poolModule: 'outstation_pool',
+        title: 'Passenger Chat',
+      ),
+    );
+  }
+
+  void _startPassengerCall(Map<String, dynamic> booking) {
+    final bookingId = booking['id']?.toString() ?? '';
+    final customerId = booking['customer_id']?.toString() ?? '';
+    if (bookingId.isEmpty || customerId.isEmpty) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => CallScreen(
+          contactName: booking['passenger_name']?.toString() ?? 'Passenger',
+          tripId: bookingId,
+          targetUserId: customerId,
+          callScope: 'pool',
+          poolModule: 'outstation_pool',
+        ),
+      ),
+    );
+  }
+
+  Future<void> _blockPassenger(Map<String, dynamic> booking) async {
+    final blockedUserId = booking['customer_id']?.toString() ?? '';
+    if (blockedUserId.isEmpty) return;
+    try {
+      final headers = await AuthService.getHeaders();
+      headers['Content-Type'] = 'application/json';
+      final res = await http.post(
+        Uri.parse(ApiConfig.poolBlockUser),
+        headers: headers,
+        body: jsonEncode({
+          'blockedUserId': blockedUserId,
+          'module': 'outstation_pool',
+          'referenceType': 'booking',
+          'referenceId': booking['id']?.toString(),
+          'reason': 'Blocked from outstation pool driver console',
+        }),
+      ).timeout(const Duration(seconds: 12));
+      final body = jsonDecode(res.body);
+      _showSnack(body['message']?.toString() ?? 'Passenger blocked from future pool matching', isSuccess: res.statusCode == 200);
+    } catch (_) {
+      _showSnack('Could not block passenger', isSuccess: false);
+    }
+  }
+
+  Future<void> _sendPoolSos() async {
+    final confirm = await _confirmDialog('Pool SOS', 'Send emergency alert for this outstation pool trip?', confirmLabel: 'Send SOS');
+    if (!confirm) return;
+    try {
+      final headers = await AuthService.getHeaders();
+      await http.post(
+        Uri.parse(ApiConfig.sos),
+        headers: {...headers, 'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'tripId': _rideId,
+          'lat': _ride['current_lat'],
+          'lng': _ride['current_lng'],
+          'message': 'Driver SOS alert during outstation pool trip',
+        }),
+      ).timeout(const Duration(seconds: 12));
+      _showSnack('Pool SOS sent to JAGO safety operations', isSuccess: true);
+    } catch (_) {
+      _showSnack('SOS failed. Call emergency services immediately.', isSuccess: false);
+    }
+  }
+
   void _showSnack(String msg, {required bool isSuccess}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -265,6 +428,14 @@ class _OutstationPoolTripScreenState extends State<OutstationPoolTripScreen> {
       body: Column(
         children: [
           _buildRideInfo(),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: _PrimaryButton(
+              label: 'Pool SOS',
+              icon: Icons.sos_rounded,
+              onTap: _sendPoolSos,
+            ),
+          ),
           if (_isScheduled)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
@@ -295,6 +466,10 @@ class _OutstationPoolTripScreenState extends State<OutstationPoolTripScreen> {
                               _passengers[i]['passenger_name'] ?? 'Passenger',
                             ),
                             onDrop: () => _dropPassenger(_passengers[i]),
+                            onChat: () => _openPassengerChat(_passengers[i]),
+                            onCall: () => _startPassengerCall(_passengers[i]),
+                            onShare: () => _sharePassenger(_passengers[i]),
+                            onBlock: () => _blockPassenger(_passengers[i]),
                           ),
                         ),
                       ),
@@ -362,12 +537,20 @@ class _PassengerCard extends StatelessWidget {
   final bool actionLoading;
   final VoidCallback onPickup;
   final VoidCallback onDrop;
+  final VoidCallback onChat;
+  final VoidCallback onCall;
+  final VoidCallback onShare;
+  final VoidCallback onBlock;
   const _PassengerCard({
     required this.booking,
     required this.rideActive,
     required this.actionLoading,
     required this.onPickup,
     required this.onDrop,
+    required this.onChat,
+    required this.onCall,
+    required this.onShare,
+    required this.onBlock,
   });
 
   static const _primary  = Color(0xFF2D8CFF);
@@ -408,6 +591,8 @@ class _PassengerCard extends StatelessWidget {
     final pickup    = booking['pickup_address'] ?? '';
     final drop      = booking['dropoff_address'] ?? booking['drop_address'] ?? booking['to_city'] ?? '';
     final pMethod   = booking['payment_method'] ?? 'cash';
+    final safety = booking['safety'] is Map<String, dynamic> ? booking['safety'] as Map<String, dynamic> : null;
+    final safetyLabel = safety?['badgeLabel']?.toString();
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -434,8 +619,15 @@ class _PassengerCard extends StatelessWidget {
                 const SizedBox(width: 10),
                 Expanded(
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text(name,
-                      style: GoogleFonts.poppins(fontSize: 14, fontWeight: FontWeight.w600, color: _textPri)),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(name,
+                            style: GoogleFonts.poppins(fontSize: 14, fontWeight: FontWeight.w600, color: _textPri)),
+                        ),
+                        if (safetyLabel != null) _userSafetyBadge(safetyLabel),
+                      ],
+                    ),
                     Text('$seats seat${seats > 1 ? 's' : ''}  ·  ${segKm.toStringAsFixed(0)} km',
                       style: GoogleFonts.poppins(fontSize: 12, color: _textSec)),
                   ]),
@@ -508,11 +700,84 @@ class _PassengerCard extends StatelessWidget {
                 ],
               ]),
             ],
+            if (_status == 'dropped') ...[
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: _ActionButton(
+                  label: 'Rate Passenger',
+                  icon: Icons.star_rounded,
+                  color: _amber,
+                  loading: false,
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => PassengerRatingScreen(
+                        bookingId: booking['id']?.toString() ?? '',
+                        passengerName: name.toString(),
+                        isOutstation: true,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: onChat,
+                  style: OutlinedButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                  icon: const Icon(Icons.chat_bubble_outline_rounded, size: 16),
+                  label: Text('Chat', style: GoogleFonts.poppins(fontWeight: FontWeight.w600, fontSize: 12)),
+                ),
+                OutlinedButton.icon(
+                  onPressed: onCall,
+                  style: OutlinedButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                  icon: const Icon(Icons.call_rounded, size: 16),
+                  label: Text('Call', style: GoogleFonts.poppins(fontWeight: FontWeight.w600, fontSize: 12)),
+                ),
+                OutlinedButton.icon(
+                  onPressed: onShare,
+                  style: OutlinedButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                  icon: const Icon(Icons.share_outlined, size: 16),
+                  label: Text('Share', style: GoogleFonts.poppins(fontWeight: FontWeight.w600, fontSize: 12)),
+                ),
+                OutlinedButton.icon(
+                  onPressed: onBlock,
+                  style: OutlinedButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                  icon: const Icon(Icons.block_outlined, size: 16),
+                  label: Text('Block', style: GoogleFonts.poppins(fontWeight: FontWeight.w600, fontSize: 12)),
+                ),
+              ],
+            ),
           ],
         ),
       ),
     );
   }
+}
+
+Widget _userSafetyBadge(String label) {
+  const primary = Color(0xFF2D8CFF);
+  final color = label == 'Blocked User'
+      ? JT.error
+      : label == 'High Risk User'
+          ? JT.warning
+          : primary;
+  return Container(
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+    decoration: BoxDecoration(
+      color: color.withValues(alpha: 0.12),
+      borderRadius: BorderRadius.circular(999),
+      border: Border.all(color: color.withValues(alpha: 0.2)),
+    ),
+    child: Text(
+      label,
+      style: GoogleFonts.poppins(fontSize: 11, fontWeight: FontWeight.w600, color: color),
+    ),
+  );
 }
 
 // ── Drop confirm bottom sheet ─────────────────────────────────────────────────
@@ -622,6 +887,164 @@ class _DropConfirmSheet extends StatelessWidget {
               ),
             ),
           ]),
+        ],
+      ),
+    );
+  }
+}
+
+class PassengerRatingScreen extends StatefulWidget {
+  final String bookingId;
+  final String passengerName;
+  final bool isOutstation;
+
+  const PassengerRatingScreen({
+    super.key,
+    required this.bookingId,
+    required this.passengerName,
+    required this.isOutstation,
+  });
+
+  @override
+  State<PassengerRatingScreen> createState() => _PassengerRatingScreenState();
+}
+
+class _PassengerRatingScreenState extends State<PassengerRatingScreen> {
+  final _noteCtrl = TextEditingController();
+  final Map<String, int> _ratings = {
+    'Safety': 5,
+    'Behaviour': 5,
+    'Punctuality': 5,
+    'Overall': 5,
+  };
+  bool _loading = false;
+
+  @override
+  void dispose() {
+    _noteCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_loading) return;
+    setState(() => _loading = true);
+    try {
+      final headers = await AuthService.getHeaders();
+      headers['Content-Type'] = 'application/json';
+      final res = await http.post(
+        Uri.parse(widget.isOutstation
+            ? ApiConfig.outstationPoolRatePassenger(widget.bookingId)
+            : ApiConfig.localPoolRatePassenger(widget.bookingId)),
+        headers: headers,
+        body: jsonEncode({
+          'overallRating': _ratings['Overall'],
+          'safetyRating': _ratings['Safety'],
+          'behaviourRating': _ratings['Behaviour'],
+          'punctualityRating': _ratings['Punctuality'],
+          'note': _noteCtrl.text.trim(),
+        }),
+      ).timeout(const Duration(seconds: 15));
+      final body = jsonDecode(res.body);
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Passenger rating submitted')),
+        );
+        Navigator.pop(context, body);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(body['message']?.toString() ?? 'Could not submit rating')),
+        );
+      }
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Network issue while submitting rating')),
+      );
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: JT.bgSoft,
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        elevation: 0,
+        surfaceTintColor: Colors.transparent,
+        title: Text('Rate Passenger', style: JT.h4),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          Container(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: JT.border),
+              boxShadow: JT.cardShadow,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(widget.passengerName, style: JT.h4),
+                const SizedBox(height: 6),
+                Text('Rate this passenger after trip completion. Only one rating is allowed per trip.', style: JT.body),
+                const SizedBox(height: 16),
+                ..._ratings.keys.map((label) => Padding(
+                      padding: const EdgeInsets.only(bottom: 14),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(label, style: JT.bodyPrimary),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: List.generate(5, (index) {
+                              final star = index + 1;
+                              return IconButton(
+                                onPressed: () => setState(() => _ratings[label] = star),
+                                padding: EdgeInsets.zero,
+                                visualDensity: VisualDensity.compact,
+                                icon: Icon(
+                                  star <= (_ratings[label] ?? 5) ? Icons.star_rounded : Icons.star_outline_rounded,
+                                  color: JT.warning,
+                                ),
+                              );
+                            }),
+                          ),
+                        ],
+                      ),
+                    )),
+                TextField(
+                  controller: _noteCtrl,
+                  minLines: 3,
+                  maxLines: 4,
+                  decoration: InputDecoration(
+                    hintText: 'Add optional notes for this passenger',
+                    filled: true,
+                    fillColor: JT.surfaceAlt,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(16),
+                      borderSide: BorderSide(color: JT.border),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(16),
+                      borderSide: BorderSide(color: JT.border),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+          JT.gradientButton(
+            label: _loading ? 'Submitting...' : 'Submit Rating',
+            onTap: _submit,
+            loading: _loading,
+          ),
         ],
       ),
     );

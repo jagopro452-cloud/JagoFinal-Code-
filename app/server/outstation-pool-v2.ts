@@ -13,9 +13,9 @@
 import type { Express } from "express";
 import { rawDb, rawSql, pool as dbPool } from "./db";
 import { io } from "./socket";
-import { sendFcmNotification } from "./fcm";
 import { calculateRevenueBreakdown, settleRevenue } from "./revenue-engine";
 import { enforceDriverRevenuePolicy } from "./revenue-policy";
+import { sendFcmNotification } from "./fcm";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -23,6 +23,49 @@ const DEFAULT_PRICE_PER_KM_PER_SEAT = 1.8;   // ₹1.8/km/seat
 const MIN_FARE_PER_BOOKING = 50;              // minimum ₹50 per booking
 const ROUTE_CORRIDOR_KM = 15;                 // pickup/drop must be within 15km of route line
 const DIRECTION_TOLERANCE_DEG = 45;           // bearing tolerance for "on route" check
+
+const DEFAULT_PRE_DEPARTURE_REFUND_PCT = 100;
+const DEFAULT_POST_DEPARTURE_REFUND_PCT = 0;
+
+async function getLatestFcmToken(userId: string | null | undefined): Promise<string | null> {
+  if (!userId) return null;
+  const r = await rawDb.execute(rawSql`
+    SELECT fcm_token
+    FROM user_devices
+    WHERE user_id = ${userId}::uuid
+      AND fcm_token IS NOT NULL
+      AND fcm_token != ''
+    ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+    LIMIT 1
+  `).catch(() => ({ rows: [] as any[] }));
+  return ((r.rows[0] as any)?.fcm_token || null) as string | null;
+}
+
+async function sendPoolPush(
+  userId: string | null | undefined,
+  title: string,
+  body: string,
+  data: Record<string, string>,
+) {
+  const token = await getLatestFcmToken(userId);
+  if (!token) return false;
+  return sendFcmNotification({
+    fcmToken: token,
+    title,
+    body,
+    channelId: "trip_alerts_v2",
+    sound: "trip_alert",
+    data,
+  }).catch(() => false);
+}
+
+function buildPoolRealtimePayload(module: string, referenceId: string, extra: Record<string, unknown> = {}) {
+  return {
+    module,
+    referenceId,
+    ...extra,
+  };
+}
 
 function normalizePoolKey(value: unknown): string {
   return String(value || "")
@@ -82,12 +125,264 @@ export async function ensureOutstationPoolV2Schema(): Promise<void> {
     `ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS dropped_at TIMESTAMP`,
     `ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS driver_earnings NUMERIC(10,2)`,
     `ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS revenue_model VARCHAR(40)`,
+    `ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS cancel_reason TEXT`,
+    `ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMP`,
+    `ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS cancelled_by VARCHAR(30) DEFAULT 'customer'`,
+    `ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS refund_amount NUMERIC(10,2) DEFAULT 0`,
+    `ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS refund_status VARCHAR(30) DEFAULT 'not_applicable'`,
   ];
   for (const sql of bookingAlters) {
     await rawDb.execute(rawSql.raw(sql)).catch(() => undefined);
   }
 
+  await rawDb.execute(rawSql`
+    CREATE TABLE IF NOT EXISTS pool_issue_cases (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      module VARCHAR(30) NOT NULL,
+      reference_type VARCHAR(30) NOT NULL,
+      reference_id UUID NOT NULL,
+      ride_id UUID,
+      customer_id UUID,
+      driver_id UUID,
+      reported_user_id UUID,
+      reported_by_role VARCHAR(30) NOT NULL,
+      issue_channel VARCHAR(30) NOT NULL DEFAULT 'report',
+      category VARCHAR(60) NOT NULL,
+      description TEXT,
+      evidence_urls JSONB NOT NULL DEFAULT '[]',
+      admin_updates JSONB NOT NULL DEFAULT '[]',
+      status VARCHAR(30) NOT NULL DEFAULT 'open',
+      resolution_note TEXT,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    )
+  `).catch(() => undefined);
+
+  await rawDb.execute(rawSql`
+    CREATE TABLE IF NOT EXISTS pool_messages (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      module VARCHAR(30) NOT NULL,
+      reference_id UUID NOT NULL,
+      sender_id UUID NOT NULL,
+      sender_type VARCHAR(30) NOT NULL,
+      sender_name TEXT,
+      message TEXT NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    )
+  `).catch(() => undefined);
+  await rawDb.execute(rawSql`
+    CREATE INDEX IF NOT EXISTS idx_pool_messages_ref
+    ON pool_messages(module, reference_id, created_at ASC)
+  `).catch(() => undefined);
+  await rawDb.execute(rawSql`
+    ALTER TABLE pool_issue_cases
+    ADD COLUMN IF NOT EXISTS admin_updates JSONB NOT NULL DEFAULT '[]'
+  `).catch(() => undefined);
+  await rawDb.execute(rawSql`
+    CREATE INDEX IF NOT EXISTS idx_pool_issue_cases_ref
+    ON pool_issue_cases(reference_type, reference_id, created_at DESC)
+  `).catch(() => undefined);
+  await rawDb.execute(rawSql`
+    CREATE INDEX IF NOT EXISTS idx_pool_issue_cases_status
+    ON pool_issue_cases(status, created_at DESC)
+  `).catch(() => undefined);
+
+  await rawDb.execute(rawSql`
+    CREATE TABLE IF NOT EXISTS pool_ratings (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      module VARCHAR(30) NOT NULL,
+      reference_type VARCHAR(30) NOT NULL,
+      reference_id UUID NOT NULL,
+      ride_id UUID,
+      from_user_id UUID NOT NULL,
+      to_user_id UUID NOT NULL,
+      rating_role VARCHAR(40) NOT NULL,
+      overall_rating NUMERIC(3,1) NOT NULL,
+      safety_rating NUMERIC(3,1),
+      cleanliness_rating NUMERIC(3,1),
+      behaviour_rating NUMERIC(3,1),
+      punctuality_rating NUMERIC(3,1),
+      note TEXT,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    )
+  `).catch(() => undefined);
+  await rawDb.execute(rawSql`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_pool_ratings_once
+    ON pool_ratings(reference_type, reference_id, from_user_id, rating_role)
+  `).catch(() => undefined);
+  await rawDb.execute(rawSql`
+    CREATE TABLE IF NOT EXISTS pool_user_blocks (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      blocker_user_id UUID NOT NULL,
+      blocked_user_id UUID NOT NULL,
+      module VARCHAR(30) NOT NULL DEFAULT 'pool',
+      reference_type VARCHAR(30),
+      reference_id UUID,
+      created_by_role VARCHAR(30) NOT NULL,
+      reason TEXT,
+      active BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    )
+  `).catch(() => undefined);
+  await rawDb.execute(rawSql`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_pool_user_blocks_active
+    ON pool_user_blocks(blocker_user_id, blocked_user_id, module)
+    WHERE active = true
+  `).catch(() => undefined);
+
   console.log("[OUTSTATION-V2] Schema columns ensured");
+}
+
+async function getPoolRefundPolicy() {
+  const r = await rawDb.execute(rawSql`
+    SELECT key_name, value
+    FROM business_settings
+    WHERE key_name IN (
+      'pool_cancel_refund_before_departure_pct',
+      'pool_cancel_refund_after_departure_pct'
+    )
+  `).catch(() => ({ rows: [] as any[] }));
+  const settings = new Map<string, number>();
+  for (const row of r.rows as any[]) {
+    const parsed = Number(row.value);
+    if (Number.isFinite(parsed)) settings.set(String(row.key_name), parsed);
+  }
+  return {
+    beforeDeparturePct: settings.get("pool_cancel_refund_before_departure_pct") ?? DEFAULT_PRE_DEPARTURE_REFUND_PCT,
+    afterDeparturePct: settings.get("pool_cancel_refund_after_departure_pct") ?? DEFAULT_POST_DEPARTURE_REFUND_PCT,
+  };
+}
+
+function getRefundPctForDeparture(rideStatus: string, beforeDeparturePct: number, afterDeparturePct: number) {
+  return rideStatus === "scheduled" ? beforeDeparturePct : afterDeparturePct;
+}
+
+function buildRefundTimeline(amount: number, refundStatus: string) {
+  const eligible = amount > 0;
+  return [
+    {
+      title: "Cancellation requested",
+      state: "done",
+      detail: eligible ? "Seat released and refund request created." : "Seat released. No refund is applicable.",
+    },
+    {
+      title: "Admin refund review",
+      state: eligible ? (refundStatus === "approved" || refundStatus === "completed" ? "done" : "active") : "skipped",
+      detail: eligible ? "Operations verifies departure timing and payment mode." : "Skipped because refund is not applicable.",
+    },
+    {
+      title: "Refund settlement",
+      state: refundStatus === "completed" ? "done" : eligible ? "pending" : "skipped",
+      detail: eligible ? "Amount is credited to wallet or original payment channel." : "No settlement required.",
+    },
+  ];
+}
+
+function normalizeIssueStatus(value: unknown) {
+  const status = String(value || "open").toLowerCase();
+  if (status === "resolved" || status === "rejected" || status === "under_review") return status;
+  return "open";
+}
+
+function parseJsonArray(value: unknown): any[] {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function buildIssueTimeline(issue: any) {
+  const adminUpdates = parseJsonArray(issue?.admin_updates);
+  const createdAt = issue?.created_at ? new Date(issue.created_at).toISOString() : new Date().toISOString();
+  const updatedAt = issue?.updated_at ? new Date(issue.updated_at).toISOString() : createdAt;
+  const currentStatus = normalizeIssueStatus(issue?.status);
+  const baseTimeline = [
+    {
+      key: "open",
+      title: "Open",
+      state: "done",
+      timestamp: createdAt,
+      note: issue?.description || "Issue raised by customer.",
+    },
+    {
+      key: "under_review",
+      title: "Under Review",
+      state: currentStatus === "under_review" || currentStatus === "resolved" || currentStatus === "rejected" ? "done" : "pending",
+      timestamp: adminUpdates.find((entry: any) => normalizeIssueStatus(entry?.status) === "under_review")?.createdAt || null,
+      note: "Operations is reviewing the submitted evidence and trip records.",
+    },
+    {
+      key: "resolved",
+      title: "Resolved",
+      state: currentStatus === "resolved" ? "done" : "pending",
+      timestamp: currentStatus === "resolved" ? updatedAt : null,
+      note: issue?.resolution_note || "Awaiting resolution.",
+    },
+    {
+      key: "rejected",
+      title: "Rejected",
+      state: currentStatus === "rejected" ? "done" : "pending",
+      timestamp: currentStatus === "rejected" ? updatedAt : null,
+      note: issue?.resolution_note || "Awaiting final decision.",
+    },
+  ];
+  return {
+    status: currentStatus,
+    stages: baseTimeline,
+    adminUpdates: adminUpdates.map((entry: any) => ({
+      message: entry?.message || "",
+      status: normalizeIssueStatus(entry?.status),
+      author: entry?.author || "Operations",
+      createdAt: entry?.createdAt || updatedAt,
+    })),
+  };
+}
+
+function toBool(value: unknown): boolean {
+  return value === true || value === "true" || value === 1 || value === "1";
+}
+
+function buildUserSafetySnapshot(row: any, prefix = "") {
+  const openIssueCount = Number(row?.[`${prefix}open_issue_count`] ?? row?.open_issue_count ?? 0);
+  const totalReportCount = Number(row?.[`${prefix}report_count`] ?? row?.report_count ?? 0);
+  const hasActiveBlock = toBool(row?.[`${prefix}has_active_block`] ?? row?.has_active_block);
+  const isVerified = toBool(row?.[`${prefix}is_verified`] ?? row?.is_verified);
+  const isHighRisk = hasActiveBlock || openIssueCount >= 2 || totalReportCount >= 3;
+  let badgeLabel: string | null = null;
+  if (hasActiveBlock) badgeLabel = "Blocked User";
+  else if (isHighRisk) badgeLabel = "High Risk User";
+  else if (openIssueCount > 0 || totalReportCount > 0) badgeLabel = "Reported User";
+  return {
+    isVerified,
+    openIssueCount,
+    totalReportCount,
+    hasActiveBlock,
+    isHighRisk,
+    badgeLabel,
+  };
+}
+
+async function hasActivePoolBlock(userA: string, userB: string): Promise<boolean> {
+  if (!userA || !userB) return false;
+  const blockedR = await rawDb.execute(rawSql`
+    SELECT 1
+    FROM pool_user_blocks
+    WHERE active = true
+      AND (
+        (blocker_user_id = ${userA}::uuid AND blocked_user_id = ${userB}::uuid)
+        OR
+        (blocker_user_id = ${userB}::uuid AND blocked_user_id = ${userA}::uuid)
+      )
+    LIMIT 1
+  `).catch(() => ({ rows: [] as any[] }));
+  return blockedR.rows.length > 0;
 }
 
 // ── Geo helpers ───────────────────────────────────────────────────────────────
@@ -189,7 +484,7 @@ function calcSegmentFare(segmentKm: number, seats: number, pricePerKmPerSeat: nu
 
 // ── Route registration ────────────────────────────────────────────────────────
 
-export function registerOutstationPoolV2Routes(app: Express, authApp: any): void {
+export function registerOutstationPoolV2Routes(app: Express, authApp: any, requireAdminAuth?: any): void {
 
   // ─── DRIVER: Post a trip WITH coordinates + price_per_km ─────────────────
   // Replaces the old flat fare_per_seat model. Both are stored.
@@ -305,14 +600,37 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any): void
       const r = await rawDb.execute(rawSql`
         SELECT opb.*,
           u.full_name as passenger_name,
-          u.phone as passenger_phone
+          u.phone as passenger_phone,
+          CASE WHEN COALESCE(u.verification_status, '') IN ('verified', 'approved') THEN true ELSE false END AS is_verified,
+          (
+            SELECT COUNT(*)::int
+            FROM pool_issue_cases pic
+            WHERE pic.reported_user_id = u.id
+          ) AS report_count,
+          (
+            SELECT COUNT(*)::int
+            FROM pool_issue_cases pic
+            WHERE pic.reported_user_id = u.id
+              AND pic.status IN ('open', 'under_review')
+          ) AS open_issue_count,
+          EXISTS(
+            SELECT 1
+            FROM pool_user_blocks pub
+            WHERE pub.active = true
+              AND pub.blocked_user_id = u.id
+          ) AS has_active_block
         FROM outstation_pool_bookings opb
         LEFT JOIN users u ON u.id = opb.customer_id
         WHERE opb.ride_id=${rideId}::uuid
           AND opb.status != 'cancelled'
         ORDER BY COALESCE(opb.pickup_order, 1), opb.created_at ASC
       `);
-      res.json({ passengers: r.rows });
+      res.json({
+        passengers: (r.rows as any[]).map((row) => ({
+          ...row,
+          safety: buildUserSafetySnapshot(row),
+        })),
+      });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }
@@ -345,6 +663,17 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any): void
           rideId,
           message: "Your driver has started the trip! Get ready for pickup.",
         });
+        void sendPoolPush(
+          String(b.customer_id),
+          "Pool trip started",
+          "Your driver has started the outstation pool trip.",
+          {
+            type: "pool_booking_confirmed",
+            module: "outstation_pool",
+            referenceId: rideId,
+            rideId,
+          },
+        );
       }
 
       res.json({ success: true });
@@ -382,6 +711,21 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any): void
           acceptingNewRequests: row.accepting_new_requests !== false,
           stateVersion: parseInt(row.state_version || 1),
         });
+        void sendPoolPush(
+          String(p.customer_id),
+          "Pool seat update",
+          row.accepting_new_requests !== false
+            ? "This ride is accepting new pool bookings."
+            : "This ride stopped accepting new pool bookings.",
+          {
+            type: "pool_seat_update",
+            module: "outstation_pool",
+            referenceId: rideId,
+            rideId,
+            acceptingNewRequests: String(row.accepting_new_requests !== false),
+            stateVersion: String(parseInt(row.state_version || 1)),
+          },
+        );
       }
       res.json({ success: true, acceptingNewRequests: row.accepting_new_requests !== false, stateVersion: parseInt(row.state_version || 1) });
     } catch (e: any) {
@@ -439,11 +783,23 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any): void
       `);
       if (!r.rows.length) return res.status(404).json({ message: "Booking not found or not in confirmed state" });
 
-      const b = r.rows[0] as any;
-      io.to(`user:${b.customer_id}`).emit("outstation_pool:picked_up", {
+      const booking = r.rows[0] as any;
+      io.to(`user:${booking.customer_id}`).emit("outstation_pool:picked_up", {
         bookingId,
-        message: `You've been picked up! Drop: ${b.dropoff_address || b.to_city}`,
+        message: `You've been picked up! Drop: ${booking.dropoff_address || booking.to_city}`,
       });
+      void sendPoolPush(
+        String(booking.customer_id),
+        "Pool pickup confirmed",
+        "You have been picked up for your outstation pool trip.",
+        {
+          type: "pool_booking_confirmed",
+          module: "outstation_pool",
+          referenceId: bookingId,
+          bookingId,
+          status: "picked_up",
+        },
+      );
 
       res.json({ success: true });
     } catch (e: any) {
@@ -679,6 +1035,10 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any): void
           return res.status(409).json({ message: "Ride not available or not enough seats" });
         }
         ride = rideR.rows[0];
+        if (await hasActivePoolBlock(String(customer.id), String(ride.driver_id))) {
+          await txClient.query("ROLLBACK");
+          return res.status(403).json({ message: "This pool driver is unavailable for this booking" });
+        }
 
         // Prevent duplicate booking by the same customer on this ride
         const dupR = await txClient.query(
@@ -783,6 +1143,32 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any): void
           totalFare,
           segmentKm: Math.round(segmentKm * 10) / 10,
         });
+        void sendPoolPush(
+          String(customer.id),
+          "Pool booking confirmed",
+          "Your outstation pool seat is confirmed.",
+          {
+            type: "pool_booking_confirmed",
+            module: "outstation_pool",
+            referenceId: String(bookingId),
+            bookingId: String(bookingId),
+            rideId: String(rideId),
+            pickupAddress: String(pickupAddress || ""),
+            dropAddress: String(dropAddress || ""),
+          },
+        );
+        void sendPoolPush(
+          String(ride.driver_id),
+          "New outstation pool booking",
+          `${customer.fullName || "Passenger"} booked ${seatsN} seat${seatsN > 1 ? "s" : ""}.`,
+          {
+            type: "pool_new_booking",
+            module: "outstation_pool",
+            referenceId: String(bookingId),
+            bookingId: String(bookingId),
+            rideId: String(rideId),
+          },
+        );
 
         // Build clear fare breakdown for customer
         const fareBreakdown: any = {
@@ -832,9 +1218,27 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any): void
       const r = await rawDb.execute(rawSql`
         SELECT opb.*,
           opr.from_city, opr.to_city, opr.departure_date, opr.departure_time,
-          opr.status as ride_status, opr.current_lat, opr.current_lng,
+          opr.status as ride_status, opr.current_lat, opr.current_lng, opr.driver_id,
           u.full_name as driver_name, u.phone as driver_phone,
-          dd.avg_rating as driver_rating, dd.vehicle_number, dd.vehicle_model
+          dd.avg_rating as driver_rating, dd.vehicle_number, dd.vehicle_model,
+          CASE WHEN COALESCE(u.verification_status, '') IN ('verified', 'approved') THEN true ELSE false END AS driver_is_verified,
+          (
+            SELECT COUNT(*)::int
+            FROM pool_issue_cases pic
+            WHERE pic.reported_user_id = opr.driver_id
+          ) AS driver_report_count,
+          (
+            SELECT COUNT(*)::int
+            FROM pool_issue_cases pic
+            WHERE pic.reported_user_id = opr.driver_id
+              AND pic.status IN ('open', 'under_review')
+          ) AS driver_open_issue_count,
+          EXISTS(
+            SELECT 1
+            FROM pool_user_blocks pub
+            WHERE pub.active = true
+              AND pub.blocked_user_id = opr.driver_id
+          ) AS driver_has_active_block
         FROM outstation_pool_bookings opb
         JOIN outstation_pool_rides opr ON opr.id = opb.ride_id
         JOIN users u ON u.id = opr.driver_id
@@ -843,7 +1247,12 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any): void
         ORDER BY opb.created_at DESC
         LIMIT 30
       `);
-      res.json({ data: r.rows });
+      res.json({
+        data: (r.rows as any[]).map((row) => ({
+          ...row,
+          driverSafety: buildUserSafetySnapshot(row, "driver_"),
+        })),
+      });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }
@@ -855,34 +1264,874 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any): void
     try {
       const customer = req.currentUser;
       const bookingId = String(req.params.id);
+      const reason = String(req.body?.reason || "Customer changed plans").trim().slice(0, 300);
 
       const r = await rawDb.execute(rawSql`
-        SELECT opb.status, opb.seats_booked, opb.ride_id
+        SELECT opb.id, opb.status, opb.seats_booked, opb.ride_id, opb.total_fare, opb.payment_method,
+               opr.status AS ride_status, opr.driver_id,
+               u.full_name AS customer_name
         FROM outstation_pool_bookings opb
+        JOIN outstation_pool_rides opr ON opr.id = opb.ride_id
+        LEFT JOIN users u ON u.id = opb.customer_id
         WHERE opb.id = ${bookingId}::uuid AND opb.customer_id = ${customer.id}::uuid
         LIMIT 1
       `);
       if (!r.rows.length) return res.status(404).json({ message: "Booking not found" });
 
-      const b = r.rows[0] as any;
-      if (b.status === "picked_up") {
-        return res.status(400).json({ message: "Cannot cancel — already picked up" });
+      const booking = r.rows[0] as any;
+      if (booking.status === "picked_up") {
+        return res.status(400).json({ message: "Cannot cancel after pickup" });
       }
-      if (["dropped", "cancelled", "completed"].includes(b.status)) {
+      if (["dropped", "cancelled", "completed"].includes(booking.status)) {
         return res.json({ success: true, message: "Already completed/cancelled" });
       }
 
+      const fare = parseFloat(booking.total_fare || 0) || 0;
+      const policy = await getPoolRefundPolicy();
+      const refundPct = getRefundPctForDeparture(String(booking.ride_status || "scheduled"), policy.beforeDeparturePct, policy.afterDeparturePct);
+      const refundAmount = Math.round(fare * Math.max(0, refundPct) / 100 * 100) / 100;
+      const refundStatus = refundAmount > 0 ? "pending" : "not_applicable";
+
       await rawDb.execute(rawSql`
         UPDATE outstation_pool_bookings
-        SET status = 'cancelled', updated_at = NOW()
+        SET status = 'cancelled',
+            cancel_reason = ${reason},
+            cancelled_at = NOW(),
+            cancelled_by = 'customer',
+            refund_amount = ${refundAmount},
+            refund_status = ${refundStatus},
+            updated_at = NOW()
         WHERE id = ${bookingId}::uuid
       `);
       await rawDb.execute(rawSql`
         UPDATE outstation_pool_rides
-        SET available_seats = available_seats + ${parseInt(b.seats_booked) || 1}, updated_at = NOW()
-        WHERE id = ${b.ride_id}::uuid
+        SET available_seats = available_seats + ${parseInt(booking.seats_booked) || 1}, updated_at = NOW()
+        WHERE id = ${booking.ride_id}::uuid
       `);
 
+      if (refundAmount > 0) {
+        await rawDb.execute(rawSql`
+          INSERT INTO refund_requests (customer_id, amount, reason, payment_method, status, admin_note)
+          VALUES (
+            ${customer.id}::uuid,
+            ${refundAmount},
+            ${`Outstation pool cancellation: ${reason}`},
+            ${booking.payment_method || "wallet"},
+            'pending',
+            ${`Pool booking ${bookingId} cancelled before departure`}
+          )
+        `).catch(() => undefined);
+      }
+
+      io.to(`user:${booking.driver_id}`).emit("outstation_pool:booking_cancelled", {
+        bookingId,
+        rideId: booking.ride_id,
+        seatsReleased: parseInt(booking.seats_booked) || 1,
+        customerName: booking.customer_name || "Passenger",
+        reason,
+      });
+      io.to(`user:${customer.id}`).emit("outstation_pool:cancellation_confirmed", {
+        bookingId,
+        refundAmount,
+        refundStatus,
+      });
+      const refundPayload = buildPoolRealtimePayload("outstation_pool", bookingId, {
+        rideId: String(booking.ride_id),
+        refundAmount,
+        refundStatus,
+        status: "cancelled",
+      });
+      io.to(`user:${customer.id}`).emit("pool:refund_updated", refundPayload);
+      io.to(`user:${booking.driver_id}`).emit("pool:refund_updated", refundPayload);
+      void sendPoolPush(
+        String(customer.id),
+        "Pool booking cancelled",
+        refundAmount > 0 ? "Your refund request has been raised." : "Your outstation pool booking has been cancelled.",
+        {
+          type: "pool_booking_cancelled",
+          module: "outstation_pool",
+          referenceId: bookingId,
+          bookingId,
+          refundAmount: String(refundAmount),
+          refundStatus: String(refundStatus),
+        },
+      );
+      void sendPoolPush(
+        String(booking.driver_id),
+        "Pool booking cancelled",
+        `${booking.customer_name || "A passenger"} cancelled the booking.`,
+        {
+          type: "pool_booking_cancelled",
+          module: "outstation_pool",
+          referenceId: bookingId,
+          bookingId,
+          rideId: String(booking.ride_id),
+        },
+      );
+
+      res.json({
+        success: true,
+        refundAmount,
+        refundStatus,
+        refundTimeline: buildRefundTimeline(refundAmount, refundStatus),
+        cancellationCharge: Math.max(0, fare - refundAmount),
+        seatReleased: parseInt(booking.seats_booked) || 1,
+        message: refundAmount > 0 ? "Booking cancelled. Refund request has been raised." : "Booking cancelled. No refund is applicable after departure.",
+      });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/app/customer/outstation-pool/v2/bookings/:id/co-passengers", authApp, async (req: any, res: any) => {
+    try {
+      const customer = req.currentUser;
+      const bookingId = String(req.params.id);
+      const ownR = await rawDb.execute(rawSql`
+        SELECT opb.id, opb.ride_id
+        FROM outstation_pool_bookings opb
+        WHERE opb.id = ${bookingId}::uuid AND opb.customer_id = ${customer.id}::uuid
+        LIMIT 1
+      `);
+      if (!ownR.rows.length) return res.status(404).json({ message: "Booking not found" });
+      const own = ownR.rows[0] as any;
+      const coR = await rawDb.execute(rawSql`
+        SELECT opb.id,
+               u.full_name AS passenger_name,
+               CASE WHEN COALESCE(u.verification_status, '') IN ('verified', 'approved') THEN true ELSE false END AS is_verified,
+               opb.pickup_address,
+               opb.dropoff_address,
+               opb.seats_booked,
+               opb.status,
+               (
+                 SELECT COUNT(*)::int
+                 FROM pool_issue_cases pic
+                 WHERE pic.reported_user_id = u.id
+               ) AS report_count,
+               (
+                 SELECT COUNT(*)::int
+                 FROM pool_issue_cases pic
+                 WHERE pic.reported_user_id = u.id
+                   AND pic.status IN ('open', 'under_review')
+               ) AS open_issue_count,
+               EXISTS(
+                 SELECT 1
+                 FROM pool_user_blocks pub
+                 WHERE pub.active = true
+                   AND pub.blocked_user_id = u.id
+               ) AS has_active_block
+        FROM outstation_pool_bookings opb
+        JOIN users u ON u.id = opb.customer_id
+        WHERE opb.ride_id = ${own.ride_id}::uuid
+          AND opb.status NOT IN ('cancelled')
+        ORDER BY COALESCE(opb.pickup_order, 1), opb.created_at ASC
+      `);
+      const passengers = (coR.rows as any[]).map((row) => ({
+        id: row.id,
+        passengerName: row.passenger_name,
+        isVerified: row.is_verified === true,
+        pickupPoint: row.pickup_address || "Pickup on route",
+        dropPoint: row.dropoff_address || "Drop on route",
+        seatsBooked: parseInt(row.seats_booked) || 1,
+        status: row.status,
+        safety: buildUserSafetySnapshot(row),
+      }));
+      const seatsBooked = passengers.reduce((sum, row) => sum + (row.seatsBooked || 0), 0);
+      res.json({
+        passengers,
+        occupancy: {
+          passengerCount: passengers.length,
+          seatsBooked,
+        },
+      });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/app/customer/pool/issues", authApp, async (req: any, res: any) => {
+    try {
+      const customer = req.currentUser;
+      const {
+        module = "outstation_pool",
+        referenceType = "booking",
+        referenceId,
+        issueChannel = "report",
+        category,
+        description = "",
+        reportedUserId = null,
+        evidenceUrls = [],
+      } = req.body || {};
+      if (!referenceId || !category) {
+        return res.status(400).json({ message: "referenceId and category are required" });
+      }
+      let own: any = null;
+      if (String(module) === "local_pool" || String(referenceType) === "request") {
+        const ownR = await rawDb.execute(rawSql`
+          SELECT prr.id, COALESCE(prr.session_id, prr.proposed_session_id) AS ride_id, dps.driver_id
+          FROM pool_ride_requests prr
+          LEFT JOIN driver_pool_sessions dps ON dps.id = COALESCE(prr.session_id, prr.proposed_session_id)
+          WHERE prr.id = ${String(referenceId)}::uuid AND prr.customer_id = ${customer.id}::uuid
+          LIMIT 1
+        `);
+        own = ownR.rows[0] as any;
+      } else {
+        const ownR = await rawDb.execute(rawSql`
+          SELECT opb.id, opb.ride_id, opr.driver_id
+          FROM outstation_pool_bookings opb
+          JOIN outstation_pool_rides opr ON opr.id = opb.ride_id
+          WHERE opb.id = ${String(referenceId)}::uuid AND opb.customer_id = ${customer.id}::uuid
+          LIMIT 1
+        `);
+        own = ownR.rows[0] as any;
+      }
+      if (!own) return res.status(404).json({ message: "Pool booking not found" });
+      const created = await rawDb.execute(rawSql`
+        INSERT INTO pool_issue_cases (
+          module, reference_type, reference_id, ride_id, customer_id, driver_id,
+          reported_user_id, reported_by_role, issue_channel, category, description, evidence_urls, admin_updates
+        )
+        VALUES (
+          ${String(module)},
+          ${String(referenceType)},
+          ${String(referenceId)}::uuid,
+          ${own.ride_id}::uuid,
+          ${customer.id}::uuid,
+          ${own.driver_id}::uuid,
+          ${reportedUserId ? String(reportedUserId) : null}::uuid,
+          'customer',
+          ${String(issueChannel)},
+          ${String(category)},
+          ${String(description).slice(0, 1500)},
+          ${JSON.stringify(Array.isArray(evidenceUrls) ? evidenceUrls.slice(0, 4) : [])}::jsonb,
+          '[]'::jsonb
+        )
+        RETURNING *
+      `);
+      const item = created.rows[0] as any;
+      const payload = buildPoolRealtimePayload(String(item.module || module), String(item.reference_id || referenceId), {
+        issueId: String(item.id),
+        status: String(item.status || "open"),
+      });
+      io.to(`user:${customer.id}`).emit("pool:issue_updated", payload);
+      if (own.driver_id) {
+        io.to(`user:${own.driver_id}`).emit("pool:issue_updated", payload);
+      }
+      void sendPoolPush(
+        String(customer.id),
+        "Pool issue created",
+        "Your pool issue has been submitted for review.",
+        {
+          type: "pool_dispute_update",
+          module: String(item.module || module),
+          referenceId: String(item.reference_id || referenceId),
+          issueId: String(item.id),
+          status: String(item.status || "open"),
+        },
+      );
+      res.status(201).json({ success: true, case: item });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/app/customer/pool/issues", authApp, async (req: any, res: any) => {
+    try {
+      const customer = req.currentUser;
+      const module = String(req.query.module || "all");
+      const referenceId = String(req.query.referenceId || "").trim();
+      const itemsR = await rawDb.execute(rawSql`
+        SELECT *
+        FROM pool_issue_cases
+        WHERE customer_id = ${customer.id}::uuid
+          ${module !== "all" ? rawSql`AND module = ${module}` : rawSql``}
+          ${referenceId ? rawSql`AND reference_id = ${referenceId}::uuid` : rawSql``}
+        ORDER BY created_at DESC
+        LIMIT 50
+      `);
+      res.json({
+        items: (itemsR.rows as any[]).map((row) => ({
+          ...row,
+          timeline: buildIssueTimeline(row),
+        })),
+      });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/app/customer/pool/issues/:id", authApp, async (req: any, res: any) => {
+    try {
+      const customer = req.currentUser;
+      const id = String(req.params.id);
+      const issueR = await rawDb.execute(rawSql`
+        SELECT pic.*,
+               cu.full_name AS customer_name,
+               du.full_name AS driver_name,
+               ru.full_name AS reported_user_name
+        FROM pool_issue_cases pic
+        LEFT JOIN users cu ON cu.id = pic.customer_id
+        LEFT JOIN users du ON du.id = pic.driver_id
+        LEFT JOIN users ru ON ru.id = pic.reported_user_id
+        WHERE pic.id = ${id}::uuid
+          AND pic.customer_id = ${customer.id}::uuid
+        LIMIT 1
+      `);
+      if (!issueR.rows.length) return res.status(404).json({ message: "Issue not found" });
+      const item = issueR.rows[0] as any;
+      res.json({ item: { ...item, timeline: buildIssueTimeline(item) } });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/app/customer/pool/share", authApp, async (req: any, res: any) => {
+    try {
+      const customer = req.currentUser;
+      const module = String(req.body?.module || "local_pool");
+      const referenceId = String(req.body?.referenceId || "").trim();
+      if (!referenceId) return res.status(400).json({ message: "referenceId required" });
+      let shareData: any = null;
+      if (module === "outstation_pool") {
+        const r = await rawDb.execute(rawSql`
+          SELECT opb.id, opb.status, opb.pickup_address, opb.dropoff_address, opb.seats_booked,
+                 opr.from_city, opr.to_city, opr.departure_date, opr.departure_time,
+                 u.full_name AS driver_name,
+                 dd.vehicle_number, dd.vehicle_model
+          FROM outstation_pool_bookings opb
+          JOIN outstation_pool_rides opr ON opr.id = opb.ride_id
+          LEFT JOIN users u ON u.id = opr.driver_id
+          LEFT JOIN driver_details dd ON dd.user_id = opr.driver_id
+          WHERE opb.id = ${referenceId}::uuid AND opb.customer_id = ${customer.id}::uuid
+          LIMIT 1
+        `);
+        shareData = r.rows[0];
+      } else {
+        const r = await rawDb.execute(rawSql`
+          SELECT prr.id, prr.status, prr.pickup_address, prr.drop_address, prr.seats_requested,
+                 u.full_name AS driver_name,
+                 dd.vehicle_number, dd.vehicle_model
+          FROM pool_ride_requests prr
+          LEFT JOIN driver_pool_sessions dps ON dps.id = COALESCE(prr.session_id, prr.proposed_session_id)
+          LEFT JOIN users u ON u.id = dps.driver_id
+          LEFT JOIN driver_details dd ON dd.user_id = dps.driver_id
+          WHERE prr.id = ${referenceId}::uuid AND prr.customer_id = ${customer.id}::uuid
+          LIMIT 1
+        `);
+        shareData = r.rows[0];
+      }
+      if (!shareData) return res.status(404).json({ message: "Pool booking not found" });
+      const shareText = module === "outstation_pool"
+        ? `JAGO Pool Trip\nTrip ID: ${shareData.id}\nRoute: ${shareData.from_city} -> ${shareData.to_city}\nDriver: ${shareData.driver_name || "Assigned soon"}\nVehicle: ${shareData.vehicle_model || "-"} ${shareData.vehicle_number || ""}\nStatus: ${shareData.status}\nPickup: ${shareData.pickup_address || "-"}\nDrop: ${shareData.dropoff_address || "-"}\nSeats: ${shareData.seats_booked || 1}\nDeparture: ${shareData.departure_date || "-"} ${shareData.departure_time || ""}`.trim()
+        : `JAGO Local Pool\nTrip ID: ${shareData.id}\nDriver: ${shareData.driver_name || "Matching"}\nVehicle: ${shareData.vehicle_model || "-"} ${shareData.vehicle_number || ""}\nStatus: ${shareData.status}\nPickup: ${shareData.pickup_address || "-"}\nDrop: ${shareData.drop_address || "-"}\nSeats: ${shareData.seats_requested || 1}`.trim();
+      res.json({ success: true, shareText, tripId: shareData.id, liveStatus: shareData.status });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/app/customer/pool/block-user", authApp, async (req: any, res: any) => {
+    try {
+      const customer = req.currentUser;
+      const blockedUserId = String(req.body?.blockedUserId || "").trim();
+      const module = String(req.body?.module || "pool");
+      const referenceType = String(req.body?.referenceType || "booking");
+      const referenceId = String(req.body?.referenceId || "").trim();
+      const reason = String(req.body?.reason || "Blocked after pool incident").slice(0, 300);
+      if (!blockedUserId) return res.status(400).json({ message: "blockedUserId required" });
+      await rawDb.execute(rawSql`
+        INSERT INTO pool_user_blocks (
+          blocker_user_id, blocked_user_id, module, reference_type, reference_id, created_by_role, reason
+        )
+        VALUES (
+          ${customer.id}::uuid, ${blockedUserId}::uuid, ${module},
+          ${referenceType || null}, ${referenceId ? referenceId : null}::uuid, 'customer', ${reason}
+        )
+        ON CONFLICT (blocker_user_id, blocked_user_id, module) WHERE active = true DO NOTHING
+      `);
+      const payload = buildPoolRealtimePayload(module === "pool" ? "local_pool" : module, referenceId || blockedUserId, {
+        blockedUserId,
+        actorRole: "customer",
+      });
+      io.to(`user:${customer.id}`).emit("pool:safety_updated", payload);
+      void sendPoolPush(
+        String(customer.id),
+        "Pool safety updated",
+        "This user has been blocked from future pool matching.",
+        {
+          type: "pool_safety_update",
+          module: module === "pool" ? "local_pool" : module,
+          referenceId: referenceId || blockedUserId,
+          blockedUserId,
+        },
+      );
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/app/driver/pool/block-user", authApp, async (req: any, res: any) => {
+    try {
+      const driver = req.currentUser;
+      const blockedUserId = String(req.body?.blockedUserId || "").trim();
+      const module = String(req.body?.module || "pool");
+      const referenceType = String(req.body?.referenceType || "booking");
+      const referenceId = String(req.body?.referenceId || "").trim();
+      const reason = String(req.body?.reason || "Blocked after pool incident").slice(0, 300);
+      if (!blockedUserId) return res.status(400).json({ message: "blockedUserId required" });
+      await rawDb.execute(rawSql`
+        INSERT INTO pool_user_blocks (
+          blocker_user_id, blocked_user_id, module, reference_type, reference_id, created_by_role, reason
+        )
+        VALUES (
+          ${driver.id}::uuid, ${blockedUserId}::uuid, ${module},
+          ${referenceType || null}, ${referenceId ? referenceId : null}::uuid, 'driver', ${reason}
+        )
+        ON CONFLICT (blocker_user_id, blocked_user_id, module) WHERE active = true DO NOTHING
+      `);
+      const payload = buildPoolRealtimePayload(module === "pool" ? "local_pool" : module, referenceId || blockedUserId, {
+        blockedUserId,
+        actorRole: "driver",
+      });
+      io.to(`user:${driver.id}`).emit("pool:safety_updated", payload);
+      void sendPoolPush(
+        String(driver.id),
+        "Pool safety updated",
+        "This passenger has been blocked from future pool matching.",
+        {
+          type: "pool_safety_update",
+          module: module === "pool" ? "local_pool" : module,
+          referenceId: referenceId || blockedUserId,
+          blockedUserId,
+        },
+      );
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/app/driver/pool/share", authApp, async (req: any, res: any) => {
+    try {
+      const driver = req.currentUser;
+      const module = String(req.body?.module || "local_pool");
+      const referenceId = String(req.body?.referenceId || "").trim();
+      if (!referenceId) return res.status(400).json({ message: "referenceId required" });
+      let shareData: any = null;
+      if (module === "outstation_pool") {
+        const r = await rawDb.execute(rawSql`
+          SELECT opb.id, opb.status, opb.pickup_address, opb.dropoff_address, opb.seats_booked,
+                 opr.id AS ride_id, opr.from_city, opr.to_city, opr.departure_date, opr.departure_time,
+                 u.full_name AS passenger_name,
+                 dd.vehicle_number, dd.vehicle_model
+          FROM outstation_pool_bookings opb
+          JOIN outstation_pool_rides opr ON opr.id = opb.ride_id
+          LEFT JOIN users u ON u.id = opb.customer_id
+          LEFT JOIN driver_details dd ON dd.user_id = opr.driver_id
+          WHERE opb.id = ${referenceId}::uuid AND opr.driver_id = ${driver.id}::uuid
+          LIMIT 1
+        `);
+        shareData = r.rows[0];
+      } else {
+        const r = await rawDb.execute(rawSql`
+          SELECT prr.id, prr.status, prr.pickup_address, prr.drop_address, prr.seats_requested,
+                 u.full_name AS passenger_name,
+                 dd.vehicle_number, dd.vehicle_model
+          FROM pool_ride_requests prr
+          JOIN driver_pool_sessions dps ON dps.id = COALESCE(prr.session_id, prr.proposed_session_id)
+          LEFT JOIN users u ON u.id = prr.customer_id
+          LEFT JOIN driver_details dd ON dd.user_id = dps.driver_id
+          WHERE prr.id = ${referenceId}::uuid AND dps.driver_id = ${driver.id}::uuid
+          LIMIT 1
+        `);
+        shareData = r.rows[0];
+      }
+      if (!shareData) return res.status(404).json({ message: "Pool passenger not found" });
+      const shareText = module === "outstation_pool"
+        ? `JAGO Driver Pool Trip\nPassenger: ${shareData.passenger_name || "Passenger"}\nBooking ID: ${shareData.id}\nRoute: ${shareData.from_city} -> ${shareData.to_city}\nPickup: ${shareData.pickup_address || "-"}\nDrop: ${shareData.dropoff_address || "-"}\nSeats: ${shareData.seats_booked || 1}\nVehicle: ${shareData.vehicle_model || "-"} ${shareData.vehicle_number || ""}\nStatus: ${shareData.status}\nDeparture: ${shareData.departure_date || "-"} ${shareData.departure_time || ""}`.trim()
+        : `JAGO Driver Local Pool\nPassenger: ${shareData.passenger_name || "Passenger"}\nRequest ID: ${shareData.id}\nPickup: ${shareData.pickup_address || "-"}\nDrop: ${shareData.drop_address || "-"}\nSeats: ${shareData.seats_requested || 1}\nVehicle: ${shareData.vehicle_model || "-"} ${shareData.vehicle_number || ""}\nStatus: ${shareData.status}`.trim();
+      res.json({ success: true, shareText, referenceId: shareData.id, liveStatus: shareData.status });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/app/customer/outstation-pool/v2/bookings/:id/rate-driver", authApp, async (req: any, res: any) => {
+    try {
+      const customer = req.currentUser;
+      const bookingId = String(req.params.id);
+      const overall = Number(req.body?.overallRating);
+      const safety = Number(req.body?.safetyRating || overall);
+      const cleanliness = Number(req.body?.cleanlinessRating || overall);
+      const behaviour = Number(req.body?.behaviourRating || overall);
+      const punctuality = Number(req.body?.punctualityRating || overall);
+      const note = String(req.body?.note || "").slice(0, 1000);
+      if (![overall, safety, cleanliness, behaviour, punctuality].every((value) => Number.isFinite(value) && value >= 1 && value <= 5)) {
+        return res.status(400).json({ message: "All ratings must be between 1 and 5" });
+      }
+
+      const ownR = await rawDb.execute(rawSql`
+        SELECT opb.id, opb.ride_id, opr.driver_id
+        FROM outstation_pool_bookings opb
+        JOIN outstation_pool_rides opr ON opr.id = opb.ride_id
+        WHERE opb.id = ${bookingId}::uuid
+          AND opb.customer_id = ${customer.id}::uuid
+          AND opb.status IN ('dropped', 'completed')
+        LIMIT 1
+      `);
+      if (!ownR.rows.length) return res.status(404).json({ message: "Completed booking not found" });
+      const own = ownR.rows[0] as any;
+
+      const inserted = await rawDb.execute(rawSql`
+        INSERT INTO pool_ratings (
+          module, reference_type, reference_id, ride_id, from_user_id, to_user_id,
+          rating_role, overall_rating, safety_rating, cleanliness_rating,
+          behaviour_rating, punctuality_rating, note
+        )
+        VALUES (
+          'outstation_pool', 'booking', ${bookingId}::uuid, ${own.ride_id}::uuid, ${customer.id}::uuid, ${own.driver_id}::uuid,
+          'customer_to_driver', ${overall}, ${safety}, ${cleanliness}, ${behaviour}, ${punctuality}, ${note}
+        )
+        ON CONFLICT (reference_type, reference_id, from_user_id, rating_role) DO NOTHING
+        RETURNING *
+      `);
+      if (!inserted.rows.length) return res.status(409).json({ message: "Rating already submitted for this booking" });
+
+      await rawDb.execute(rawSql`
+        UPDATE users
+        SET rating = (COALESCE(rating, 0) * COALESCE(total_ratings, 0) + ${overall}) / (COALESCE(total_ratings, 0) + 1),
+            total_ratings = COALESCE(total_ratings, 0) + 1
+        WHERE id = ${own.driver_id}::uuid
+      `).catch(() => undefined);
+
+      res.json({ success: true, rating: inserted.rows[0] });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/app/driver/outstation-pool/bookings/:id/rate-passenger", authApp, async (req: any, res: any) => {
+    try {
+      const driver = req.currentUser;
+      const bookingId = String(req.params.id);
+      const overall = Number(req.body?.overallRating);
+      const safety = Number(req.body?.safetyRating || overall);
+      const cleanliness = Number(req.body?.cleanlinessRating || overall);
+      const behaviour = Number(req.body?.behaviourRating || overall);
+      const punctuality = Number(req.body?.punctualityRating || overall);
+      const note = String(req.body?.note || "").slice(0, 1000);
+      if (![overall, safety, cleanliness, behaviour, punctuality].every((value) => Number.isFinite(value) && value >= 1 && value <= 5)) {
+        return res.status(400).json({ message: "All ratings must be between 1 and 5" });
+      }
+
+      const ownR = await rawDb.execute(rawSql`
+        SELECT opb.id, opb.ride_id, opb.customer_id
+        FROM outstation_pool_bookings opb
+        JOIN outstation_pool_rides opr ON opr.id = opb.ride_id
+        WHERE opb.id = ${bookingId}::uuid
+          AND opr.driver_id = ${driver.id}::uuid
+          AND opb.status IN ('dropped', 'completed')
+        LIMIT 1
+      `);
+      if (!ownR.rows.length) return res.status(404).json({ message: "Completed booking not found" });
+      const own = ownR.rows[0] as any;
+
+      const inserted = await rawDb.execute(rawSql`
+        INSERT INTO pool_ratings (
+          module, reference_type, reference_id, ride_id, from_user_id, to_user_id,
+          rating_role, overall_rating, safety_rating, cleanliness_rating,
+          behaviour_rating, punctuality_rating, note
+        )
+        VALUES (
+          'outstation_pool', 'booking', ${bookingId}::uuid, ${own.ride_id}::uuid, ${driver.id}::uuid, ${own.customer_id}::uuid,
+          'driver_to_customer', ${overall}, ${safety}, ${cleanliness}, ${behaviour}, ${punctuality}, ${note}
+        )
+        ON CONFLICT (reference_type, reference_id, from_user_id, rating_role) DO NOTHING
+        RETURNING *
+      `);
+      if (!inserted.rows.length) return res.status(409).json({ message: "Rating already submitted for this booking" });
+      res.json({ success: true, rating: inserted.rows[0] });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/admin/pool/operations/overview", requireAdminAuth || ((_req: any, _res: any, next: any) => next()), async (_req: any, res: any) => {
+    try {
+      const [outstationStatsR, localStatsR, issueStatsR, refundStatsR, ratingsR] = await Promise.all([
+        rawDb.execute(rawSql`
+          SELECT
+            COUNT(*)::int AS total_bookings,
+            COUNT(*) FILTER (WHERE status = 'confirmed')::int AS active_bookings,
+            COUNT(*) FILTER (WHERE status = 'cancelled')::int AS cancelled_bookings,
+            COALESCE(SUM(seats_booked), 0)::int AS seats_booked,
+            COALESCE(SUM(total_fare), 0)::numeric AS revenue
+          FROM outstation_pool_bookings
+        `).catch(() => ({ rows: [{ total_bookings: 0, active_bookings: 0, cancelled_bookings: 0, seats_booked: 0, revenue: 0 }] as any[] })),
+        rawDb.execute(rawSql`
+          SELECT
+            COUNT(*)::int AS total_local_bookings,
+            COUNT(*) FILTER (WHERE status IN ('matched', 'picked_up'))::int AS active_local_bookings,
+            COUNT(*) FILTER (WHERE status = 'cancelled')::int AS cancelled_local_bookings,
+            COALESCE(SUM(seats_requested), 0)::int AS local_seats_booked,
+            COALESCE(SUM(total_fare), 0)::numeric AS local_revenue
+          FROM pool_ride_requests
+        `).catch(() => ({ rows: [{ total_local_bookings: 0, active_local_bookings: 0, cancelled_local_bookings: 0, local_seats_booked: 0, local_revenue: 0 }] as any[] })),
+        rawDb.execute(rawSql`
+          SELECT
+            COUNT(*)::int AS total_issues,
+            COUNT(*) FILTER (WHERE status IN ('open', 'under_review'))::int AS open_issues,
+            COUNT(*) FILTER (WHERE issue_channel = 'dispute')::int AS disputes,
+            COUNT(*) FILTER (WHERE issue_channel = 'report')::int AS reports
+          FROM pool_issue_cases
+        `).catch(() => ({ rows: [{ total_issues: 0, open_issues: 0, disputes: 0, reports: 0 }] as any[] })),
+        rawDb.execute(rawSql`
+          SELECT
+            COUNT(*)::int AS total_refunds,
+            COUNT(*) FILTER (WHERE status = 'pending')::int AS pending_refunds,
+            COALESCE(SUM(amount), 0)::numeric AS refund_value
+          FROM refund_requests
+          WHERE reason ILIKE '%pool%'
+        `).catch(() => ({ rows: [{ total_refunds: 0, pending_refunds: 0, refund_value: 0 }] as any[] })),
+        rawDb.execute(rawSql`
+          SELECT
+            COUNT(*)::int AS total_ratings,
+            COALESCE(AVG(overall_rating), 0)::numeric AS avg_rating
+          FROM pool_ratings
+        `).catch(() => ({ rows: [{ total_ratings: 0, avg_rating: 0 }] as any[] })),
+      ]);
+
+      res.json({
+        outstation: outstationStatsR.rows[0] || {},
+        local: localStatsR.rows[0] || {},
+        issues: issueStatsR.rows[0] || {},
+        refunds: refundStatsR.rows[0] || {},
+        ratings: ratingsR.rows[0] || {},
+      });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/admin/pool/issues", requireAdminAuth || ((_req: any, _res: any, next: any) => next()), async (req: any, res: any) => {
+    try {
+      const status = String(req.query.status || "all");
+      const r = await rawDb.execute(rawSql`
+        SELECT pic.*,
+               cu.full_name AS customer_name,
+               du.full_name AS driver_name,
+               ru.full_name AS reported_user_name
+        FROM pool_issue_cases pic
+        LEFT JOIN users cu ON cu.id = pic.customer_id
+        LEFT JOIN users du ON du.id = pic.driver_id
+        LEFT JOIN users ru ON ru.id = pic.reported_user_id
+        ${status !== "all" ? rawSql`WHERE pic.status = ${status}` : rawSql``}
+        ORDER BY pic.created_at DESC
+        LIMIT 200
+      `);
+      res.json({ items: (r.rows as any[]).map((row) => ({ ...row, timeline: buildIssueTimeline(row) })) });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/admin/pool/issues/:id", requireAdminAuth || ((_req: any, _res: any, next: any) => next()), async (req: any, res: any) => {
+    try {
+      const id = String(req.params.id);
+      const r = await rawDb.execute(rawSql`
+        SELECT pic.*,
+               cu.full_name AS customer_name,
+               du.full_name AS driver_name,
+               ru.full_name AS reported_user_name
+        FROM pool_issue_cases pic
+        LEFT JOIN users cu ON cu.id = pic.customer_id
+        LEFT JOIN users du ON du.id = pic.driver_id
+        LEFT JOIN users ru ON ru.id = pic.reported_user_id
+        WHERE pic.id = ${id}::uuid
+        LIMIT 1
+      `);
+      if (!r.rows.length) return res.status(404).json({ message: "Issue not found" });
+      const item = r.rows[0] as any;
+      res.json({ item: { ...item, timeline: buildIssueTimeline(item) } });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/admin/pool/issues/:id", requireAdminAuth || ((_req: any, _res: any, next: any) => next()), async (req: any, res: any) => {
+    try {
+      const id = String(req.params.id);
+      const nextStatus = String(req.body?.status || "under_review");
+      const resolutionNote = String(req.body?.resolutionNote || "").slice(0, 1500);
+      const adminMessage = String(req.body?.adminMessage || "").slice(0, 1000);
+      const blockReportedUser = req.body?.blockReportedUser === true;
+      const validStatuses = new Set(["open", "under_review", "resolved", "rejected"]);
+      if (!validStatuses.has(nextStatus)) {
+        return res.status(400).json({ message: "Invalid status" });
+      }
+      const existingR = await rawDb.execute(rawSql`
+        SELECT * FROM pool_issue_cases WHERE id = ${id}::uuid LIMIT 1
+      `);
+      if (!existingR.rows.length) return res.status(404).json({ message: "Issue not found" });
+      const existing = existingR.rows[0] as any;
+      const adminUpdates = parseJsonArray(existing.admin_updates);
+      if (adminMessage || nextStatus !== normalizeIssueStatus(existing.status)) {
+        adminUpdates.push({
+          status: nextStatus,
+          message: adminMessage || resolutionNote || `Status updated to ${nextStatus.replace(/_/g, " ")}`,
+          author: "Admin",
+          createdAt: new Date().toISOString(),
+        });
+      }
+      const updated = await rawDb.execute(rawSql`
+        UPDATE pool_issue_cases
+        SET status = ${nextStatus},
+            resolution_note = ${resolutionNote},
+            admin_updates = ${JSON.stringify(adminUpdates)}::jsonb,
+            updated_at = NOW()
+        WHERE id = ${id}::uuid
+        RETURNING *
+      `);
+      const item = updated.rows[0] as any;
+      if (blockReportedUser && item?.reported_user_id && item?.customer_id && item?.reported_user_id !== item?.customer_id) {
+        await rawDb.execute(rawSql`
+          INSERT INTO pool_user_blocks (
+            blocker_user_id, blocked_user_id, module, reference_type, reference_id, created_by_role, reason
+          )
+          VALUES (
+            ${item.customer_id}::uuid, ${item.reported_user_id}::uuid, ${item.module || "pool"},
+            ${item.reference_type || null}, ${item.reference_id || null}::uuid, 'admin', ${resolutionNote || adminMessage || 'Blocked by operations after review'}
+          )
+          ON CONFLICT (blocker_user_id, blocked_user_id, module) WHERE active = true DO NOTHING
+        `).catch(() => undefined);
+      }
+      const payload = buildPoolRealtimePayload(String(item.module || "outstation_pool"), String(item.reference_id), {
+        issueId: String(item.id),
+        status: String(item.status || nextStatus),
+      });
+      if (item?.customer_id) {
+        io.to(`user:${item.customer_id}`).emit("pool:issue_updated", payload);
+      }
+      if (item?.driver_id) {
+        io.to(`user:${item.driver_id}`).emit("pool:issue_updated", payload);
+      }
+      if (blockReportedUser && item?.reported_user_id) {
+        const safetyPayload = buildPoolRealtimePayload(String(item.module || "outstation_pool"), String(item.reference_id), {
+          issueId: String(item.id),
+          status: String(item.status || nextStatus),
+          blockedUserId: String(item.reported_user_id),
+        });
+        io.to(`user:${item.customer_id}`).emit("pool:safety_updated", safetyPayload);
+        io.to(`user:${item.driver_id}`).emit("pool:safety_updated", safetyPayload);
+      }
+      void sendPoolPush(
+        String(item.customer_id),
+        "Pool issue updated",
+        adminMessage || resolutionNote || `Issue status updated to ${String(item.status || nextStatus).replace(/_/g, " ")}`,
+        {
+          type: blockReportedUser ? "pool_safety_update" : "pool_dispute_update",
+          module: String(item.module || "outstation_pool"),
+          referenceId: String(item.reference_id),
+          issueId: String(item.id),
+          status: String(item.status || nextStatus),
+        },
+      );
+      res.json({ success: true, item: { ...item, timeline: buildIssueTimeline(item) } });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/admin/pool/blocks", requireAdminAuth || ((_req: any, _res: any, next: any) => next()), async (_req: any, res: any) => {
+    try {
+      const r = await rawDb.execute(rawSql`
+        SELECT pub.*,
+               bu.full_name AS blocker_name,
+               tu.full_name AS blocked_name
+        FROM pool_user_blocks pub
+        LEFT JOIN users bu ON bu.id = pub.blocker_user_id
+        LEFT JOIN users tu ON tu.id = pub.blocked_user_id
+        WHERE pub.active = true
+        ORDER BY pub.created_at DESC
+        LIMIT 100
+      `);
+      res.json({ items: r.rows });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/admin/pool/ratings", requireAdminAuth || ((_req: any, _res: any, next: any) => next()), async (_req: any, res: any) => {
+    try {
+      const r = await rawDb.execute(rawSql`
+        SELECT pr.*,
+               fu.full_name AS from_user_name,
+               tu.full_name AS to_user_name
+        FROM pool_ratings pr
+        LEFT JOIN users fu ON fu.id = pr.from_user_id
+        LEFT JOIN users tu ON tu.id = pr.to_user_id
+        ORDER BY pr.created_at DESC
+        LIMIT 100
+      `);
+      res.json({ items: r.rows });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/admin/pool/safety-review", requireAdminAuth || ((_req: any, _res: any, next: any) => next()), async (_req: any, res: any) => {
+    try {
+      const [alertsR, summaryR] = await Promise.all([
+        rawDb.execute(rawSql`
+          SELECT sa.id, sa.trip_id, sa.triggered_by, sa.notes, sa.status, sa.created_at,
+                 u.full_name AS user_name, u.phone AS user_phone
+          FROM safety_alerts sa
+          LEFT JOIN users u ON u.id = sa.user_id
+          WHERE sa.alert_type = 'sos'
+            AND (
+              COALESCE(sa.notes, '') ILIKE '%pool%'
+              OR EXISTS (SELECT 1 FROM outstation_pool_bookings opb WHERE opb.id = sa.trip_id::uuid)
+              OR EXISTS (SELECT 1 FROM pool_ride_requests prr WHERE prr.id = sa.trip_id::uuid)
+            )
+          ORDER BY sa.created_at DESC
+          LIMIT 50
+        `).catch(() => ({ rows: [] as any[] })),
+        rawDb.execute(rawSql`
+          SELECT
+            (SELECT COUNT(*)::int FROM safety_alerts sa
+              WHERE sa.alert_type = 'sos'
+                AND sa.status = 'active'
+                AND (
+                  COALESCE(sa.notes, '') ILIKE '%pool%'
+                  OR EXISTS (SELECT 1 FROM outstation_pool_bookings opb WHERE opb.id = sa.trip_id::uuid)
+                  OR EXISTS (SELECT 1 FROM pool_ride_requests prr WHERE prr.id = sa.trip_id::uuid)
+                )
+            ) AS active_sos,
+            (SELECT COUNT(*)::int FROM pool_issue_cases WHERE issue_channel = 'dispute' AND status IN ('open', 'under_review')) AS open_disputes,
+            (SELECT COUNT(*)::int FROM pool_user_blocks WHERE active = true) AS active_blocks
+        `).catch(() => ({ rows: [{ active_sos: 0, open_disputes: 0, active_blocks: 0 }] as any[] })),
+      ]);
+      res.json({ alerts: alertsR.rows, summary: summaryR.rows[0] || { active_sos: 0, open_disputes: 0, active_blocks: 0 } });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/admin/pool/blocks", requireAdminAuth || ((_req: any, _res: any, next: any) => next()), async (req: any, res: any) => {
+    try {
+      const blockerUserId = String(req.body?.blockerUserId || "").trim();
+      const blockedUserId = String(req.body?.blockedUserId || "").trim();
+      const module = String(req.body?.module || "pool");
+      const reason = String(req.body?.reason || "Blocked by operations").slice(0, 300);
+      if (!blockerUserId || !blockedUserId) return res.status(400).json({ message: "Both users are required" });
+      await rawDb.execute(rawSql`
+        INSERT INTO pool_user_blocks (
+          blocker_user_id, blocked_user_id, module, created_by_role, reason
+        )
+        VALUES (${blockerUserId}::uuid, ${blockedUserId}::uuid, ${module}, 'admin', ${reason})
+        ON CONFLICT (blocker_user_id, blocked_user_id, module) WHERE active = true DO NOTHING
+      `);
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ message: e.message });

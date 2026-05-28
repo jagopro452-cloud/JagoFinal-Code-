@@ -20,6 +20,7 @@ export default function DriverVerificationPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [rejectionNotes, setRejectionNotes] = useState<Record<string, string>>({});
+  const [activationDrafts, setActivationDrafts] = useState<Record<string, any>>({});
 
   const { data: drivers, isLoading } = useQuery<any[]>({
     queryKey: ["/api/admin/drivers/pending-verification", activeTab],
@@ -51,6 +52,16 @@ export default function DriverVerificationPage() {
     }
   });
 
+  const serviceActivationMutation = useMutation({
+    mutationFn: async ({ driverId, payload }: { driverId: string; payload: any }) => {
+      return apiRequest("PATCH", `/api/admin/drivers/${driverId}/service-activation`, payload);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/drivers/pending-verification", activeTab] });
+      toast({ title: "Driver service activation updated" });
+    }
+  });
+
   const handleDocReview = (driverId: string, docType: string, status: string) => {
     docReviewMutation.mutate({ driverId, docType, status });
   };
@@ -62,6 +73,24 @@ export default function DriverVerificationPage() {
       return;
     }
     verifyDriverMutation.mutate({ driverId, status, note });
+  };
+
+  const getActivationDraft = (driver: any) => activationDrafts[driver.id] || {
+    serviceEligibility: Array.isArray(driver.serviceEligibility) ? driver.serviceEligibility : [],
+    parcelEligibility: driver.parcelEligibility === true,
+    poolEligibility: driver.poolEligibility === true,
+    outstationEligibility: driver.outstationEligibility === true,
+    seatCapacity: driver.seatCapacity ?? 4,
+  };
+
+  const updateActivationDraft = (driverId: string, patch: any) => {
+    setActivationDrafts((prev) => ({
+      ...prev,
+      [driverId]: {
+        ...(prev[driverId] || {}),
+        ...patch,
+      },
+    }));
   };
 
   const getStatusBadge = (status: string) => {
@@ -249,6 +278,99 @@ export default function DriverVerificationPage() {
                         ))}
                       </div>
                     </div>
+
+                    {(() => {
+                      const draft = getActivationDraft(driver);
+                      const serviceEligibility = Array.isArray(draft.serviceEligibility) ? draft.serviceEligibility : [];
+                      return (
+                        <div className="space-y-3">
+                          <h4 className="text-sm font-bold flex items-center gap-2">
+                            <Car className="w-4 h-4 text-primary" />
+                            Service Activation
+                          </h4>
+                          <div className="rounded-lg border bg-muted/20 p-4 space-y-3">
+                            <div className="grid grid-cols-2 gap-3">
+                              <label className="flex items-center gap-2 text-sm font-medium">
+                                <input
+                                  type="checkbox"
+                                  checked={draft.parcelEligibility === true}
+                                  onChange={(e) => updateActivationDraft(driver.id, { parcelEligibility: e.target.checked })}
+                                />
+                                Parcel
+                              </label>
+                              <label className="flex items-center gap-2 text-sm font-medium">
+                                <input
+                                  type="checkbox"
+                                  checked={draft.poolEligibility === true}
+                                  onChange={(e) => updateActivationDraft(driver.id, { poolEligibility: e.target.checked })}
+                                />
+                                Local Pool
+                              </label>
+                              <label className="flex items-center gap-2 text-sm font-medium">
+                                <input
+                                  type="checkbox"
+                                  checked={draft.outstationEligibility === true}
+                                  onChange={(e) => updateActivationDraft(driver.id, { outstationEligibility: e.target.checked })}
+                                />
+                                Outstation Pool
+                              </label>
+                              <label className="flex items-center gap-2 text-sm font-medium">
+                                <span>Seat Capacity</span>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={8}
+                                  value={draft.seatCapacity ?? 4}
+                                  onChange={(e) => updateActivationDraft(driver.id, { seatCapacity: e.target.value })}
+                                  className="w-20 rounded border px-2 py-1 text-sm"
+                                />
+                              </label>
+                            </div>
+                            <div className="space-y-2">
+                              <div className="text-xs font-semibold text-muted-foreground uppercase">Service Keys</div>
+                              <div className="flex flex-wrap gap-2">
+                                {["bike_ride", "auto_ride", "mini_car", "sedan", "suv", "city_pool", "outstation_pool", "parcel_delivery"].map((serviceKey) => {
+                                  const active = serviceEligibility.includes(serviceKey);
+                                  return (
+                                    <button
+                                      key={serviceKey}
+                                      type="button"
+                                      onClick={() => {
+                                        const next = active
+                                          ? serviceEligibility.filter((entry: string) => entry !== serviceKey)
+                                          : [...serviceEligibility, serviceKey];
+                                        updateActivationDraft(driver.id, { serviceEligibility: next });
+                                      }}
+                                      className={`btn btn-sm ${active ? "btn-primary" : "btn-outline-secondary"}`}
+                                    >
+                                      {serviceKey}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                            <div className="flex justify-end">
+                              <Button
+                                size="sm"
+                                onClick={() => serviceActivationMutation.mutate({
+                                  driverId: driver.id,
+                                  payload: {
+                                    serviceEligibility,
+                                    parcelEligibility: draft.parcelEligibility === true,
+                                    poolEligibility: draft.poolEligibility === true,
+                                    outstationEligibility: draft.outstationEligibility === true,
+                                    seatCapacity: draft.seatCapacity,
+                                  },
+                                })}
+                                disabled={serviceActivationMutation.isPending}
+                              >
+                                Save Activation
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
                     
                     <div className="pt-4 border-t space-y-4 mt-auto">
                       {driver.verification_status === 'pending' && (

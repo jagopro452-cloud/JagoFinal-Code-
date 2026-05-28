@@ -19,7 +19,8 @@ class ParcelTrackingScreen extends StatefulWidget {
   State<ParcelTrackingScreen> createState() => _ParcelTrackingScreenState();
 }
 
-class _ParcelTrackingScreenState extends State<ParcelTrackingScreen> {
+class _ParcelTrackingScreenState extends State<ParcelTrackingScreen>
+    with WidgetsBindingObserver {
   Timer? _pollTimer;
   final SocketService _socket = SocketService();
   final List<StreamSubscription> _subs = [];
@@ -31,6 +32,7 @@ class _ParcelTrackingScreenState extends State<ParcelTrackingScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _fetchOrder();
     _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _fetchOrder());
     _subs.add(_socket.onParcelStatus.listen((data) {
@@ -49,7 +51,18 @@ class _ParcelTrackingScreenState extends State<ParcelTrackingScreen> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _fetchOrder();
+      _socket.connect(ApiConfig.socketUrl).then((_) {
+        _socket.trackParcel(widget.orderId);
+      });
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _pollTimer?.cancel();
     for (final sub in _subs) {
       sub.cancel();

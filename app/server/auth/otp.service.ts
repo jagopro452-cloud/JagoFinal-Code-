@@ -173,6 +173,7 @@ export async function sendOtpServiceWithMeta(
   const smsSent = await sendCustomSms(
     phone,
     `Your JAGO OTP is ${otp}. It is valid for 5 minutes. Do not share it.`,
+    { purpose: `${userType}_login`, userType },
   );
 
   if (!smsSent) {

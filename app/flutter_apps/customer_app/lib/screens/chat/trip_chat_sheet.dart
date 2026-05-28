@@ -9,8 +9,18 @@ import '../../services/socket_service.dart';
 class TripChatSheet extends StatefulWidget {
   final String tripId;
   final String senderName;
+  final String chatScope;
+  final String? poolModule;
+  final String title;
 
-  const TripChatSheet({super.key, required this.tripId, required this.senderName});
+  const TripChatSheet({
+    super.key,
+    required this.tripId,
+    required this.senderName,
+    this.chatScope = 'trip',
+    this.poolModule,
+    this.title = 'Trip Chat',
+  });
 
   @override
   State<TripChatSheet> createState() => _TripChatSheetState();
@@ -30,10 +40,14 @@ class _TripChatSheetState extends State<TripChatSheet> {
     super.initState();
 
     // Ensure the customer is tracked in the trip room (so server routes events to us)
-    _socket.trackTrip(widget.tripId);
+    if (widget.chatScope == 'pool' && widget.poolModule != null) {
+      _socket.joinPoolChat(module: widget.poolModule!, referenceId: widget.tripId);
+    } else {
+      _socket.trackTrip(widget.tripId);
+    }
 
     // Listen for new real-time messages
-    _subs.add(_socket.onChatMessage.listen((msg) {
+    _subs.add((widget.chatScope == 'pool' ? _socket.onPoolChatMessage : _socket.onChatMessage).listen((msg) {
       if (!mounted) return;
       final text = msg['message']?.toString() ?? '';
       final senderType = msg['senderType']?.toString() ?? '';
@@ -48,7 +62,7 @@ class _TripChatSheetState extends State<TripChatSheet> {
     }));
 
     // Listen for message history (replaces list with full DB history)
-    _subs.add(_socket.onMessageHistory.listen((data) {
+    _subs.add((widget.chatScope == 'pool' ? _socket.onPoolMessageHistory : _socket.onMessageHistory).listen((data) {
       if (!mounted) return;
       final msgs = data['messages'] as List<dynamic>? ?? [];
       setState(() {
@@ -61,15 +75,28 @@ class _TripChatSheetState extends State<TripChatSheet> {
     // Listen for connection changes — reload history on reconnect
     _subs.add(_socket.onConnectionChanged.listen((connected) {
       if (!mounted || !connected) return;
-      _socket.trackTrip(widget.tripId);
+      if (widget.chatScope == 'pool' && widget.poolModule != null) {
+        _socket.joinPoolChat(module: widget.poolModule!, referenceId: widget.tripId);
+      } else {
+        _socket.trackTrip(widget.tripId);
+      }
       Future.delayed(const Duration(milliseconds: 500), () {
-        _socket.loadChatHistory(widget.tripId);
+        if (widget.chatScope == 'pool' && widget.poolModule != null) {
+          _socket.loadPoolChatHistory(module: widget.poolModule!, referenceId: widget.tripId);
+        } else {
+          _socket.loadChatHistory(widget.tripId);
+        }
       });
     }));
 
     // Load chat history after a brief delay to allow socket room join to complete
     Future.delayed(const Duration(milliseconds: 400), () {
-      if (mounted) _socket.loadChatHistory(widget.tripId);
+      if (!mounted) return;
+      if (widget.chatScope == 'pool' && widget.poolModule != null) {
+        _socket.loadPoolChatHistory(module: widget.poolModule!, referenceId: widget.tripId);
+      } else {
+        _socket.loadChatHistory(widget.tripId);
+      }
     });
   }
 
@@ -92,11 +119,20 @@ class _TripChatSheetState extends State<TripChatSheet> {
     // Track this text so we can de-duplicate the echo from the server
     _pendingLocalMessages.add(text);
 
-    _socket.sendChatMessage(
-      tripId: widget.tripId,
-      message: text,
-      senderName: widget.senderName,
-    );
+    if (widget.chatScope == 'pool' && widget.poolModule != null) {
+      _socket.sendPoolChatMessage(
+        module: widget.poolModule!,
+        referenceId: widget.tripId,
+        message: text,
+        senderName: widget.senderName,
+      );
+    } else {
+      _socket.sendChatMessage(
+        tripId: widget.tripId,
+        message: text,
+        senderName: widget.senderName,
+      );
+    }
     setState(() {
       _messages.add({
         'message': text,
@@ -157,7 +193,7 @@ class _TripChatSheetState extends State<TripChatSheet> {
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
             Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('Trip Chat',
+              Text(widget.title,
                 style: GoogleFonts.poppins(
                   fontSize: 16,
                   fontWeight: FontWeight.w600,

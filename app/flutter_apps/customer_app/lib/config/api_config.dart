@@ -128,10 +128,21 @@ class ApiConfig {
   static String get outstationPoolSearch => '$baseUrl/api/app/customer/outstation-pool/v2/search';
   static String get outstationPoolBook => '$baseUrl/api/app/customer/outstation-pool/v2/book';
   static String get outstationPoolBookings => '$baseUrl/api/app/customer/outstation-pool/v2/bookings';
+  static String outstationPoolCancel(String bookingId) => '$baseUrl/api/app/customer/outstation-pool/v2/bookings/$bookingId/cancel';
+  static String outstationPoolCoPassengers(String bookingId) => '$baseUrl/api/app/customer/outstation-pool/v2/bookings/$bookingId/co-passengers';
+  static String outstationPoolRateDriver(String bookingId) => '$baseUrl/api/app/customer/outstation-pool/v2/bookings/$bookingId/rate-driver';
   static String get localPoolBook => '$baseUrl/api/app/customer/pool/book';
   static String localPoolStatus(String requestId) => '$baseUrl/api/app/customer/pool/status/$requestId';
   static String localPoolCancel(String requestId) => '$baseUrl/api/app/customer/pool/cancel/$requestId';
+  static String localPoolCoPassengers(String requestId) => '$baseUrl/api/app/customer/pool/co-passengers/$requestId';
+  static String localPoolRateDriver(String requestId) => '$baseUrl/api/app/customer/pool/requests/$requestId/rate-driver';
   static String get localPoolHistory => '$baseUrl/api/app/customer/pool/history';
+  static String get poolIssueReport => '$baseUrl/api/app/customer/pool/issues';
+  static String poolIssueDetail(String issueId) => '$baseUrl/api/app/customer/pool/issues/$issueId';
+  static String poolIssueList({String? module, String? referenceId}) =>
+      '$baseUrl/api/app/customer/pool/issues?module=${module ?? 'all'}${referenceId != null && referenceId.isNotEmpty ? '&referenceId=$referenceId' : ''}';
+  static String get poolShare => '$baseUrl/api/app/customer/pool/share';
+  static String get poolBlockUser => '$baseUrl/api/app/customer/pool/block-user';
 
   // ── Voice Booking ────────────────────────────────────────────────────
   static String get voiceBookingParse => '$baseUrl/api/app/voice-booking/parse';

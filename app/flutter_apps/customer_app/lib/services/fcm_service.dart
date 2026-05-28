@@ -195,7 +195,9 @@ class FcmService {
     // Handle all trip-related notification types (driver_assigned = server sends this when trip accepted)
     if (type == 'trip_accepted' || type == 'driver_assigned' ||
         type == 'driver_arrived' || type == 'trip_completed' ||
-        type == 'trip_cancelled' || type == 'trip_searching') {
+        type == 'trip_cancelled' || type == 'trip_searching' ||
+        type.toString().startsWith('pool_') ||
+        type.toString().contains('parcel')) {
       _storePendingNotification(data);
     }
   }
