@@ -12,6 +12,7 @@
 
 import { db as rawDb } from "./db";
 import { sql as rawSql } from "drizzle-orm";
+import { assertSchemaObjectsOrThrow } from "./schema-health";
 import { io } from "./socket";
 import { notifyUser } from "./notification-service";
 import { activeDriverEligibilitySql } from "./driver-state";
@@ -982,90 +983,15 @@ export function startIntelligenceJobs(): void {
 
 export async function initIntelligenceTables(): Promise<void> {
   try {
-    await rawDb.execute(rawSql`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
+    await assertSchemaObjectsOrThrow({
+      tables: ["surge_configs", "driver_behavior_scores", "fraud_flags"],
+    });
 
-    // Surge configuration table
-    await rawDb.execute(rawSql`
-      CREATE TABLE IF NOT EXISTS surge_configs (
-        id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-        zone_id UUID,
-        service_type VARCHAR(50) DEFAULT 'all',
-        min_multiplier FLOAT DEFAULT 1.0,
-        max_multiplier FLOAT DEFAULT 3.0,
-        demand_threshold FLOAT DEFAULT 1.5,
-        peak_hours_enabled BOOLEAN DEFAULT true,
-        peak_hour_start INT DEFAULT 8,
-        peak_hour_end INT DEFAULT 10,
-        peak_hour_multiplier FLOAT DEFAULT 1.3,
-        weather_multiplier FLOAT DEFAULT 1.0,
-        manual_surge FLOAT,
-        is_active BOOLEAN DEFAULT true,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        updated_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `);
-
-    // Driver behavior scores
-    await rawDb.execute(rawSql`
-      CREATE TABLE IF NOT EXISTS driver_behavior_scores (
-        driver_id UUID PRIMARY KEY,
-        overall_score INT DEFAULT 0,
-        rating_score INT DEFAULT 0,
-        acceptance_rate INT DEFAULT 0,
-        completion_rate INT DEFAULT 0,
-        on_time_arrival INT DEFAULT 0,
-        grade VARCHAR(2) DEFAULT 'C',
-        total_trips INT DEFAULT 0,
-        updated_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `);
-
-    // Fraud flags
-    await rawDb.execute(rawSql`
-      CREATE TABLE IF NOT EXISTS fraud_flags (
-        id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-        user_id UUID NOT NULL,
-        user_type VARCHAR(20) NOT NULL,
-        flag_type VARCHAR(50) NOT NULL,
-        severity VARCHAR(20) DEFAULT 'medium',
-        description TEXT,
-        evidence JSONB DEFAULT '{}',
-        status VARCHAR(20) DEFAULT 'pending',
-        reviewed_by UUID,
-        review_notes TEXT,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        updated_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `);
-
-    // Indexes
-    await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_surge_configs_active ON surge_configs(is_active, service_type)`);
-    await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_behavior_scores_driver ON driver_behavior_scores(driver_id)`);
-    await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_behavior_scores_grade ON driver_behavior_scores(grade, overall_score DESC)`);
-    await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_fraud_flags_user ON fraud_flags(user_id, status)`);
-    await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_fraud_flags_status ON fraud_flags(status, created_at DESC)`);
-    await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_fraud_flags_type ON fraud_flags(flag_type, severity)`);
-
-    // Insert default surge config if none exists
-    const existingSurge = await rawDb.execute(rawSql`SELECT id FROM surge_configs LIMIT 1`);
-    if (!existingSurge.rows.length) {
-      await rawDb.execute(rawSql`
-        INSERT INTO surge_configs (service_type, min_multiplier, max_multiplier, demand_threshold, peak_hours_enabled, peak_hour_start, peak_hour_end, peak_hour_multiplier)
-        VALUES
-          ('all', 1.0, 3.0, 1.5, true, 8, 10, 1.3),
-          ('all', 1.0, 3.0, 1.5, true, 17, 20, 1.2)
-      `);
-    }
-
-    console.log("[INTELLIGENCE] Tables initialized");
+    console.log("[INTELLIGENCE] Schema verified");
   } catch (e: any) {
     console.error("[INTELLIGENCE] Table init error:", e.message);
   }
 }
-
-// ════════════════════════════════════════════════════════════════════════════
-//  UTILITY
-// ════════════════════════════════════════════════════════════════════════════
 
 function haversineDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371;

@@ -1,5 +1,6 @@
 import { db as rawDb } from "./db";
 import { sql as rawSql } from "drizzle-orm";
+import { assertSchemaObjectsOrThrow } from "./schema-health";
 import { featureFlags } from "./config/featureFlags";
 
 type RuntimeScope = "global" | "city" | "service" | "vehicle" | "feature";
@@ -49,40 +50,9 @@ async function getRedis(): Promise<any | null> {
 }
 
 export async function initRuntimeConfigTables(): Promise<void> {
-  await rawDb.execute(rawSql`
-    CREATE TABLE IF NOT EXISTS runtime_config_entries (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      scope_type VARCHAR(30) NOT NULL DEFAULT 'global',
-      scope_key VARCHAR(120) NOT NULL DEFAULT 'default',
-      config_key VARCHAR(120) NOT NULL,
-      config_value JSONB NOT NULL,
-      description TEXT,
-      updated_by VARCHAR(160),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE(scope_type, scope_key, config_key)
-    )
-  `);
-  await rawDb.execute(rawSql`
-    CREATE TABLE IF NOT EXISTS runtime_config_audit_logs (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      scope_type VARCHAR(30) NOT NULL,
-      scope_key VARCHAR(120) NOT NULL,
-      config_key VARCHAR(120) NOT NULL,
-      previous_value JSONB,
-      next_value JSONB NOT NULL,
-      reason TEXT,
-      updated_by VARCHAR(160),
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-  await rawDb.execute(rawSql`
-    CREATE INDEX IF NOT EXISTS idx_runtime_config_entries_scope
-    ON runtime_config_entries(scope_type, scope_key, updated_at DESC)
-  `);
-  await rawDb.execute(rawSql`
-    CREATE INDEX IF NOT EXISTS idx_runtime_config_audit_logs_scope
-    ON runtime_config_audit_logs(scope_type, scope_key, created_at DESC)
-  `);
+  await assertSchemaObjectsOrThrow({
+    tables: ["runtime_config_entries", "runtime_config_audit_logs"],
+  });
 }
 
 function parseRowValue(row: any): any {

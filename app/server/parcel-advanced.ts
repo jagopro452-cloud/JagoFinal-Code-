@@ -16,6 +16,7 @@
 
 import { db as rawDb } from "./db";
 import { sql as rawSql } from "drizzle-orm";
+import { assertSchemaObjectsOrThrow } from "./schema-health";
 import { notifyUser } from "./notification-service";
 // Removed legacy SMS notification logic. Only FCM and socket notifications are supported.
 import { io } from "./socket";
@@ -512,7 +513,6 @@ async function resolveAllowedCategoryIds(parcelKey: string): Promise<string[]> {
   const r = await rawDb.execute(rawSql`
     SELECT id FROM vehicle_categories
     WHERE REGEXP_REPLACE(LOWER(name), '[^a-z0-9]+', '_', 'g') = ANY(${lowered})
-       OR REGEXP_REPLACE(LOWER(COALESCE(slug, '')), '[^a-z0-9]+', '_', 'g') = ANY(${lowered})
        OR REGEXP_REPLACE(LOWER(COALESCE(vehicle_type, '')), '[^a-z0-9]+', '_', 'g') = ANY(${lowered})
   `).catch(() => ({ rows: [] as any[] }));
 
@@ -676,91 +676,9 @@ export async function findParcelCapableDriversDetailed(
 // ── DB Table Initialization ──────────────────────────────────────────────────
 
 export async function initParcelAdvancedTables(): Promise<void> {
-  // Proof of delivery table
-  await rawDb.execute(rawSql`
-    CREATE TABLE IF NOT EXISTS parcel_delivery_proofs (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      order_id UUID NOT NULL,
-      drop_index INTEGER NOT NULL DEFAULT 0,
-      photo_url TEXT,
-      signature_url TEXT,
-      delivered_to VARCHAR(255),
-      driver_id UUID NOT NULL,
-      created_at TIMESTAMPTZ DEFAULT NOW(),
-      updated_at TIMESTAMPTZ DEFAULT NOW(),
-      UNIQUE(order_id, drop_index)
-    )
-  `).catch(() => {});
+  await assertSchemaObjectsOrThrow({
+    tables: ["parcel_delivery_proofs", "parcel_prohibited_items", "b2b_webhook_logs", "b2b_companies", "parcel_orders", "business_settings"],
+  });
 
-  // Prohibited items table
-  await rawDb.execute(rawSql`
-    CREATE TABLE IF NOT EXISTS parcel_prohibited_items (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      item_name VARCHAR(255) NOT NULL,
-      category VARCHAR(100) DEFAULT 'general',
-      is_active BOOLEAN DEFAULT true,
-      created_at TIMESTAMPTZ DEFAULT NOW()
-    )
-  `).catch(() => {});
-
-  // Seed default prohibited items
-  for (const item of DEFAULT_PROHIBITED) {
-    await rawDb.execute(rawSql`
-      INSERT INTO parcel_prohibited_items (item_name, category)
-      VALUES (${item}, 'general')
-      ON CONFLICT DO NOTHING
-    `).catch(() => {});
-  }
-
-  // B2B webhook logs
-  await rawDb.execute(rawSql`
-    CREATE TABLE IF NOT EXISTS b2b_webhook_logs (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      company_id UUID NOT NULL,
-      event_type VARCHAR(50) NOT NULL,
-      order_id UUID,
-      payload JSONB,
-      status VARCHAR(20) DEFAULT 'pending',
-      response_code INTEGER,
-      delivered_at TIMESTAMPTZ,
-      created_at TIMESTAMPTZ DEFAULT NOW()
-    )
-  `).catch(() => {});
-
-  // Add columns to b2b_companies for webhooks
-  await rawDb.execute(rawSql`
-    ALTER TABLE b2b_companies
-    ADD COLUMN IF NOT EXISTS webhook_url TEXT,
-    ADD COLUMN IF NOT EXISTS webhook_secret VARCHAR(255)
-  `).catch(() => {});
-
-  // Add parcel dimension columns to parcel_orders
-  await rawDb.execute(rawSql`
-    ALTER TABLE parcel_orders
-    ADD COLUMN IF NOT EXISTS length_cm NUMERIC(8,2),
-    ADD COLUMN IF NOT EXISTS width_cm NUMERIC(8,2),
-    ADD COLUMN IF NOT EXISTS height_cm NUMERIC(8,2),
-    ADD COLUMN IF NOT EXISTS volumetric_weight_kg NUMERIC(8,2),
-    ADD COLUMN IF NOT EXISTS billable_weight_kg NUMERIC(8,2),
-    ADD COLUMN IF NOT EXISTS declared_value NUMERIC(10,2) DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS is_fragile BOOLEAN DEFAULT false,
-    ADD COLUMN IF NOT EXISTS insurance_enabled BOOLEAN DEFAULT false,
-    ADD COLUMN IF NOT EXISTS insurance_premium NUMERIC(10,2) DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS parcel_description TEXT,
-    ADD COLUMN IF NOT EXISTS expected_delivery_minutes INTEGER,
-    ADD COLUMN IF NOT EXISTS proof_of_delivery JSONB,
-    ADD COLUMN IF NOT EXISTS sla_breached BOOLEAN DEFAULT false,
-    ADD COLUMN IF NOT EXISTS load_charge NUMERIC(10,2) DEFAULT 0
-  `).catch(() => {});
-
-  // Insurance settings in business_settings
-  await rawDb.execute(rawSql`
-    INSERT INTO business_settings (key_name, value, settings_type)
-    VALUES
-      ('parcel_insurance_standard_rate', '{"rate":0.02,"maxCoverage":50000}', 'parcel_settings'),
-      ('parcel_insurance_fragile_rate', '{"rate":0.035,"maxCoverage":25000}', 'parcel_settings')
-    ON CONFLICT (key_name) DO NOTHING
-  `).catch(() => {});
-
-  console.log("[PARCEL-ADV] Advanced parcel tables initialized");
+  console.log("[PARCEL-ADV] Schema verified");
 }

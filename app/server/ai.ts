@@ -739,66 +739,16 @@ export function clearTripWaypoints(tripId: string): void {
 // -- 8. DB TABLES INITIALIZATION ------------------------------------------
 export async function initAiTables(): Promise<void> {
   try {
-    // Needed for gen_random_uuid() defaults used by AI tables.
-    await rawDb.execute(rawSql`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
-
-    await rawDb.execute(rawSql`
-      CREATE TABLE IF NOT EXISTS driver_stats (
-        driver_id UUID PRIMARY KEY,
-        total_trips INT DEFAULT 0,
-        completed_trips INT DEFAULT 0,
-        cancelled_trips INT DEFAULT 0,
-        avg_response_time_sec FLOAT DEFAULT 60,
-        completion_rate FLOAT DEFAULT 0.8,
-        avg_rating FLOAT DEFAULT 4.0,
-        updated_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `);
-
-    await rawDb.execute(rawSql`
-      CREATE TABLE IF NOT EXISTS ai_safety_alerts (
-        id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-        trip_id UUID,
-        driver_id UUID,
-        customer_id UUID,
-        alert_type VARCHAR(50) NOT NULL,
-        severity VARCHAR(20) DEFAULT 'medium',
-        message TEXT,
-        lat DOUBLE PRECISION,
-        lng DOUBLE PRECISION,
-        acknowledged BOOLEAN DEFAULT false,
-        resolved BOOLEAN DEFAULT false,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `);
-
-    await rawDb.execute(rawSql`
-      CREATE TABLE IF NOT EXISTS demand_predictions (
-        id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-        zone_id UUID,
-        zone_name VARCHAR(255),
-        demand_level VARCHAR(20),
-        active_requests INT DEFAULT 0,
-        available_drivers INT DEFAULT 0,
-        surge_multiplier FLOAT DEFAULT 1.0,
-        prediction TEXT,
-        recorded_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `);
-
-    await rawDb.execute(rawSql`
-      CREATE INDEX IF NOT EXISTS idx_driver_stats_driver ON driver_stats(driver_id)
-    `);
-
-    await rawDb.execute(rawSql`
-      CREATE INDEX IF NOT EXISTS idx_ai_safety_trip ON ai_safety_alerts(trip_id)
-    `);
-
-    await rawDb.execute(rawSql`
-      CREATE INDEX IF NOT EXISTS idx_ai_safety_unresolved ON ai_safety_alerts(resolved, created_at DESC)
-    `);
-
-    console.log("[AI] Tables initialized");
+    const { assertSchemaObjectsOrThrow } = await import("./schema-health");
+    await assertSchemaObjectsOrThrow({
+      tables: ["driver_stats", "ai_safety_alerts", "demand_predictions"],
+      indexes: [
+        { table: "driver_stats", pattern: "%driver_id%", description: "driver_stats driver index" },
+        { table: "ai_safety_alerts", pattern: "%trip_id%", description: "ai_safety_alerts trip index" },
+        { table: "ai_safety_alerts", pattern: "%resolved%created_at%", description: "ai_safety_alerts unresolved index" },
+      ],
+    });
+    console.log("[AI] Tables verified");
   } catch (e: any) {
     console.error("[AI] Table init error:", formatDbError(e));
   }

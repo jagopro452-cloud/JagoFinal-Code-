@@ -9,8 +9,28 @@ function run(command: string) {
   });
 }
 
+function readGitSha() {
+  return execSync("git rev-parse HEAD", {
+    stdio: ["ignore", "pipe", "ignore"],
+    env: process.env,
+  }).toString().trim();
+}
+
 run("vite build");
 run("esbuild server/index.ts --platform=node --bundle --format=esm --packages=external --define:process.env.NODE_ENV='\"production\"' --outfile=dist/index.js");
+
+fs.mkdirSync(path.resolve("dist"), { recursive: true });
+fs.writeFileSync(
+  path.resolve("dist", "build-info.json"),
+  JSON.stringify(
+    {
+      gitSha: readGitSha(),
+      builtAt: new Date().toISOString(),
+    },
+    null,
+    2,
+  ),
+);
 
 const serverMigrationsSrc = path.resolve("server", "migrations");
 const serverMigrationsDest = path.resolve("dist", "migrations");

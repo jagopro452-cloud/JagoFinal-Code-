@@ -19,6 +19,9 @@ import { makeErrorId, sendAlert } from "./observability";
 import { recordRequest, recordError } from "./metrics";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { db as drizzleDb, pool as dbPool } from "./db";
+import { settleCustomerRidePaymentByOrder, settleDriverPaymentByOrder } from "./payment-settlement";
+import { startRefundReconciliationJob, reconcilePendingRefunds } from "./refund-reconciliation";
+import { verifyCriticalSchemaOrThrow } from "./schema-health";
 import path from "path";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
@@ -39,6 +42,7 @@ app.set("trust proxy", 1);
 const httpServer = createServer(app);
 let bootstrapReady = false;
 let bootstrapError: string | null = null;
+const useLocalStaticFrontend = process.env.LOCAL_STATIC_FRONTEND === "1";
 const currentFilePath = fileURLToPath(import.meta.url);
 const currentDir = path.dirname(currentFilePath);
 
@@ -263,12 +267,15 @@ async function setupSocketRedisAdapter() {
 }
 
 async function ensureMigrationTable() {
-  await dbPool.query(`
-    CREATE TABLE IF NOT EXISTS migrations (
-      name TEXT PRIMARY KEY,
-      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
+  const result = await dbPool.query(
+    `SELECT 1
+     FROM information_schema.tables
+     WHERE table_schema = 'public' AND table_name = 'migrations'
+     LIMIT 1`,
+  );
+  if (!result.rowCount) {
+    throw new Error("Missing migrations table. Apply bootstrap SQL migrations before starting the API.");
+  }
 }
 
 async function applySqlMigrationsFromDir(migrationsDir: string) {
@@ -461,15 +468,28 @@ const port = parseInt(process.env.PORT || "5000", 10);
     return;
   }
 
-  // ─── STEP 3: Static files ───
-  if (process.env.NODE_ENV === "production") {
-    try { 
-      serveStatic(app); 
-      log("[static] Frontend assets configured");
-    } catch (e: any) { 
+  // ─── STEP 3: Static files or Vite dev middleware ───
+  if (process.env.NODE_ENV === "production" || useLocalStaticFrontend) {
+    try {
+      serveStatic(app);
+      log(useLocalStaticFrontend ? "[static] Frontend assets configured via LOCAL_STATIC_FRONTEND" : "[static] Frontend assets configured");
+    } catch (e: any) {
       bootstrapError = `static_files_failed:${e.message}`;
       console.error("[static] Failed to configure frontend assets:", e.message);
+      console.error("[static] Run 'npm run build' to generate dist/public, then restart");
       sendAlert({ level: "error", source: "static", message: "Failed to configure frontend assets", details: e.message }).catch(() => {});
+      return;
+    }
+  } else {
+    // Dev mode: register Vite BEFORE server starts listening so the SPA catch-all
+    // is always ready when the first connection arrives
+    try {
+      const { setupVite } = await import("./vite");
+      await setupVite(httpServer, app);
+      log("[vite] Vite middleware registered");
+    } catch (e: any) {
+      console.error("[vite] Failed to setup Vite — frontend will not be served:", e.message);
+      return;
     }
   }
 
@@ -496,6 +516,16 @@ const port = parseInt(process.env.PORT || "5000", 10);
   }
 
   // ─── STEP 6: Mark server ready — health probe passes from here ───
+  try {
+    await verifyCriticalSchemaOrThrow();
+    log("[schema] Critical schema health verified");
+  } catch (e: any) {
+    bootstrapError = `schema_health_failed:${e.message}`;
+    log(`[schema] Critical schema verification failed: ${e.message}`);
+    sendAlert({ level: "critical", source: "schema-health", message: "Critical schema verification failed", details: e.message }).catch(() => {});
+    return;
+  }
+
   try {
     setupSocket(httpServer);
     await setupSocketRedisAdapter();
@@ -535,6 +565,11 @@ const port = parseInt(process.env.PORT || "5000", 10);
       log(`[config] Could not load DB settings (non-fatal): ${e.message}`);
     }
   })();
+
+  reconcilePendingRefunds().catch((e: any) => {
+    console.error("[refund-reconcile] initial run failed:", e.message);
+  });
+  startRefundReconciliationJob();
 
   // ─── DB MIGRATION: production_hardening indexes + constraints ───
   // ─── INITIALIZE PRODUCTION HARDENING (CRITICAL) ───
@@ -615,15 +650,17 @@ const port = parseInt(process.env.PORT || "5000", 10);
           if (captured) {
             // Payment confirmed — complete the trip
             if (row.payment_source === "driver") {
-              await rawDb.execute(rawSql`
-                UPDATE driver_payments SET status='completed', razorpay_payment_id=${captured.id}, verified_at=NOW()
-                WHERE id=${row.payment_id}::uuid
-              `);
+              await settleDriverPaymentByOrder({
+                orderId: String(row.razorpay_order_id),
+                paymentId: String(captured.id),
+                source: "retry_job",
+              });
             } else {
-              await rawDb.execute(rawSql`
-                UPDATE customer_payments SET status='completed', razorpay_payment_id=${captured.id}, verified_at=NOW()
-                WHERE id=${row.payment_id}::uuid
-              `);
+              await settleCustomerRidePaymentByOrder({
+                orderId: String(row.razorpay_order_id),
+                paymentId: String(captured.id),
+                source: "retry_job",
+              });
             }
             const tripState = await rawDb.execute(rawSql`
               SELECT current_status
@@ -658,15 +695,5 @@ const port = parseInt(process.env.PORT || "5000", 10);
       await autoOfflineInactiveDrivers();
     } catch (_) { }
   }, 60 * 1000); // every 60 seconds
-
-  // Setup Vite in development (after server is listening)
-  if (process.env.NODE_ENV !== "production") {
-    try {
-      const { setupVite } = await import("./vite");
-      await setupVite(httpServer, app);
-    } catch (e: any) {
-      console.error("[vite] Failed to setup Vite:", e.message);
-    }
-  }
 
 })();

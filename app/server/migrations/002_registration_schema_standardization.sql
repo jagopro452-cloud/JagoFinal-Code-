@@ -138,6 +138,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_driver_documents_driver_doc_type
   ON driver_documents(driver_id, doc_type);
 
 -- documents: ensure registration uploads can upsert cleanly.
+CREATE TABLE IF NOT EXISTS documents (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+  document_type VARCHAR(100),
+  doc_url TEXT,
+  submitted_at TIMESTAMP DEFAULT NOW(),
+  status VARCHAR(30) DEFAULT 'pending',
+  created_at TIMESTAMP DEFAULT NOW()
+);
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMP DEFAULT NOW();
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS status VARCHAR(30) DEFAULT 'pending';
 

@@ -17,6 +17,7 @@
 import { db, pool } from "./db";
 import { sql } from "drizzle-orm";
 import { getRevenueConfig } from "./revenue-config";
+import { assertSchemaObjectsOrThrow } from "./schema-health";
 
 const rawDb = db;
 const rawSql = sql;
@@ -105,18 +106,16 @@ let walletEventsReady = false;
 
 async function ensureWalletEventsTable(): Promise<void> {
   if (walletEventsReady) return;
-  await rawDb.execute(rawSql`
-    CREATE TABLE IF NOT EXISTS wallet_events (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      amount NUMERIC(12,2) NOT NULL,
-      type VARCHAR(16) NOT NULL,
-      reason TEXT NOT NULL,
-      ref_id TEXT,
-      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-      created_at TIMESTAMP NOT NULL DEFAULT NOW()
-    )
-  `).catch(() => {});
+  const tableR = await rawDb.execute(rawSql`
+    SELECT EXISTS (
+      SELECT 1
+      FROM information_schema.tables
+      WHERE table_schema='public' AND table_name='wallet_events'
+    ) AS exists
+  `).catch(() => ({ rows: [{ exists: false }] as any[] }));
+  if ((tableR.rows[0] as any)?.exists !== true) {
+    throw new Error("wallet_events table is missing. Run SQL migrations before starting the server.");
+  }
   walletEventsReady = true;
 }
 
@@ -273,8 +272,6 @@ export async function applyCompanyWalletChange(params: {
   if (!(amount > 0)) throw new Error("amount must be positive");
   const tripDelta = Number(params.tripDelta || 0);
 
-  await ensureWalletEventsTable();
-
   const client = await pool.connect();
   let newBalance: number;
   try {
@@ -307,8 +304,8 @@ export async function applyCompanyWalletChange(params: {
     newBalance = parseFloat(updateRes.rows[0].wallet_balance || 0);
 
     await client.query(
-      "INSERT INTO wallet_events (user_id, amount, type, reason, ref_id, metadata) VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb)",
-      [companyId, amount, params.type, params.reason, params.refId || null, JSON.stringify({ ...(params.metadata || {}), entityType: "b2b" })]
+      "INSERT INTO company_wallet_events (company_id, amount, type, reason, ref_id, metadata) VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb)",
+      [companyId, amount, params.type, params.reason, params.refId || null, JSON.stringify(params.metadata || {})]
     );
 
     await client.query("COMMIT");
@@ -1001,69 +998,129 @@ export async function getDriverWalletSummary(driverId: string) {
 }
 
 /** Process driver withdrawal request */
-export async function requestWithdrawal(driverId: string, amount: number, method: string = "bank_transfer") {
-  const wallet = await getDriverWalletSummary(driverId);
-  if (!wallet) throw new Error("Driver not found");
-  if (wallet.walletBalance < amount) throw new Error("Insufficient wallet balance");
-  if (amount <= 0) throw new Error("Amount must be greater than 0");
+export async function requestWithdrawal(
+  driverId: string,
+  amount: number,
+  method: string = "bank_transfer",
+  note?: string,
+) {
+  const normalizedAmount = Math.round(Number(amount || 0) * 100) / 100;
+  if (!(normalizedAmount > 0)) throw new Error("Amount must be greater than 0");
 
-  // Create withdrawal request
-  const r = await rawDb.execute(rawSql`
-    INSERT INTO driver_payments (driver_id, amount, payment_type, status, description)
-    VALUES (${driverId}::uuid, ${amount}, 'withdrawal_request', 'pending',
-            ${"Withdrawal request ₹" + amount + " via " + method})
-    RETURNING id, amount, status, created_at
-  `);
+  return rawDb.transaction(async (tx) => {
+    const driverRes = await tx.execute(rawSql`
+      SELECT id
+      FROM users
+      WHERE id=${driverId}::uuid
+      LIMIT 1
+    `);
+    if (!driverRes.rows.length) throw new Error("Driver not found");
 
-  // Debit wallet immediately (hold funds)
-  await applyWalletChange({
-    userId: driverId,
-    amount,
-    type: "DEBIT",
-    reason: "withdrawal_request",
-    refId: String((r.rows as any[])[0]?.id || ""),
-    metadata: { method },
+    const paymentRes = await tx.execute(rawSql`
+      INSERT INTO driver_payments (driver_id, amount, payment_type, status, description)
+      VALUES (${driverId}::uuid, ${normalizedAmount}, 'withdrawal_request', 'pending',
+              ${"Withdrawal request ₹" + normalizedAmount + " via " + method})
+      RETURNING id, amount, status, created_at
+    `);
+    const payment = (paymentRes.rows as any[])[0];
+    const paymentId = String(payment?.id || "");
+
+    const walletChange = await applyWalletChange({
+      userId: driverId,
+      amount: normalizedAmount,
+      type: "DEBIT",
+      reason: "withdrawal_request",
+      refId: paymentId,
+      metadata: { method, note: note || null },
+      requireSufficientFunds: true,
+      tx,
+    });
+
+    await tx.execute(rawSql`
+      INSERT INTO transactions (user_id, account, credit, debit, balance, transaction_type, ref_transaction_id)
+      VALUES (
+        ${driverId}::uuid,
+        ${"Withdrawal via " + method},
+        0,
+        ${normalizedAmount},
+        ${walletChange.newBalance},
+        'withdrawal',
+        ${paymentId || null}
+      )
+      ON CONFLICT (ref_transaction_id, transaction_type) WHERE ref_transaction_id IS NOT NULL DO NOTHING
+    `);
+
+    await tx.execute(rawSql`
+      INSERT INTO withdraw_requests (user_id, driver_payment_id, amount, note, status, created_at)
+      VALUES (${driverId}::uuid, ${paymentId}::uuid, ${normalizedAmount}, ${note || null}, 'pending', NOW())
+      ON CONFLICT DO NOTHING
+    `);
+
+    return {
+      ...payment,
+      walletBalance: walletChange.newBalance,
+    };
   });
-
-  // Record transaction
-  const newBal = wallet.walletBalance - amount;
-  await rawDb.execute(rawSql`
-    INSERT INTO transactions (user_id, account, credit, debit, balance, transaction_type)
-    VALUES (${driverId}::uuid, ${"Withdrawal via " + method}, 0, ${amount}, ${newBal}, 'withdrawal')
-  `).catch(() => {});
-
-  return (r.rows as any[])[0];
 }
 
 /** Admin: approve withdrawal */
 export async function approveWithdrawal(paymentId: string) {
-  await rawDb.execute(rawSql`
-    UPDATE driver_payments SET status='completed', updated_at=NOW()
-    WHERE id=${paymentId}::uuid AND payment_type='withdrawal_request' AND status='pending'
-  `);
+  await rawDb.transaction(async (tx) => {
+    const result = await tx.execute(rawSql`
+      UPDATE driver_payments
+      SET status='completed', updated_at=NOW()
+      WHERE id=${paymentId}::uuid
+        AND payment_type='withdrawal_request'
+        AND status='pending'
+      RETURNING id
+    `);
+    if (!result.rows.length) return;
+
+    await tx.execute(rawSql`
+      UPDATE withdraw_requests
+      SET status='approved'
+      WHERE driver_payment_id=${paymentId}::uuid
+        AND status='pending'
+    `);
+  });
 }
 
 /** Admin: reject withdrawal (refund to driver wallet) */
 export async function rejectWithdrawal(paymentId: string) {
-  const r = await rawDb.execute(rawSql`
-    UPDATE driver_payments SET status='rejected', updated_at=NOW()
-    WHERE id=${paymentId}::uuid AND payment_type='withdrawal_request' AND status='pending'
-    RETURNING driver_id, amount
-  `);
-  const row = (r.rows as any[])[0];
-  if (row) {
+  await rawDb.transaction(async (tx) => {
+    const r = await tx.execute(rawSql`
+      UPDATE driver_payments
+      SET status='rejected', updated_at=NOW()
+      WHERE id=${paymentId}::uuid
+        AND payment_type='withdrawal_request'
+        AND status='pending'
+      RETURNING driver_id, amount
+    `);
+    const row = (r.rows as any[])[0];
+    if (!row) return;
+
     const walletChange = await applyWalletChange({
       userId: String(row.driver_id),
       amount: parseFloat(String(row.amount || 0)),
       type: "CREDIT",
       reason: "withdrawal_rejected_refund",
       refId: paymentId,
+      tx,
     });
-    await rawDb.execute(rawSql`
-      INSERT INTO transactions (user_id, account, credit, debit, balance, transaction_type)
-      VALUES (${row.driver_id}::uuid, 'Withdrawal rejected - refund', ${row.amount}, 0, ${walletChange.newBalance}, 'withdrawal_refund')
-    `).catch(() => {});
-  }
+
+    await tx.execute(rawSql`
+      INSERT INTO transactions (user_id, account, credit, debit, balance, transaction_type, ref_transaction_id)
+      VALUES (${row.driver_id}::uuid, 'Withdrawal rejected - refund', ${row.amount}, 0, ${walletChange.newBalance}, 'withdrawal_refund', ${paymentId})
+      ON CONFLICT (ref_transaction_id, transaction_type) WHERE ref_transaction_id IS NOT NULL DO NOTHING
+    `);
+
+    await tx.execute(rawSql`
+      UPDATE withdraw_requests
+      SET status='rejected'
+      WHERE driver_payment_id=${paymentId}::uuid
+        AND status='pending'
+    `);
+  });
 }
 
 /** Get pending withdrawals */
@@ -1073,6 +1130,7 @@ export async function getPendingWithdrawals() {
     FROM driver_payments dp
     LEFT JOIN users u ON u.id = dp.driver_id
     WHERE dp.payment_type = 'withdrawal_request'
+      AND dp.status = 'pending'
     ORDER BY dp.created_at DESC
     LIMIT 100
   `);
@@ -1178,47 +1236,29 @@ export async function initRevenueEngineTables() {
     `).catch(() => {});
   }
 
-  // Ensure outstation bookings have commission columns
-  await rawDb.execute(rawSql`
-    ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS commission_amount NUMERIC(10,2) DEFAULT 0;
-    ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS gst_amount NUMERIC(10,2) DEFAULT 0;
-    ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS insurance_amount NUMERIC(10,2) DEFAULT 0;
-    ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS driver_earnings NUMERIC(10,2) DEFAULT 0;
-    ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS revenue_model VARCHAR(30) DEFAULT 'commission';
-    ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS revenue_breakdown JSONB DEFAULT '{}';
-  `).catch(() => {});
-
-  // Ensure parcel_orders has revenue breakdown columns
-  await rawDb.execute(rawSql`
-    ALTER TABLE parcel_orders ADD COLUMN IF NOT EXISTS gst_amount NUMERIC(10,2) DEFAULT 0;
-    ALTER TABLE parcel_orders ADD COLUMN IF NOT EXISTS insurance_amount NUMERIC(10,2) DEFAULT 0;
-    ALTER TABLE parcel_orders ADD COLUMN IF NOT EXISTS driver_earnings NUMERIC(10,2) DEFAULT 0;
-    ALTER TABLE parcel_orders ADD COLUMN IF NOT EXISTS revenue_model VARCHAR(30) DEFAULT 'commission';
-    ALTER TABLE parcel_orders ADD COLUMN IF NOT EXISTS revenue_breakdown JSONB DEFAULT '{}';
-  `).catch(() => {});
-
-  // Ensure driver_payments has updated_at column for withdrawal tracking
-  await rawDb.execute(rawSql`
-    ALTER TABLE driver_payments ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
-    ALTER TABLE driver_payments ADD COLUMN IF NOT EXISTS description TEXT;
-  `).catch(() => {});
-
-  // C6: ledger_entries table for double-entry audit trail on every trip
-  await rawDb.execute(rawSql`
-    CREATE TABLE IF NOT EXISTS ledger_entries (
-      id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      trip_id     UUID,
-      type        VARCHAR(16) NOT NULL CHECK (type IN ('DEBIT','CREDIT')),
-      amount      NUMERIC(12,2) NOT NULL,
-      status      VARCHAR(20) NOT NULL DEFAULT 'SUCCESS',
-      description TEXT,
-      created_at  TIMESTAMP NOT NULL DEFAULT NOW()
-    )
-  `).catch(() => {});
-  await rawDb.execute(rawSql`
-    CREATE INDEX IF NOT EXISTS idx_ledger_trip ON ledger_entries (trip_id)
-  `).catch(() => {});
+  await assertSchemaObjectsOrThrow({
+    tables: ["outstation_pool_bookings", "parcel_orders", "driver_payments", "ledger_entries"],
+    columns: [
+      {
+        table: "outstation_pool_bookings",
+        columns: ["commission_amount", "gst_amount", "insurance_amount", "driver_earnings", "revenue_model", "revenue_breakdown"],
+      },
+      {
+        table: "parcel_orders",
+        columns: ["gst_amount", "insurance_amount", "driver_earnings", "revenue_model", "revenue_breakdown"],
+      },
+      {
+        table: "driver_payments",
+        columns: ["updated_at", "description"],
+      },
+      {
+        table: "ledger_entries",
+        columns: ["user_id", "trip_id", "type", "amount", "status", "description", "created_at"],
+      },
+    ],
+    indexes: [{ table: "ledger_entries", pattern: "%trip_id%", description: "ledger_entries trip_id index" }],
+    foreignKeys: [{ table: "ledger_entries", column: "user_id", references: "users" }],
+  });
 
   console.log("[revenue-engine] Tables and settings initialized");
 }
@@ -1525,3 +1565,4 @@ export async function completeTripAtomic(params: CompleteTripParams): Promise<Co
     client.release();
   }
 }
+

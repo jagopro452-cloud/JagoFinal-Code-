@@ -13,6 +13,7 @@
 
 import { db as rawDb } from "./db";
 import { sql as rawSql } from "drizzle-orm";
+import { assertSchemaObjectsOrThrow } from "./schema-health";
 import { notifyUser } from "./notification-service";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -270,40 +271,11 @@ export function startRetentionCampaignJob(): void {
 
 export async function initRetentionTables(): Promise<void> {
   try {
-    await rawDb.execute(rawSql`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
+    await assertSchemaObjectsOrThrow({
+      tables: ["retention_promos", "retention_notifications"],
+    });
 
-    await rawDb.execute(rawSql`
-      CREATE TABLE IF NOT EXISTS retention_promos (
-        id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-        user_id UUID NOT NULL,
-        promo_code VARCHAR(100) NOT NULL,
-        discount_amount INT NOT NULL,
-        valid_until TIMESTAMPTZ NOT NULL,
-        is_used BOOLEAN DEFAULT false,
-        used_at TIMESTAMPTZ,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        UNIQUE(user_id, promo_code)
-      )
-    `);
-
-    await rawDb.execute(rawSql`
-      CREATE TABLE IF NOT EXISTS retention_notifications (
-        id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-        user_id UUID NOT NULL,
-        campaign_code VARCHAR(100) NOT NULL,
-        discount_amount INT,
-        promo_code VARCHAR(100),
-        message_title TEXT,
-        message_body TEXT,
-        sent_at TIMESTAMPTZ DEFAULT NOW(),
-        delivered BOOLEAN DEFAULT false
-      )
-    `);
-
-    await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_retention_promos_user ON retention_promos(user_id, is_used)`);
-    await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_retention_notif_user ON retention_notifications(user_id, campaign_code, sent_at)`);
-
-    console.log("[RETENTION] Tables initialized");
+    console.log("[RETENTION] Schema verified");
   } catch (e: any) {
     console.error("[RETENTION] Table init error:", e.message);
   }

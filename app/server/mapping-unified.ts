@@ -16,6 +16,7 @@
 
 import { db as rawDb } from "./db";
 import { sql as rawSql } from "drizzle-orm";
+import { assertSchemaObjectsOrThrow } from "./schema-health";
 import { getDistanceWithCache, getRouteWithCache, geocodeWithCache } from "./maps-cache";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -184,70 +185,9 @@ export interface LocationSelectionPayload {
 }
 
 export async function ensureLocationIntelligenceSchema(): Promise<void> {
-  await rawDb.execute(rawSql`
-    CREATE TABLE IF NOT EXISTS landmark_aliases (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      alias TEXT NOT NULL UNIQUE,
-      normalized_alias TEXT NOT NULL,
-      canonical_name TEXT NOT NULL,
-      canonical_address TEXT,
-      city_name TEXT,
-      latitude DOUBLE PRECISION,
-      longitude DOUBLE PRECISION,
-      popularity_score INTEGER NOT NULL DEFAULT 0,
-      is_active BOOLEAN NOT NULL DEFAULT true,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-
-  await rawDb.execute(rawSql`
-    CREATE TABLE IF NOT EXISTS location_search_history (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      place_id TEXT,
-      query_text TEXT,
-      normalized_query TEXT NOT NULL,
-      place_label TEXT NOT NULL,
-      place_address TEXT,
-      latitude DOUBLE PRECISION,
-      longitude DOUBLE PRECISION,
-      use_count INTEGER NOT NULL DEFAULT 1,
-      last_used_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-
-  await rawDb.execute(rawSql`
-    CREATE TABLE IF NOT EXISTS pickup_quality_scores (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      geohash_key TEXT NOT NULL UNIQUE,
-      location_label TEXT,
-      latitude DOUBLE PRECISION,
-      longitude DOUBLE PRECISION,
-      quality_score NUMERIC(5,2) NOT NULL DEFAULT 0,
-      risk_flags JSONB NOT NULL DEFAULT '[]'::jsonb,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-
-  await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_landmark_aliases_lookup ON landmark_aliases(normalized_alias, is_active)`);
-  await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_location_search_history_user_used ON location_search_history(user_id, last_used_at DESC)`);
-  await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_location_search_history_query ON location_search_history(normalized_query)`);
-
-  await rawDb.execute(rawSql`
-    INSERT INTO landmark_aliases
-      (alias, normalized_alias, canonical_name, canonical_address, city_name, latitude, longitude, popularity_score)
-    VALUES
-      ('benz circle', 'benz circle', 'Benz Circle', 'Benz Circle, Vijayawada, Andhra Pradesh, India', 'Vijayawada', 16.501576, 80.649643, 90),
-      ('vja busstand', 'vijayawada bus stand', 'Vijayawada Bus Stand', 'Vijayawada Bus Stand, Vijayawada, Andhra Pradesh, India', 'Vijayawada', 16.516726, 80.616961, 92),
-      ('vijywada bus stand', 'vijayawada bus stand', 'Vijayawada Bus Stand', 'Vijayawada Bus Stand, Vijayawada, Andhra Pradesh, India', 'Vijayawada', 16.516726, 80.616961, 92),
-      ('railway stn', 'railway station', 'Vijayawada Junction Railway Station', 'Vijayawada Junction Railway Station, Vijayawada, Andhra Pradesh, India', 'Vijayawada', 16.518503, 80.620886, 88),
-      ('kphb metro', 'kphb metro station', 'KPHB Colony Metro Station', 'KPHB Colony Metro Station, Hyderabad, Telangana, India', 'Hyderabad', 17.494793, 78.399644, 75)
-    ON CONFLICT (alias) DO NOTHING
-  `).catch(() => {});
+  await assertSchemaObjectsOrThrow({
+    tables: ["landmark_aliases", "location_search_history", "pickup_quality_scores"],
+  });
 }
 
 function normalizeLocationQuery(query: string): string {

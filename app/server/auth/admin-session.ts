@@ -23,60 +23,18 @@ type SessionContext = {
 
 let adminAuthSchemaReady: Promise<void> | null = null;
 
+async function assertTableExists(tableName: string) {
+  const result = await rawDb.execute(rawSql`
+    SELECT to_regclass(${`public.${tableName}`}) AS table_name
+  `);
+  if (!(result.rows[0] as any)?.table_name) {
+    throw new Error(`Missing required table "${tableName}". Apply SQL migrations before starting the API.`);
+  }
+}
+
 async function ensureAdminAuthSchemaInner() {
-  await rawDb.execute(rawSql`
-    CREATE TABLE IF NOT EXISTS admin_sessions (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      admin_id UUID NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
-      token TEXT NOT NULL UNIQUE,
-      device_id TEXT NOT NULL,
-      ip_address TEXT,
-      user_agent TEXT,
-      expires_at TIMESTAMP NOT NULL,
-      revoked BOOLEAN NOT NULL DEFAULT false,
-      revoked_at TIMESTAMP,
-      last_active_at TIMESTAMP DEFAULT NOW(),
-      created_at TIMESTAMP DEFAULT NOW()
-    )
-  `);
-
-  await rawDb.execute(rawSql`
-    CREATE TABLE IF NOT EXISTS admin_refresh_tokens (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      admin_id UUID NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
-      session_id UUID NOT NULL REFERENCES admin_sessions(id) ON DELETE CASCADE,
-      token TEXT NOT NULL UNIQUE,
-      device_id TEXT NOT NULL,
-      ip_address TEXT,
-      user_agent TEXT,
-      expires_at TIMESTAMP NOT NULL,
-      revoked BOOLEAN NOT NULL DEFAULT false,
-      revoked_at TIMESTAMP,
-      replaced_by_token TEXT,
-      created_at TIMESTAMP DEFAULT NOW()
-    )
-  `);
-
-  await rawDb.execute(rawSql`ALTER TABLE admin_sessions ADD COLUMN IF NOT EXISTS device_id TEXT`).catch(() => undefined);
-  await rawDb.execute(rawSql`ALTER TABLE admin_sessions ADD COLUMN IF NOT EXISTS ip_address TEXT`).catch(() => undefined);
-  await rawDb.execute(rawSql`ALTER TABLE admin_sessions ADD COLUMN IF NOT EXISTS user_agent TEXT`).catch(() => undefined);
-  await rawDb.execute(rawSql`ALTER TABLE admin_sessions ADD COLUMN IF NOT EXISTS revoked BOOLEAN NOT NULL DEFAULT false`).catch(() => undefined);
-  await rawDb.execute(rawSql`ALTER TABLE admin_sessions ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMP`).catch(() => undefined);
-  await rawDb.execute(rawSql`ALTER TABLE admin_sessions ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMP DEFAULT NOW()`).catch(() => undefined);
-  await rawDb.execute(rawSql`ALTER TABLE admin_sessions ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()`).catch(() => undefined);
-
-  await rawDb.execute(rawSql`ALTER TABLE admin_refresh_tokens ADD COLUMN IF NOT EXISTS device_id TEXT`).catch(() => undefined);
-  await rawDb.execute(rawSql`ALTER TABLE admin_refresh_tokens ADD COLUMN IF NOT EXISTS ip_address TEXT`).catch(() => undefined);
-  await rawDb.execute(rawSql`ALTER TABLE admin_refresh_tokens ADD COLUMN IF NOT EXISTS user_agent TEXT`).catch(() => undefined);
-  await rawDb.execute(rawSql`ALTER TABLE admin_refresh_tokens ADD COLUMN IF NOT EXISTS revoked BOOLEAN NOT NULL DEFAULT false`).catch(() => undefined);
-  await rawDb.execute(rawSql`ALTER TABLE admin_refresh_tokens ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMP`).catch(() => undefined);
-  await rawDb.execute(rawSql`ALTER TABLE admin_refresh_tokens ADD COLUMN IF NOT EXISTS replaced_by_token TEXT`).catch(() => undefined);
-  await rawDb.execute(rawSql`ALTER TABLE admin_refresh_tokens ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()`).catch(() => undefined);
-
-  await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_admin_sessions_token ON admin_sessions(token)`).catch(() => undefined);
-  await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_admin_sessions_admin_id ON admin_sessions(admin_id)`).catch(() => undefined);
-  await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_admin_refresh_tokens_token ON admin_refresh_tokens(token)`).catch(() => undefined);
-  await rawDb.execute(rawSql`CREATE INDEX IF NOT EXISTS idx_admin_refresh_tokens_session_id ON admin_refresh_tokens(session_id)`).catch(() => undefined);
+  await assertTableExists("admin_sessions");
+  await assertTableExists("admin_refresh_tokens");
 }
 
 async function ensureAdminAuthSchema() {

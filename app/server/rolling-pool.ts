@@ -22,6 +22,7 @@ import { io } from "./socket";
 import { sendFcmNotification } from "./fcm";
 import { calculateRevenueBreakdown, settleRevenue } from "./revenue-engine";
 import { enforceDriverRevenuePolicy } from "./revenue-policy";
+import { assertSchemaObjectsOrThrow } from "./schema-health";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -204,140 +205,10 @@ function buildUserSafetySnapshot(row: any, prefix = "") {
 // ── Schema ───────────────────────────────────────────────────────────────────
 
 export async function ensureRollingPoolSchema(): Promise<void> {
-  await rawDb.execute(rawSql`
-    CREATE TABLE IF NOT EXISTS driver_pool_sessions (
-      id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      driver_id              UUID NOT NULL REFERENCES users(id),
-      vehicle_category_id    UUID,
-      status                 VARCHAR(20) NOT NULL DEFAULT 'active',
-      accepting_new_requests BOOLEAN NOT NULL DEFAULT true,
-      state_version          INTEGER NOT NULL DEFAULT 1,
-      pool_vehicle_type      VARCHAR(20) NOT NULL DEFAULT 'car_pool_4',
-      route_plan             JSONB NOT NULL DEFAULT '[]',
-      max_seats              INTEGER NOT NULL DEFAULT 4,
-      available_seats        INTEGER NOT NULL DEFAULT 4,
-      current_lat            NUMERIC(10,7),
-      current_lng            NUMERIC(10,7),
-      current_bearing_deg    NUMERIC(6,2),
-      last_location_at       TIMESTAMP,
-      total_passengers_served INTEGER NOT NULL DEFAULT 0,
-      total_earnings         NUMERIC(12,2) NOT NULL DEFAULT 0,
-      started_at             TIMESTAMP NOT NULL DEFAULT NOW(),
-      ended_at               TIMESTAMP,
-      created_at             TIMESTAMP NOT NULL DEFAULT NOW(),
-      updated_at             TIMESTAMP NOT NULL DEFAULT NOW()
-    )
-  `);
-
-  await rawDb.execute(rawSql`
-    ALTER TABLE driver_pool_sessions
-    ADD COLUMN IF NOT EXISTS last_location_at TIMESTAMP,
-    ADD COLUMN IF NOT EXISTS accepting_new_requests BOOLEAN NOT NULL DEFAULT true,
-    ADD COLUMN IF NOT EXISTS state_version INTEGER NOT NULL DEFAULT 1,
-    ADD COLUMN IF NOT EXISTS pool_vehicle_type VARCHAR(20) NOT NULL DEFAULT 'car_pool_4',
-    ADD COLUMN IF NOT EXISTS route_plan JSONB NOT NULL DEFAULT '[]'
-  `);
-
-  await rawDb.execute(rawSql`
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_driver_active_pool_session
-    ON driver_pool_sessions(driver_id)
-    WHERE status = 'active'
-  `);
-
-  await rawDb.execute(rawSql`
-    CREATE TABLE IF NOT EXISTS pool_ride_requests (
-      id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      session_id       UUID REFERENCES driver_pool_sessions(id),
-      proposed_session_id UUID REFERENCES driver_pool_sessions(id),
-      customer_id      UUID NOT NULL REFERENCES users(id),
-      vehicle_category_id UUID,
-      pickup_lat       NUMERIC(10,7) NOT NULL,
-      pickup_lng       NUMERIC(10,7) NOT NULL,
-      drop_lat         NUMERIC(10,7) NOT NULL,
-      drop_lng         NUMERIC(10,7) NOT NULL,
-      pickup_address   TEXT,
-      drop_address     TEXT,
-      seats_requested  INTEGER NOT NULL DEFAULT 1,
-      fare_per_seat    NUMERIC(10,2) NOT NULL DEFAULT 0,
-      total_fare       NUMERIC(10,2) NOT NULL DEFAULT 0,
-      distance_km      NUMERIC(10,2) NOT NULL DEFAULT 0,
-      commission_amount NUMERIC(10,2) NOT NULL DEFAULT 0,
-      gst_amount       NUMERIC(10,2) NOT NULL DEFAULT 0,
-      insurance_amount NUMERIC(10,2) NOT NULL DEFAULT 0,
-      platform_deduction NUMERIC(10,2) NOT NULL DEFAULT 0,
-      revenue_model    VARCHAR(30) DEFAULT 'commission',
-      revenue_breakdown JSONB DEFAULT '{}',
-      driver_earnings  NUMERIC(10,2) NOT NULL DEFAULT 0,
-      payment_method   VARCHAR(20) NOT NULL DEFAULT 'cash',
-      status           VARCHAR(20) NOT NULL DEFAULT 'searching',
-      assignment_version INTEGER NOT NULL DEFAULT 0,
-      pickup_order     INTEGER,
-      drop_order       INTEGER,
-      boarding_otp     VARCHAR(6),
-      seat_lock_expires_at TIMESTAMP,
-      cluster_key      TEXT,
-      cancel_reason    TEXT,
-      refund_amount    NUMERIC(10,2) NOT NULL DEFAULT 0,
-      searched_at      TIMESTAMP NOT NULL DEFAULT NOW(),
-      matched_at       TIMESTAMP,
-      picked_up_at     TIMESTAMP,
-      dropped_at       TIMESTAMP,
-      cancelled_at     TIMESTAMP,
-      created_at       TIMESTAMP NOT NULL DEFAULT NOW(),
-      updated_at       TIMESTAMP NOT NULL DEFAULT NOW()
-    )
-  `);
-
-  await rawDb.execute(rawSql`
-    ALTER TABLE pool_ride_requests
-    ADD COLUMN IF NOT EXISTS vehicle_category_id UUID,
-    ADD COLUMN IF NOT EXISTS proposed_session_id UUID,
-    ADD COLUMN IF NOT EXISTS assignment_version INTEGER NOT NULL DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS commission_amount NUMERIC(10,2) NOT NULL DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS gst_amount NUMERIC(10,2) NOT NULL DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS insurance_amount NUMERIC(10,2) NOT NULL DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS platform_deduction NUMERIC(10,2) NOT NULL DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS revenue_model VARCHAR(30) DEFAULT 'commission',
-    ADD COLUMN IF NOT EXISTS revenue_breakdown JSONB DEFAULT '{}',
-    ADD COLUMN IF NOT EXISTS driver_earnings NUMERIC(10,2) NOT NULL DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS drop_order INTEGER,
-    ADD COLUMN IF NOT EXISTS boarding_otp VARCHAR(6),
-    ADD COLUMN IF NOT EXISTS seat_lock_expires_at TIMESTAMP,
-    ADD COLUMN IF NOT EXISTS cluster_key TEXT,
-    ADD COLUMN IF NOT EXISTS cancel_reason TEXT,
-    ADD COLUMN IF NOT EXISTS refund_amount NUMERIC(10,2) NOT NULL DEFAULT 0
-  `);
-
-  await rawDb.execute(rawSql`
-    CREATE INDEX IF NOT EXISTS idx_pool_requests_searching
-    ON pool_ride_requests(status, created_at)
-    WHERE status = 'searching'
-  `);
-  await rawDb.execute(rawSql`
-    CREATE INDEX IF NOT EXISTS idx_pool_requests_session
-    ON pool_ride_requests(session_id, status)
-  `);
-  await rawDb.execute(rawSql`
-    CREATE INDEX IF NOT EXISTS idx_pool_requests_customer_status
-    ON pool_ride_requests(customer_id, status, created_at DESC)
-  `);
-  await rawDb.execute(rawSql`
-    CREATE INDEX IF NOT EXISTS idx_pool_requests_vehicle_status
-    ON pool_ride_requests(vehicle_category_id, status, searched_at DESC)
-  `);
-  await rawDb.execute(rawSql`
-    CREATE INDEX IF NOT EXISTS idx_pool_requests_pending_accept
-    ON pool_ride_requests(proposed_session_id, status, seat_lock_expires_at)
-    WHERE status = 'pending_driver_accept'
-  `);
-  await rawDb.execute(rawSql`
-    CREATE INDEX IF NOT EXISTS idx_pool_sessions_active
-    ON driver_pool_sessions(status, updated_at)
-    WHERE status = 'active'
-  `);
+  await assertSchemaObjectsOrThrow({
+    tables: ["driver_pool_sessions", "pool_ride_requests"],
+  });
 }
-
-// ── Geo helpers ───────────────────────────────────────────────────────────────
 
 function haversineKmPool(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371;
@@ -535,11 +406,15 @@ async function findBestSession(
   `).catch(() => ({ rows: [] as any[] }));
 
   for (const row of r.rows as any[]) {
-    const driverBearing = parseFloat(row.current_bearing_deg || 0);
-    // H7 FIX: bearing=0 means uninitialized GPS — skip direction check to avoid wrong rejections
-    if (driverBearing > 0) {
-      const bdiff = bearingDiff(driverBearing, customerBearing);
-      if (bdiff > directionToleranceDeg) continue;
+    // Only apply direction filter when the driver has a real GPS bearing.
+    // current_bearing_deg is NULL until the driver sends their first location update.
+    // Using (bearing || 0) would convert NULL→0 and silently skip due-north drivers too.
+    if (row.current_bearing_deg != null) {
+      const driverBearing = parseFloat(row.current_bearing_deg);
+      if (!isNaN(driverBearing)) {
+        const bdiff = bearingDiff(driverBearing, customerBearing);
+        if (bdiff > directionToleranceDeg) continue;
+      }
     }
 
     const cLat = parseFloat(row.current_lat);
@@ -765,6 +640,9 @@ async function runMatcher(): Promise<void> {
 // ── Route registration ────────────────────────────────────────────────────────
 
 export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdminAuth?: any): void {
+  // Safe admin auth guard — if requireAdminAuth is not wired up, reject all requests rather than letting them through
+  const adminAuth = requireAdminAuth ?? ((_req: any, res: any) => res.status(401).json({ message: "Admin authentication not configured" }));
+
   ensureRollingPoolSchema()
     .then(() => startRollingPoolMatcher())
     .catch((e) => console.error("[ROLLING-POOL] schema init failed", e?.message));
@@ -859,19 +737,28 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
     try {
       const driver = req.currentUser;
       const { lat, lng, bearingDeg } = req.body;
-      if (!lat || !lng) return res.status(400).json(poolResponse(false, "POOL_LOCATION_REQUIRED", "lat/lng required"));
+      const latN = parseFloat(lat);
+      const lngN = parseFloat(lng);
+      if (!lat || !lng || !isFinite(latN) || !isFinite(lngN) ||
+          latN < -90 || latN > 90 || lngN < -180 || lngN > 180) {
+        return res.status(400).json(poolResponse(false, "POOL_LOCATION_REQUIRED", "Valid lat/lng required"));
+      }
+      const bearingN = bearingDeg != null ? parseFloat(bearingDeg) : null;
 
       await rawDb.execute(rawSql`
         UPDATE driver_pool_sessions
-        SET current_lat = ${parseFloat(lat)},
-            current_lng = ${parseFloat(lng)},
-            current_bearing_deg = ${bearingDeg != null ? parseFloat(bearingDeg) : null},
+        SET current_lat = ${latN},
+            current_lng = ${lngN},
+            current_bearing_deg = ${bearingN !== null && isFinite(bearingN) ? bearingN : null},
             last_location_at = NOW(),
             updated_at = NOW()
         WHERE driver_id = ${driver.id}::uuid AND status = 'active'
       `);
 
-      // Broadcast driver location to all matched/picked-up passengers in this session
+      // Broadcast driver location to matched/picked-up passengers only.
+      // Do NOT call emitSeatUpdate here — seat counts don't change on GPS pings,
+      // and firing 2 extra SQL queries + N socket writes every 2s per active driver
+      // creates significant load at scale (100 drivers = 100 queries/s).
       await rawDb.execute(rawSql`
         SELECT prr.customer_id
         FROM pool_ride_requests prr
@@ -888,15 +775,6 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
           });
         }
       }).catch(() => undefined);
-
-      const sessionR = await rawDb.execute(rawSql`
-        SELECT id FROM driver_pool_sessions
-        WHERE driver_id = ${driver.id}::uuid AND status = 'active' LIMIT 1
-      `).catch(() => ({ rows: [] as any[] }));
-      const session = sessionR.rows[0] as any;
-      if (session?.id) {
-        await emitSeatUpdate(String(session.id));
-      }
 
       res.json(poolResponse(true, "POOL_LOCATION_UPDATED", "Pool location updated"));
     } catch (e: any) {
@@ -1176,20 +1054,31 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
       }
 
       const row = r.rows[0] as any;
-      await rawDb.execute(rawSql`
-        UPDATE pool_ride_requests
-        SET status = 'cancelled',
-            cancelled_at = NOW(),
-            cancel_reason = 'Passenger no-show',
-            updated_at = NOW()
-        WHERE id = ${requestId}::uuid
-      `);
-      await rawDb.execute(rawSql`
-        UPDATE driver_pool_sessions
-        SET available_seats = available_seats + ${parseInt(row.seats_requested || 1)},
-            updated_at = NOW()
-        WHERE id = ${row.session_id}::uuid
-      `);
+      const noShowClient = await dbPool.connect();
+      try {
+        await noShowClient.query("BEGIN");
+        await noShowClient.query(
+          `UPDATE pool_ride_requests
+           SET status = 'cancelled', cancelled_at = NOW(),
+               cancel_reason = 'Passenger no-show', updated_at = NOW()
+           WHERE id = $1`,
+          [requestId],
+        );
+        await noShowClient.query(
+          `UPDATE driver_pool_sessions
+           SET available_seats = LEAST(max_seats, available_seats + $1),
+               state_version = state_version + 1,
+               updated_at = NOW()
+           WHERE id = $2`,
+          [parseInt(row.seats_requested || 1), row.session_id],
+        );
+        await noShowClient.query("COMMIT");
+      } catch (txErr) {
+        await noShowClient.query("ROLLBACK");
+        throw txErr;
+      } finally {
+        noShowClient.release();
+      }
 
       io.to(`user:${row.customer_id}`).emit("pool:cancelled", {
         requestId,
@@ -1223,19 +1112,37 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
       if (!rr.rows.length) return res.status(404).json({ message: "Passenger not found or not picked up yet" });
       const req_ = rr.rows[0] as any;
 
-      // Mark dropped + free seats atomically
-      await rawDb.execute(rawSql`
-        UPDATE pool_ride_requests
-        SET status = 'dropped', dropped_at = NOW(), updated_at = NOW()
-        WHERE id = ${requestId}::uuid
-      `);
-      await rawDb.execute(rawSql`
-        UPDATE driver_pool_sessions
-        SET available_seats = available_seats + ${parseInt(req_.seats_requested)},
-            total_passengers_served = total_passengers_served + 1,
-            updated_at = NOW()
-        WHERE id = ${req_.session_id}::uuid
-      `);
+      // Mark dropped + free seats in a single atomic transaction
+      const dropClient = await dbPool.connect();
+      try {
+        await dropClient.query("BEGIN");
+        const dropR = await dropClient.query(
+          `UPDATE pool_ride_requests
+           SET status = 'dropped', dropped_at = NOW(), updated_at = NOW()
+           WHERE id = $1 AND status = 'picked_up'`,
+          [requestId],
+        );
+        if ((dropR.rowCount ?? 0) === 0) {
+          await dropClient.query("ROLLBACK");
+          dropClient.release();
+          return res.status(409).json(poolResponse(false, "POOL_DROP_CONFLICT", "Passenger already dropped or not in picked_up state"));
+        }
+        await dropClient.query(
+          `UPDATE driver_pool_sessions
+           SET available_seats = LEAST(max_seats, available_seats + $1),
+               total_passengers_served = total_passengers_served + 1,
+               state_version = state_version + 1,
+               updated_at = NOW()
+           WHERE id = $2`,
+          [parseInt(req_.seats_requested), req_.session_id],
+        );
+        await dropClient.query("COMMIT");
+      } catch (txErr) {
+        await dropClient.query("ROLLBACK");
+        throw txErr;
+      } finally {
+        dropClient.release();
+      }
 
       // Revenue settlement for this passenger
       const fare = parseFloat(req_.total_fare);
@@ -1314,22 +1221,31 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
 
       const sessionId = (sessionR.rows[0] as any).id;
 
-      // H8 FIX: Cancel matched AND picked_up passengers on session end
-      // picked_up passengers who didn't complete their drop get a refund
+      // Cancel all active passengers: matched, picked_up, and pending_driver_accept
+      // picked_up passengers who didn't complete their drop get a full refund
+      // pending_driver_accept passengers get seats released before session row is closed
       const pendingR = await rawDb.execute(rawSql`
         UPDATE pool_ride_requests
         SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW(),
             refund_amount = CASE WHEN status = 'picked_up' THEN COALESCE(total_fare, 0) ELSE 0 END,
-            cancel_reason = CASE WHEN status = 'picked_up' THEN 'Driver ended session mid-ride' ELSE 'Driver ended pool session' END
-        WHERE session_id = ${sessionId}::uuid AND status IN ('matched', 'picked_up')
+            cancel_reason = CASE
+              WHEN status = 'picked_up' THEN 'Driver ended session mid-ride'
+              WHEN status = 'pending_driver_accept' THEN 'Driver ended session before confirming seat'
+              ELSE 'Driver ended pool session'
+            END
+        WHERE COALESCE(session_id, proposed_session_id) = ${sessionId}::uuid
+          AND status IN ('matched', 'picked_up', 'pending_driver_accept')
         RETURNING customer_id, status, refund_amount
       `);
       for (const p of pendingR.rows as any[]) {
         const wasPickedUp = p.status === 'picked_up';
+        const wasPending = p.status === 'pending_driver_accept';
         const refundAmt = parseFloat(p.refund_amount || 0);
         io.to(`user:${p.customer_id}`).emit("pool:cancelled", {
           reason: wasPickedUp
             ? "Driver ended session during your ride. A refund has been initiated."
+            : wasPending
+            ? "The driver ended their session before confirming your seat. Please rebook."
             : "Driver ended pool session. Please rebook.",
           refundAmount: wasPickedUp ? refundAmt : 0,
         });
@@ -1416,6 +1332,17 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
         Math.round(dLng * 100) / 100,
       ].join(':');
 
+      // Duplicate booking guard — one active pool booking per customer at a time
+      const existingActive = await rawDb.execute(rawSql`
+        SELECT id FROM pool_ride_requests
+        WHERE customer_id = ${customer.id}::uuid
+          AND status IN ('searching', 'pending_driver_accept', 'matched', 'picked_up')
+        LIMIT 1
+      `);
+      if ((existingActive.rows as any[]).length > 0) {
+        return res.status(409).json(poolResponse(false, "POOL_DUPLICATE_BOOKING", "You already have an active pool booking. Complete or cancel it before booking again."));
+      }
+
       // Create request in 'searching' state
       const r = await rawDb.execute(rawSql`
         INSERT INTO pool_ride_requests
@@ -1439,9 +1366,10 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
       // Try immediate match
       const matched = await matchRequest(requestId);
 
-      res.json(poolResponse(true, matched ? "POOL_MATCHED" : "POOL_SEARCHING", matched ? "Driver found! Tracking now." : `Searching for a pool driver nearby... (up to ${SEARCH_TIMEOUT_MIN} min)`, {
+      // matched = driver was proposed but must still accept (pending_driver_accept), not yet matched
+      res.json(poolResponse(true, matched ? "POOL_PENDING_ACCEPT" : "POOL_SEARCHING", matched ? "Compatible driver found — waiting for confirmation." : `Searching for a pool driver nearby... (up to ${SEARCH_TIMEOUT_MIN} min)`, {
         requestId,
-        status: matched ? "matched" : "searching",
+        status: matched ? "pending_driver_accept" : "searching",
         boardingOtp,
         farePerSeat,
         totalFare,
@@ -1551,15 +1479,49 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
       const refundAmount = Math.round(fare * Math.max(0, refundPct) / 100 * 100) / 100;
       const refundStatus = refundAmount > 0 ? "pending" : "not_applicable";
 
-      await rawDb.execute(rawSql`
-        UPDATE pool_ride_requests
-        SET status = 'cancelled',
-            cancel_reason = ${reason},
-            refund_amount = ${refundAmount},
-            cancelled_at = NOW(),
-            updated_at = NOW()
-        WHERE id = ${requestId}::uuid AND customer_id = ${customer.id}::uuid
-      `);
+      // Cancel + seat release atomically.
+      // The WHERE clause guards against: (a) concurrent double-cancel inflating seats twice,
+      // (b) a race where the booking transitions to picked_up between our SELECT and this UPDATE.
+      const cancelClient = await dbPool.connect();
+      let cancelledRows = 0;
+      try {
+        await cancelClient.query("BEGIN");
+        const cancelR = await cancelClient.query(
+          `UPDATE pool_ride_requests
+           SET status = 'cancelled',
+               cancel_reason = $1,
+               refund_amount = $2,
+               cancelled_at = NOW(),
+               updated_at = NOW()
+           WHERE id = $3::uuid
+             AND customer_id = $4::uuid
+             AND status NOT IN ('picked_up', 'dropped', 'cancelled')`,
+          [reason, refundAmount, requestId, customer.id],
+        );
+        cancelledRows = cancelR.rowCount ?? 0;
+
+        if (cancelledRows > 0 && booking.session_id) {
+          await cancelClient.query(
+            `UPDATE driver_pool_sessions
+             SET available_seats = LEAST(max_seats, available_seats + $1),
+                 state_version = state_version + 1,
+                 updated_at = NOW()
+             WHERE id = $2::uuid AND status = 'active'`,
+            [parseInt(booking.seats_requested) || 1, booking.session_id],
+          );
+        }
+        await cancelClient.query("COMMIT");
+      } catch (txErr) {
+        await cancelClient.query("ROLLBACK");
+        throw txErr;
+      } finally {
+        cancelClient.release();
+      }
+
+      // If 0 rows updated the status was already terminal — return gracefully
+      if (cancelledRows === 0) {
+        return res.json(poolResponse(true, "POOL_ALREADY_CLOSED", "Booking already completed or cancelled"));
+      }
 
       if (refundAmount > 0) {
         await rawDb.execute(rawSql`
@@ -1575,16 +1537,10 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
         `).catch(() => undefined);
       }
 
-      // Free seats if matched to a session
+      // Notify driver + rebuild route — only if this was an in-session booking
       if (booking.session_id) {
-        await rawDb.execute(rawSql`
-          UPDATE driver_pool_sessions
-          SET available_seats = available_seats + ${parseInt(booking.seats_requested) || 1},
-              updated_at = NOW()
-          WHERE id = ${booking.session_id}::uuid AND status = 'active'
-        `);
 
-        // Notify driver that passenger cancelled
+        // Notify driver that passenger cancelled + push updated route plan
         const driverR = await rawDb.execute(rawSql`
           SELECT driver_id FROM driver_pool_sessions WHERE id = ${booking.session_id}::uuid LIMIT 1
         `).catch(() => ({ rows: [] as any[] }));
@@ -1605,6 +1561,16 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
               requestId,
             },
           );
+          // Rebuild route plan so ghost stops are removed from driver navigation
+          try {
+            const routePlan = await rebuildSessionRoutePlan(String(booking.session_id));
+            io.to(`user:${drv.driver_id}`).emit("pool:route_updated", {
+              sessionId: String(booking.session_id),
+              routePlan,
+            });
+          } catch (routeErr: any) {
+            console.error("[ROLLING-POOL] route rebuild on cancel failed", routeErr?.message);
+          }
         }
         await emitSeatUpdate(String(booking.session_id));
       }
@@ -1831,7 +1797,173 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
 
   // ─── ADMIN: Active pool sessions ──────────────────────────────────────────
 
-  app.get("/api/admin/pool/sessions", requireAdminAuth || ((_req: any, _res: any, next: any) => next()), async (req: any, res: any) => {
+  // ─── ADMIN: Local pool stats (used by admin panel stat cards) ────────────────
+  app.get("/api/admin/local-pool/stats", adminAuth, async (_req: any, res: any) => {
+    try {
+      const r = await rawDb.execute(rawSql`
+        SELECT
+          COUNT(dps.id)::int                                                        AS total_rides,
+          COUNT(dps.id) FILTER (WHERE dps.status = 'active' AND dps.accepting_new_requests = true)::int  AS accepting,
+          COUNT(dps.id) FILTER (WHERE dps.status = 'active' AND dps.accepting_new_requests = false)::int AS paused,
+          COALESCE(SUM(dps.total_passengers_served), 0)::int                        AS total_passengers,
+          COALESCE(SUM(dps.total_earnings), 0)::numeric                             AS total_revenue,
+          COALESCE(SUM(prr_agg.gst_total), 0)::numeric                             AS total_gst,
+          COALESCE(SUM(prr_agg.commission_total), 0)::numeric                      AS total_commission
+        FROM driver_pool_sessions dps
+        LEFT JOIN (
+          SELECT session_id,
+                 SUM(gst_amount)        AS gst_total,
+                 SUM(commission_amount) AS commission_total
+          FROM pool_ride_requests
+          WHERE status IN ('dropped', 'picked_up')
+          GROUP BY session_id
+        ) prr_agg ON prr_agg.session_id = dps.id
+      `);
+      res.json({ success: true, ...(r.rows[0] as any) });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  // ─── ADMIN: Local pool ride list (used by admin panel rides table) ───────────
+  app.get("/api/admin/local-pool/rides", adminAuth, async (req: any, res: any) => {
+    try {
+      const status = req.query.status as string | undefined;
+      const page = Math.max(1, parseInt(String(req.query.page || 1)));
+      const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || 50))));
+      const offset = (page - 1) * limit;
+
+      const whereStatus = status && status !== "all"
+        ? rawSql`AND dps.status = ${status}`
+        : rawSql``;
+
+      const r = await rawDb.execute(rawSql`
+        SELECT
+          dps.id, dps.status, dps.accepting_new_requests AS "acceptingNewRequests",
+          dps.max_seats AS "maxSeats", dps.available_seats AS "availableSeats",
+          (dps.max_seats - dps.available_seats) AS "bookedSeats",
+          dps.total_passengers_served AS "totalPassengersServed",
+          dps.total_earnings AS "totalEarnings",
+          dps.pool_vehicle_type AS "poolVehicleType",
+          dps.started_at AS "startedAt", dps.ended_at AS "endedAt",
+          u.full_name AS "driverName", u.phone AS "driverPhone",
+          dd.vehicle_number AS "vehicleNumber", dd.vehicle_model AS "vehicleModel",
+          dps.current_lat AS "currentLat", dps.current_lng AS "currentLng",
+          COUNT(prr.id) FILTER (WHERE prr.status = 'searching')::int               AS "searchingCount",
+          COUNT(prr.id) FILTER (WHERE prr.status = 'pending_driver_accept')::int   AS "pendingAcceptCount",
+          COUNT(prr.id) FILTER (WHERE prr.status = 'matched')::int                 AS "matchedCount",
+          COUNT(prr.id) FILTER (WHERE prr.status = 'picked_up')::int               AS "pickedUpCount",
+          COUNT(prr.id) FILTER (WHERE prr.status = 'dropped')::int                 AS "droppedCount"
+        FROM driver_pool_sessions dps
+        JOIN users u ON u.id = dps.driver_id
+        LEFT JOIN driver_details dd ON dd.user_id = dps.driver_id
+        LEFT JOIN pool_ride_requests prr ON prr.session_id = dps.id
+        WHERE 1=1 ${whereStatus}
+        GROUP BY dps.id, u.full_name, u.phone, dd.vehicle_number, dd.vehicle_model
+        ORDER BY dps.started_at DESC
+        LIMIT ${limit} OFFSET ${offset}
+      `);
+
+      const countR = await rawDb.execute(rawSql`
+        SELECT COUNT(*)::int AS total FROM driver_pool_sessions dps WHERE 1=1 ${whereStatus}
+      `).catch(() => ({ rows: [{ total: 0 }] }));
+
+      res.json({
+        success: true,
+        data: r.rows,
+        pagination: {
+          page,
+          limit,
+          total: (countR.rows[0] as any)?.total ?? 0,
+          pages: Math.ceil(((countR.rows[0] as any)?.total ?? 0) / limit),
+        },
+      });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  // ─── ADMIN: Local pool settings (read + save) ─────────────────────────────────
+  app.get("/api/admin/local-pool/settings", adminAuth, async (_req: any, res: any) => {
+    try {
+      const r = await rawDb.execute(rawSql`
+        SELECT key_name, value FROM business_settings
+        WHERE key_name IN (
+          'local_pool_mode',
+          'local_pool_collection_secs',
+          'local_pool_match_radius_km',
+          'local_pool_max_detour_km',
+          'local_pool_direction_tolerance_deg',
+          'max_seats_per_booking',
+          'base_fare_per_seat',
+          'fare_per_km_per_seat',
+          'min_fare_per_seat',
+          'max_fare_per_seat'
+        )
+      `).catch(() => ({ rows: [] as any[] }));
+      const settings: Record<string, string> = {};
+      for (const row of r.rows as any[]) {
+        settings[row.key_name] = String(row.value ?? "");
+      }
+      res.json({ success: true, settings });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  app.patch("/api/admin/local-pool/settings", adminAuth, async (req: any, res: any) => {
+    try {
+      const allowed = new Set([
+        "local_pool_mode",
+        "local_pool_collection_secs",
+        "local_pool_match_radius_km",
+        "local_pool_max_detour_km",
+        "local_pool_direction_tolerance_deg",
+        "max_seats_per_booking",
+        "base_fare_per_seat",
+        "fare_per_km_per_seat",
+        "min_fare_per_seat",
+        "max_fare_per_seat",
+      ]);
+      const updates = Object.entries(req.body || {}).filter(([k]) => allowed.has(k));
+      if (!updates.length) return res.status(400).json({ success: false, message: "No valid settings provided" });
+
+      for (const [key, value] of updates) {
+        await rawDb.execute(rawSql`
+          INSERT INTO business_settings (key_name, value) VALUES (${key}, ${String(value)})
+          ON CONFLICT (key_name) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+        `);
+      }
+      res.json({ success: true, message: "Local pool settings updated" });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  // ─── ADMIN: Per-session passenger list (used by PassengersModal) ──────────────
+  app.get("/api/admin/local-pool/rides/:sessionId/passengers", adminAuth, async (req: any, res: any) => {
+    try {
+      const sessionId = String(req.params.sessionId);
+      const r = await rawDb.execute(rawSql`
+        SELECT prr.id, prr.status, prr.seats_requested AS "seatsRequested",
+               prr.fare_per_seat AS "farePerSeat", prr.total_fare AS "totalFare",
+               prr.gst_amount AS "gstAmount", prr.commission_amount AS "commissionAmount",
+               prr.pickup_lat AS "pickupLat", prr.pickup_lng AS "pickupLng",
+               prr.drop_lat AS "dropLat", prr.drop_lng AS "dropLng",
+               prr.pickup_address AS "pickupAddress", prr.drop_address AS "dropAddress",
+               u.full_name AS "customerName", u.phone AS "customerPhone"
+        FROM pool_ride_requests prr
+        JOIN users u ON u.id = prr.customer_id
+        WHERE prr.session_id = ${sessionId}::uuid
+        ORDER BY prr.pickup_order ASC NULLS LAST, prr.created_at ASC
+      `);
+      res.json({ success: true, data: r.rows });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  app.get("/api/admin/pool/sessions", adminAuth, async (req: any, res: any) => {
     try {
       const r = await rawDb.execute(rawSql`
         SELECT dps.*,
@@ -1852,7 +1984,7 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
     }
   });
 
-  app.get("/api/admin/pool/stats", requireAdminAuth || ((_req: any, _res: any, next: any) => next()), async (_req: any, res: any) => {
+  app.get("/api/admin/pool/stats", adminAuth, async (_req: any, res: any) => {
     try {
       const r = await rawDb.execute(rawSql`
         SELECT

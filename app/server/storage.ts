@@ -63,7 +63,6 @@ export interface IStorage {
   deleteBlog(id: string): Promise<void>;
   // Withdraw Requests
   getWithdrawRequests(status?: string): Promise<any[]>;
-  updateWithdrawStatus(id: string, status: string): Promise<WithdrawRequest>;
   // Dashboard stats
   getDashboardStats(): Promise<any>;
   // Cancellation reasons
@@ -310,11 +309,6 @@ export class DatabaseStorage implements IStorage {
       .leftJoin(users, eq(withdrawRequests.userId, users.id))
       .where(conditions.length ? and(...conditions) : undefined as any)
       .orderBy(desc(withdrawRequests.createdAt));
-  }
-
-  async updateWithdrawStatus(id: string, status: string): Promise<WithdrawRequest> {
-    const [updated] = await db.update(withdrawRequests).set({ status }).where(eq(withdrawRequests.id, id)).returning();
-    return updated;
   }
 
   async getDashboardStats(): Promise<any> {

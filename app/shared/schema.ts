@@ -1,4 +1,4 @@
-import { pgTable, text, varchar, boolean, timestamp, doublePrecision, numeric, integer, uuid } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, boolean, timestamp, doublePrecision, numeric, integer, uuid, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { sql } from "drizzle-orm";
@@ -95,13 +95,29 @@ export const zones = pgTable("zones", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+export const bookingIntents = pgTable("booking_intents", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  customerId: uuid("customer_id").notNull().references(() => users.id),
+  status: varchar("status", { length: 40 }).notNull().default("initiated"),
+  quotedAmount: numeric("quoted_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  paymentMethod: varchar("payment_method", { length: 40 }),
+  tripType: varchar("trip_type", { length: 40 }).notNull().default("normal"),
+  payload: jsonb("payload").notNull().default(sql`'{}'::jsonb`),
+  razorpayOrderId: varchar("razorpay_order_id", { length: 120 }),
+  razorpayPaymentId: varchar("razorpay_payment_id", { length: 120 }),
+  tripId: uuid("trip_id"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
 export const tripRequests = pgTable("trip_requests", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   refId: varchar("ref_id", { length: 20 }).notNull().unique(),
-  customerId: uuid("customer_id"),
-  driverId: uuid("driver_id"),
-  vehicleCategoryId: uuid("vehicle_category_id"),
-  zoneId: uuid("zone_id"),
+  customerId: uuid("customer_id").references(() => users.id),
+  driverId: uuid("driver_id").references(() => users.id),
+  vehicleCategoryId: uuid("vehicle_category_id").references(() => vehicleCategories.id),
+  zoneId: uuid("zone_id").references(() => zones.id),
+  bookingIntentId: uuid("booking_intent_id").references(() => bookingIntents.id),
   pickupAddress: text("pickup_address"),
   destinationAddress: text("destination_address"),
   pickupLat: doublePrecision("pickup_lat"),
@@ -135,8 +151,8 @@ export const tripRequests = pgTable("trip_requests", {
 
 export const transactions = pgTable("transactions", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: uuid("user_id"),
-  tripId: uuid("trip_id"),
+  userId: uuid("user_id").references(() => users.id),
+  tripId: uuid("trip_id").references(() => tripRequests.id),
   account: varchar("account", { length: 50 }),
   debit: numeric("debit", { precision: 23, scale: 3 }).default("0"),
   credit: numeric("credit", { precision: 23, scale: 3 }).default("0"),
@@ -157,8 +173,8 @@ export const businessSettings = pgTable("business_settings", {
 
 export const tripFares = pgTable("trip_fares", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  zoneId: uuid("zone_id"),
-  vehicleCategoryId: uuid("vehicle_category_id"),
+  zoneId: uuid("zone_id").references(() => zones.id),
+  vehicleCategoryId: uuid("vehicle_category_id").references(() => vehicleCategories.id),
   baseFare: numeric("base_fare", { precision: 23, scale: 3 }).default("0"),
   farePerKm: numeric("fare_per_km", { precision: 23, scale: 3 }).default("0"),
   farePerMin: numeric("fare_per_min", { precision: 23, scale: 3 }).default("0"),
@@ -188,9 +204,9 @@ export const couponSetups = pgTable("coupon_setups", {
 
 export const reviews = pgTable("reviews", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  tripId: uuid("trip_id"),
-  reviewerId: uuid("reviewer_id"),
-  revieweeId: uuid("reviewee_id"),
+  tripId: uuid("trip_id").references(() => tripRequests.id),
+  reviewerId: uuid("reviewer_id").references(() => users.id),
+  revieweeId: uuid("reviewee_id").references(() => users.id),
   reviewerType: varchar("reviewer_type", { length: 50 }),
   rating: numeric("rating", { precision: 3, scale: 1 }),
   feedback: text("feedback"),
@@ -199,10 +215,10 @@ export const reviews = pgTable("reviews", {
 
 export const driverDetails = pgTable("driver_details", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: uuid("user_id").unique(),
+  userId: uuid("user_id").unique().references(() => users.id),
   drivingLicenseId: varchar("driving_license_id", { length: 191 }),
-  vehicleCategoryId: uuid("vehicle_category_id"),
-  zoneId: uuid("zone_id"),
+  vehicleCategoryId: uuid("vehicle_category_id").references(() => vehicleCategories.id),
+  zoneId: uuid("zone_id").references(() => zones.id),
   availabilityStatus: varchar("availability_status", { length: 50 }).default("offline"),
   isOnline: boolean("is_online").default(false),
   totalTrips: integer("total_trips").default(0),
@@ -230,7 +246,8 @@ export const blogs = pgTable("blogs", {
 
 export const withdrawRequests = pgTable("withdraw_requests", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: uuid("user_id"),
+  userId: uuid("user_id").references(() => users.id),
+  driverPaymentId: uuid("driver_payment_id"),
   amount: numeric("amount", { precision: 23, scale: 3 }).default("0"),
   note: text("note"),
   status: varchar("status", { length: 50 }).default("pending"),
@@ -286,7 +303,7 @@ export const employees = pgTable("employees", {
   email: varchar("email", { length: 191 }).notNull().unique(),
   phone: varchar("phone", { length: 20 }),
   role: varchar("role", { length: 50 }).default("employee"),
-  zoneId: uuid("zone_id"),
+  zoneId: uuid("zone_id").references(() => zones.id),
   passwordHash: varchar("password_hash", { length: 255 }),
   isActive: boolean("is_active").default(true),
   createdAt: timestamp("created_at").defaultNow(),
@@ -307,7 +324,7 @@ export const b2bCompanies = pgTable("b2b_companies", {
   walletBalance: numeric("wallet_balance", { precision: 12, scale: 2 }).default("0"),
   totalTrips: integer("total_trips").default(0),
   // App-registration fields (added via ALTER TABLE migration)
-  ownerId: uuid("owner_id"),
+  ownerId: uuid("owner_id").references(() => users.id),
   contactName: varchar("contact_name", { length: 255 }),
   contactPhone: varchar("contact_phone", { length: 20 }),
   deliveryPlan: varchar("delivery_plan", { length: 50 }).default("pay_per_delivery"),
@@ -345,14 +362,14 @@ export const vehicleBrands = pgTable("vehicle_brands", {
 export const vehicleModels = pgTable("vehicle_models", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   name: varchar("name", { length: 255 }).notNull(),
-  brandId: uuid("brand_id"),
+  brandId: uuid("brand_id").references(() => vehicleBrands.id),
   isActive: boolean("is_active").default(true),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
 export const parcelFares = pgTable("parcel_fares", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  zoneId: uuid("zone_id"),
+  zoneId: uuid("zone_id").references(() => zones.id),
   baseFare: numeric("base_fare", { precision: 23, scale: 3 }).default("0"),
   farePerKm: numeric("fare_per_km", { precision: 23, scale: 3 }).default("0"),
   farePerKg: numeric("fare_per_kg", { precision: 23, scale: 3 }).default("0"),
@@ -365,7 +382,7 @@ export const parcelFares = pgTable("parcel_fares", {
 
 export const surgePricing = pgTable("surge_pricing", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  zoneId: uuid("zone_id"),
+  zoneId: uuid("zone_id").references(() => zones.id),
   startTime: varchar("start_time", { length: 10 }),
   endTime: varchar("end_time", { length: 10 }),
   multiplier: numeric("multiplier", { precision: 5, scale: 2 }).default("1"),
@@ -376,7 +393,7 @@ export const surgePricing = pgTable("surge_pricing", {
 
 export const vehicleRequests = pgTable("vehicle_requests", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  driverId: uuid("driver_id"),
+  driverId: uuid("driver_id").references(() => users.id),
   vehicleName: varchar("vehicle_name", { length: 255 }),
   registrationNo: varchar("registration_no", { length: 100 }),
   status: varchar("status", { length: 50 }).default("pending"),
@@ -406,9 +423,9 @@ export const subscriptionPlans = pgTable("subscription_plans", {
 
 export const referrals = pgTable("referrals", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  referrerId: uuid("referrer_id").notNull(),
-  referredId: uuid("referred_id"),
-  referralCode: varchar("referral_code", { length: 20 }).notNull(),
+  referrerId: uuid("referrer_id").notNull().references(() => users.id),
+  referredId: uuid("referred_id").references(() => users.id),
+  referralCode: varchar("referral_code", { length: 30 }).notNull(),
   referralType: varchar("referral_type", { length: 30 }).notNull().default("customer"),
   rewardAmount: numeric("reward_amount", { precision: 10, scale: 2 }).default("0"),
   status: varchar("status", { length: 30 }).notNull().default("pending"),
@@ -428,7 +445,7 @@ export const notificationLogs = pgTable("notification_logs", {
 
 export const savedPlaces = pgTable("saved_places", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: uuid("user_id").notNull(),
+  userId: uuid("user_id").notNull().references(() => users.id),
   label: varchar("label", { length: 50 }).notNull(),
   address: text("address").notNull(),
   lat: doublePrecision("lat").notNull().default(0),
@@ -470,8 +487,8 @@ export type AppLanguage = typeof appLanguages.$inferSelect;
 
 export const tripMessages = pgTable("trip_messages", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  tripId: uuid("trip_id").notNull(),
-  senderId: uuid("sender_id").notNull(),
+  tripId: uuid("trip_id").notNull().references(() => tripRequests.id),
+  senderId: uuid("sender_id").notNull().references(() => users.id),
   senderType: varchar("sender_type", { length: 20 }).notNull().default("customer"),
   senderName: varchar("sender_name", { length: 255 }),
   message: text("message").notNull(),
@@ -485,8 +502,8 @@ export type TripMessage = typeof tripMessages.$inferSelect;
 // Local pool rides — dynamic on-demand seat matching for city carpool
 export const localPoolRides = pgTable("local_pool_rides", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  driverId: uuid("driver_id"),
-  vehicleCategoryId: uuid("vehicle_category_id"),
+  driverId: uuid("driver_id").references(() => users.id),
+  vehicleCategoryId: uuid("vehicle_category_id").references(() => vehicleCategories.id),
   pickupLat: doublePrecision("pickup_lat"),
   pickupLng: doublePrecision("pickup_lng"),
   destinationLat: doublePrecision("destination_lat"),
@@ -500,8 +517,8 @@ export const localPoolRides = pgTable("local_pool_rides", {
   distanceKm: doublePrecision("distance_km").default(0),
   status: varchar("status", { length: 30 }).default("collecting"),
   collectionDeadline: timestamp("collection_deadline"),
-  zoneId: uuid("zone_id"),
-  dispatchTripId: uuid("dispatch_trip_id"),
+  zoneId: uuid("zone_id").references(() => zones.id),
+  dispatchTripId: uuid("dispatch_trip_id").references(() => tripRequests.id),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -509,9 +526,9 @@ export const localPoolRides = pgTable("local_pool_rides", {
 // Passengers within a local pool ride
 export const localPoolPassengers = pgTable("local_pool_passengers", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  poolRideId: uuid("pool_ride_id").notNull(),
-  tripRequestId: uuid("trip_request_id"),
-  customerId: uuid("customer_id").notNull(),
+  poolRideId: uuid("pool_ride_id").notNull().references(() => localPoolRides.id),
+  tripRequestId: uuid("trip_request_id").references(() => tripRequests.id),
+  customerId: uuid("customer_id").notNull().references(() => users.id),
   pickupLat: doublePrecision("pickup_lat"),
   pickupLng: doublePrecision("pickup_lng"),
   dropLat: doublePrecision("drop_lat"),

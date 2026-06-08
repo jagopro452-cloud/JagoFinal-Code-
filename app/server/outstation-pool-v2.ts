@@ -16,6 +16,7 @@ import { io } from "./socket";
 import { calculateRevenueBreakdown, settleRevenue } from "./revenue-engine";
 import { enforceDriverRevenuePolicy } from "./revenue-policy";
 import { sendFcmNotification } from "./fcm";
+import { assertSchemaObjectsOrThrow } from "./schema-health";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -94,144 +95,11 @@ function isPoolVehicleCategory(row: any): boolean {
 // ── Schema migration (safe — all IF NOT EXISTS / ADD COLUMN IF NOT EXISTS) ──
 
 export async function ensureOutstationPoolV2Schema(): Promise<void> {
-  // Add new columns to existing outstation_pool_rides
-  const rideAlters = [
-    `ALTER TABLE outstation_pool_rides ADD COLUMN IF NOT EXISTS price_per_km_per_seat NUMERIC(10,2) DEFAULT ${DEFAULT_PRICE_PER_KM_PER_SEAT}`,
-    `ALTER TABLE outstation_pool_rides ADD COLUMN IF NOT EXISTS from_lat NUMERIC(10,7)`,
-    `ALTER TABLE outstation_pool_rides ADD COLUMN IF NOT EXISTS from_lng NUMERIC(10,7)`,
-    `ALTER TABLE outstation_pool_rides ADD COLUMN IF NOT EXISTS to_lat NUMERIC(10,7)`,
-    `ALTER TABLE outstation_pool_rides ADD COLUMN IF NOT EXISTS to_lng NUMERIC(10,7)`,
-    `ALTER TABLE outstation_pool_rides ADD COLUMN IF NOT EXISTS current_lat NUMERIC(10,7)`,
-    `ALTER TABLE outstation_pool_rides ADD COLUMN IF NOT EXISTS current_lng NUMERIC(10,7)`,
-    `ALTER TABLE outstation_pool_rides ADD COLUMN IF NOT EXISTS accepting_new_requests BOOLEAN NOT NULL DEFAULT true`,
-    `ALTER TABLE outstation_pool_rides ADD COLUMN IF NOT EXISTS state_version INTEGER NOT NULL DEFAULT 1`,
-    `ALTER TABLE outstation_pool_rides ADD COLUMN IF NOT EXISTS route_plan JSONB NOT NULL DEFAULT '[]'`,
-    `ALTER TABLE outstation_pool_rides ADD COLUMN IF NOT EXISTS vehicle_category_id UUID`,
-  ];
-  for (const sql of rideAlters) {
-    await rawDb.execute(rawSql.raw(sql)).catch(() => undefined);
-  }
+  await assertSchemaObjectsOrThrow({
+    tables: ["outstation_pool_rides", "outstation_pool_bookings", "pool_issue_cases", "pool_messages", "pool_ratings", "pool_user_blocks"],
+  });
 
-  // Add new columns to existing outstation_pool_bookings
-  const bookingAlters = [
-    `ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS pickup_lat NUMERIC(10,7)`,
-    `ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS pickup_lng NUMERIC(10,7)`,
-    `ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS drop_lat NUMERIC(10,7)`,
-    `ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS drop_lng NUMERIC(10,7)`,
-    `ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS segment_km NUMERIC(10,2) DEFAULT 0`,
-    `ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS fare_per_seat NUMERIC(10,2) DEFAULT 0`,
-    `ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS pickup_order INTEGER DEFAULT 1`,
-    `ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS picked_up_at TIMESTAMP`,
-    `ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS dropped_at TIMESTAMP`,
-    `ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS driver_earnings NUMERIC(10,2)`,
-    `ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS revenue_model VARCHAR(40)`,
-    `ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS cancel_reason TEXT`,
-    `ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMP`,
-    `ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS cancelled_by VARCHAR(30) DEFAULT 'customer'`,
-    `ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS refund_amount NUMERIC(10,2) DEFAULT 0`,
-    `ALTER TABLE outstation_pool_bookings ADD COLUMN IF NOT EXISTS refund_status VARCHAR(30) DEFAULT 'not_applicable'`,
-  ];
-  for (const sql of bookingAlters) {
-    await rawDb.execute(rawSql.raw(sql)).catch(() => undefined);
-  }
-
-  await rawDb.execute(rawSql`
-    CREATE TABLE IF NOT EXISTS pool_issue_cases (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      module VARCHAR(30) NOT NULL,
-      reference_type VARCHAR(30) NOT NULL,
-      reference_id UUID NOT NULL,
-      ride_id UUID,
-      customer_id UUID,
-      driver_id UUID,
-      reported_user_id UUID,
-      reported_by_role VARCHAR(30) NOT NULL,
-      issue_channel VARCHAR(30) NOT NULL DEFAULT 'report',
-      category VARCHAR(60) NOT NULL,
-      description TEXT,
-      evidence_urls JSONB NOT NULL DEFAULT '[]',
-      admin_updates JSONB NOT NULL DEFAULT '[]',
-      status VARCHAR(30) NOT NULL DEFAULT 'open',
-      resolution_note TEXT,
-      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-    )
-  `).catch(() => undefined);
-
-  await rawDb.execute(rawSql`
-    CREATE TABLE IF NOT EXISTS pool_messages (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      module VARCHAR(30) NOT NULL,
-      reference_id UUID NOT NULL,
-      sender_id UUID NOT NULL,
-      sender_type VARCHAR(30) NOT NULL,
-      sender_name TEXT,
-      message TEXT NOT NULL,
-      created_at TIMESTAMP NOT NULL DEFAULT NOW()
-    )
-  `).catch(() => undefined);
-  await rawDb.execute(rawSql`
-    CREATE INDEX IF NOT EXISTS idx_pool_messages_ref
-    ON pool_messages(module, reference_id, created_at ASC)
-  `).catch(() => undefined);
-  await rawDb.execute(rawSql`
-    ALTER TABLE pool_issue_cases
-    ADD COLUMN IF NOT EXISTS admin_updates JSONB NOT NULL DEFAULT '[]'
-  `).catch(() => undefined);
-  await rawDb.execute(rawSql`
-    CREATE INDEX IF NOT EXISTS idx_pool_issue_cases_ref
-    ON pool_issue_cases(reference_type, reference_id, created_at DESC)
-  `).catch(() => undefined);
-  await rawDb.execute(rawSql`
-    CREATE INDEX IF NOT EXISTS idx_pool_issue_cases_status
-    ON pool_issue_cases(status, created_at DESC)
-  `).catch(() => undefined);
-
-  await rawDb.execute(rawSql`
-    CREATE TABLE IF NOT EXISTS pool_ratings (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      module VARCHAR(30) NOT NULL,
-      reference_type VARCHAR(30) NOT NULL,
-      reference_id UUID NOT NULL,
-      ride_id UUID,
-      from_user_id UUID NOT NULL,
-      to_user_id UUID NOT NULL,
-      rating_role VARCHAR(40) NOT NULL,
-      overall_rating NUMERIC(3,1) NOT NULL,
-      safety_rating NUMERIC(3,1),
-      cleanliness_rating NUMERIC(3,1),
-      behaviour_rating NUMERIC(3,1),
-      punctuality_rating NUMERIC(3,1),
-      note TEXT,
-      created_at TIMESTAMP NOT NULL DEFAULT NOW()
-    )
-  `).catch(() => undefined);
-  await rawDb.execute(rawSql`
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_pool_ratings_once
-    ON pool_ratings(reference_type, reference_id, from_user_id, rating_role)
-  `).catch(() => undefined);
-  await rawDb.execute(rawSql`
-    CREATE TABLE IF NOT EXISTS pool_user_blocks (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      blocker_user_id UUID NOT NULL,
-      blocked_user_id UUID NOT NULL,
-      module VARCHAR(30) NOT NULL DEFAULT 'pool',
-      reference_type VARCHAR(30),
-      reference_id UUID,
-      created_by_role VARCHAR(30) NOT NULL,
-      reason TEXT,
-      active BOOLEAN NOT NULL DEFAULT true,
-      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-    )
-  `).catch(() => undefined);
-  await rawDb.execute(rawSql`
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_pool_user_blocks_active
-    ON pool_user_blocks(blocker_user_id, blocked_user_id, module)
-    WHERE active = true
-  `).catch(() => undefined);
-
-  console.log("[OUTSTATION-V2] Schema columns ensured");
+  console.log("[OUTSTATION-V2] Schema verified");
 }
 
 async function getPoolRefundPolicy() {
@@ -485,6 +353,7 @@ function calcSegmentFare(segmentKm: number, seats: number, pricePerKmPerSeat: nu
 // ── Route registration ────────────────────────────────────────────────────────
 
 export function registerOutstationPoolV2Routes(app: Express, authApp: any, requireAdminAuth?: any): void {
+  const adminAuth = requireAdminAuth ?? ((_req: any, res: any) => res.status(401).json({ message: "Admin authentication not configured" }));
 
   // ─── DRIVER: Post a trip WITH coordinates + price_per_km ─────────────────
   // Replaces the old flat fare_per_seat model. Both are stored.
@@ -738,11 +607,16 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any, requi
       const driver = req.currentUser;
       const rideId = String(req.params.id);
       const { lat, lng } = req.body;
-      if (!lat || !lng) return res.status(400).json({ message: "lat/lng required" });
+      const latN = parseFloat(lat);
+      const lngN = parseFloat(lng);
+      if (!lat || !lng || !isFinite(latN) || !isFinite(lngN) ||
+          latN < -90 || latN > 90 || lngN < -180 || lngN > 180) {
+        return res.status(400).json({ message: "Valid lat/lng required" });
+      }
 
       await rawDb.execute(rawSql`
         UPDATE outstation_pool_rides
-        SET current_lat = ${parseFloat(lat)}, current_lng = ${parseFloat(lng)}, updated_at = NOW()
+        SET current_lat = ${latN}, current_lng = ${lngN}, updated_at = NOW()
         WHERE id = ${rideId}::uuid AND driver_id = ${driver.id}::uuid AND status = 'active'
       `);
 
@@ -753,7 +627,7 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any, requi
       `).catch(() => ({ rows: [] as any[] }));
       for (const p of passR.rows as any[]) {
         io.to(`user:${p.customer_id}`).emit("outstation_pool:driver_location", {
-          rideId, lat: parseFloat(lat), lng: parseFloat(lng),
+          rideId, lat: latN, lng: lngN,
         });
       }
 
@@ -846,7 +720,7 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any, requi
       );
       await client.query(
         `UPDATE outstation_pool_rides
-         SET available_seats = available_seats + $1, updated_at = NOW()
+         SET available_seats = LEAST(total_seats, available_seats + $1), state_version = state_version + 1, updated_at = NOW()
          WHERE id = $2::uuid`,
         [seatsBooked, booking.ride_id],
       );
@@ -1292,22 +1166,38 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any, requi
       const refundAmount = Math.round(fare * Math.max(0, refundPct) / 100 * 100) / 100;
       const refundStatus = refundAmount > 0 ? "pending" : "not_applicable";
 
-      await rawDb.execute(rawSql`
-        UPDATE outstation_pool_bookings
-        SET status = 'cancelled',
-            cancel_reason = ${reason},
-            cancelled_at = NOW(),
-            cancelled_by = 'customer',
-            refund_amount = ${refundAmount},
-            refund_status = ${refundStatus},
-            updated_at = NOW()
-        WHERE id = ${bookingId}::uuid
-      `);
-      await rawDb.execute(rawSql`
-        UPDATE outstation_pool_rides
-        SET available_seats = available_seats + ${parseInt(booking.seats_booked) || 1}, updated_at = NOW()
-        WHERE id = ${booking.ride_id}::uuid
-      `);
+      // Atomic cancel: status guard prevents concurrent double-cancel + double seat release
+      const cancelClient = await dbPool.connect();
+      let cancelledRows = 0;
+      try {
+        await cancelClient.query("BEGIN");
+        const cancelR = await cancelClient.query(
+          `UPDATE outstation_pool_bookings
+           SET status = 'cancelled', cancel_reason = $1, cancelled_at = NOW(),
+               cancelled_by = 'customer', refund_amount = $2, refund_status = $3, updated_at = NOW()
+           WHERE id = $4::uuid AND customer_id = $5::uuid
+             AND status NOT IN ('picked_up', 'dropped', 'cancelled', 'completed')`,
+          [reason, refundAmount, refundStatus, bookingId, customer.id],
+        );
+        cancelledRows = cancelR.rowCount ?? 0;
+        if (cancelledRows > 0) {
+          await cancelClient.query(
+            `UPDATE outstation_pool_rides
+             SET available_seats = LEAST(total_seats, available_seats + $1), state_version = state_version + 1, updated_at = NOW()
+             WHERE id = $2::uuid`,
+            [parseInt(booking.seats_booked) || 1, booking.ride_id],
+          );
+        }
+        await cancelClient.query("COMMIT");
+      } catch (txErr) {
+        await cancelClient.query("ROLLBACK");
+        throw txErr;
+      } finally {
+        cancelClient.release();
+      }
+      if (cancelledRows === 0) {
+        return res.json({ success: true, message: "Already completed/cancelled" });
+      }
 
       if (refundAmount > 0) {
         await rawDb.execute(rawSql`
@@ -1857,7 +1747,7 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any, requi
     }
   });
 
-  app.get("/api/admin/pool/operations/overview", requireAdminAuth || ((_req: any, _res: any, next: any) => next()), async (_req: any, res: any) => {
+  app.get("/api/admin/pool/operations/overview", adminAuth, async (_req: any, res: any) => {
     try {
       const [outstationStatsR, localStatsR, issueStatsR, refundStatsR, ratingsR] = await Promise.all([
         rawDb.execute(rawSql`
@@ -1914,7 +1804,7 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any, requi
     }
   });
 
-  app.get("/api/admin/pool/issues", requireAdminAuth || ((_req: any, _res: any, next: any) => next()), async (req: any, res: any) => {
+  app.get("/api/admin/pool/issues", adminAuth, async (req: any, res: any) => {
     try {
       const status = String(req.query.status || "all");
       const r = await rawDb.execute(rawSql`
@@ -1936,7 +1826,7 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any, requi
     }
   });
 
-  app.get("/api/admin/pool/issues/:id", requireAdminAuth || ((_req: any, _res: any, next: any) => next()), async (req: any, res: any) => {
+  app.get("/api/admin/pool/issues/:id", adminAuth, async (req: any, res: any) => {
     try {
       const id = String(req.params.id);
       const r = await rawDb.execute(rawSql`
@@ -1959,7 +1849,7 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any, requi
     }
   });
 
-  app.patch("/api/admin/pool/issues/:id", requireAdminAuth || ((_req: any, _res: any, next: any) => next()), async (req: any, res: any) => {
+  app.patch("/api/admin/pool/issues/:id", adminAuth, async (req: any, res: any) => {
     try {
       const id = String(req.params.id);
       const nextStatus = String(req.body?.status || "under_review");
@@ -2043,7 +1933,7 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any, requi
     }
   });
 
-  app.get("/api/admin/pool/blocks", requireAdminAuth || ((_req: any, _res: any, next: any) => next()), async (_req: any, res: any) => {
+  app.get("/api/admin/pool/blocks", adminAuth, async (_req: any, res: any) => {
     try {
       const r = await rawDb.execute(rawSql`
         SELECT pub.*,
@@ -2062,7 +1952,7 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any, requi
     }
   });
 
-  app.get("/api/admin/pool/ratings", requireAdminAuth || ((_req: any, _res: any, next: any) => next()), async (_req: any, res: any) => {
+  app.get("/api/admin/pool/ratings", adminAuth, async (_req: any, res: any) => {
     try {
       const r = await rawDb.execute(rawSql`
         SELECT pr.*,
@@ -2080,7 +1970,7 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any, requi
     }
   });
 
-  app.get("/api/admin/pool/safety-review", requireAdminAuth || ((_req: any, _res: any, next: any) => next()), async (_req: any, res: any) => {
+  app.get("/api/admin/pool/safety-review", adminAuth, async (_req: any, res: any) => {
     try {
       const [alertsR, summaryR] = await Promise.all([
         rawDb.execute(rawSql`
@@ -2118,7 +2008,7 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any, requi
     }
   });
 
-  app.post("/api/admin/pool/blocks", requireAdminAuth || ((_req: any, _res: any, next: any) => next()), async (req: any, res: any) => {
+  app.post("/api/admin/pool/blocks", adminAuth, async (req: any, res: any) => {
     try {
       const blockerUserId = String(req.body?.blockerUserId || "").trim();
       const blockedUserId = String(req.body?.blockedUserId || "").trim();
