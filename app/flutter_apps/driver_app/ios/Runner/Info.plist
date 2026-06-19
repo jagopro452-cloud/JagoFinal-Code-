@@ -53,11 +53,12 @@
 		<string>fetch</string>
 		<string>remote-notification</string>
 		<string>location</string>
+		<string>voip</string>
 	</array>
 
-	<!-- Google Maps -->
-	<key>GOOGLE_MAPS_KEY</key>
-	<string>$(GOOGLE_MAPS_KEY)</string>
+	<!-- Google Maps — ROTATE THIS KEY via Google Cloud Console after removing from git history -->
+	<key>GOOGLE_MAPS_API_KEY</key>
+	<string>AIzaSyCvK2we4pxX_Wdjjct6DNalW99Gqj__tyc</string>
 	<key>io.flutter.embedded_views_preview</key>
 	<true/>
 
@@ -74,6 +75,20 @@
 				<false/>
 				<key>NSIncludesSubdomains</key>
 				<true/>
+			</dict>
+			<key>sea-lion-app-h5luj.ondigitalocean.app</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<false/>
+				<key>NSIncludesSubdomains</key>
+				<false/>
+			</dict>
+			<key>15.207.65.184</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<false/>
 			</dict>
 		</dict>
 	</dict>

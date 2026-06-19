@@ -1124,7 +1124,7 @@ const ADMIN_PERMISSION_MATRIX: Record<string, string[]> = {
   superadmin: ["*"],
   finance: ["finance.read", "finance.write"],
   finance_admin: ["finance.read", "finance.write"],
-  admin: ["ops.read", "ops.write", "pricing.write", "support.write"],
+  admin: ["ops.read", "ops.write", "pricing.write", "support.write", "finance.read"],
   support: ["support.write"],
 };
 
@@ -6993,7 +6993,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
-  app.patch("/api/admin/outstation-pool/settings", requireAdminAuth, requireFinanceWrite, async (req, res) => {
+  app.patch("/api/admin/outstation-pool/settings", requireAdminAuth, requireAdminPermission("ops.write"), async (req, res) => {
     try {
       const { mode } = req.body; // 'on' | 'off'
       if (!['on', 'off'].includes(mode)) return res.status(400).json({ message: "mode must be 'on' or 'off'" });
@@ -9214,9 +9214,34 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/app/driver/arrived", authApp, requireDriver, async (req, res) => {
     try {
       const driver = (req as any).currentUser;
-      const { tripId } = req.body;
+      const { tripId, lat, lng } = req.body;
       if (!tripId) {
         return res.status(400).json({ message: "tripId required" });
+      }
+
+      const PICKUP_ARRIVE_RADIUS_M = 250;
+      if (lat != null && lng != null) {
+        try {
+          const driverCoords = validateLatLng(lat, lng);
+          const locR = await rawDb.execute(rawSql`
+            SELECT pickup_lat, pickup_lng FROM trip_requests WHERE id=${tripId}::uuid LIMIT 1
+          `);
+          const pLat = parseFloat(String((locR.rows[0] as any)?.pickup_lat ?? ""));
+          const pLng = parseFloat(String((locR.rows[0] as any)?.pickup_lng ?? ""));
+          if (Number.isFinite(pLat) && Number.isFinite(pLng) && pLat !== 0 && pLng !== 0) {
+            const distM = haversineKm(driverCoords.lat, driverCoords.lng, pLat, pLng) * 1000;
+            if (distM > PICKUP_ARRIVE_RADIUS_M) {
+              return res.status(400).json({
+                message: `Move closer to pickup (${Math.round(distM)}m away). Must be within ${PICKUP_ARRIVE_RADIUS_M}m.`,
+                code: "TOO_FAR_FROM_PICKUP",
+                distanceMeters: Math.round(distM),
+                requiredRadiusMeters: PICKUP_ARRIVE_RADIUS_M,
+              });
+            }
+          }
+        } catch (geoErr: any) {
+          return res.status(400).json({ message: geoErr.message || "Invalid driver coordinates" });
+        }
       }
 
       const arrivedOutcome = await rawDb.transaction(async (tx) => {
@@ -15088,6 +15113,194 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
   // ??????????????????????????????????????????????????????????????????
   // ??????????????????????????????????????????????????????????????????
+  // CAR SHARING — Driver post & manage pool rides
+  // ??????????????????????????????????????????????????????????????????
+  app.get('/api/app/driver/car-sharing/rides', authApp, requireDriver, async (req, res) => {
+    try {
+      const driver = (req as any).currentUser;
+      const r = await rawDb.execute(rawSql`
+        SELECT cs.*,
+          COALESCE((SELECT SUM(b.seats_booked) FROM car_sharing_bookings b WHERE b.ride_id = cs.id AND b.status != 'cancelled'),0) as booked_seats,
+          GREATEST(0, cs.max_seats - COALESCE((SELECT SUM(b.seats_booked) FROM car_sharing_bookings b WHERE b.ride_id = cs.id AND b.status != 'cancelled'),0)) as available_seats
+        FROM car_sharing_rides cs
+        WHERE cs.driver_id = ${driver.id}::uuid
+        ORDER BY cs.departure_time DESC
+      `);
+      res.json({ data: camelize(r.rows), total: r.rows.length });
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  app.post('/api/app/driver/car-sharing/create', authApp, requireDriver, async (req, res) => {
+    try {
+      const driver = (req as any).currentUser;
+      const { fromLocation, toLocation, departureDate, departureTime, totalSeats, farePerSeat, vehicleInfo, notes } = req.body;
+      if (!fromLocation || !toLocation || !departureDate || !departureTime) {
+        return res.status(400).json({ message: 'fromLocation, toLocation, departureDate and departureTime are required' });
+      }
+      const seats = parseInt(String(totalSeats || 4), 10);
+      const price = parseFloat(String(farePerSeat || 0));
+      if (!Number.isFinite(seats) || seats < 1 || seats > 6) {
+        return res.status(400).json({ message: 'totalSeats must be between 1 and 6' });
+      }
+      if (!Number.isFinite(price) || price <= 0) {
+        return res.status(400).json({ message: 'farePerSeat must be greater than 0' });
+      }
+      const depTs = new Date(`${String(departureDate).trim()}T${String(departureTime).trim()}`);
+      if (Number.isNaN(depTs.getTime())) {
+        return res.status(400).json({ message: 'Invalid departure date or time' });
+      }
+      if (depTs.getTime() <= Date.now()) {
+        return res.status(400).json({ message: 'Departure must be in the future' });
+      }
+      const vcR = await rawDb.execute(rawSql`
+        SELECT vehicle_category_id FROM driver_details WHERE user_id = ${driver.id}::uuid LIMIT 1
+      `).catch(() => ({ rows: [] as any[] }));
+      const vehicleCategoryId = (vcR.rows[0] as any)?.vehicle_category_id || null;
+      const noteText = [vehicleInfo, notes].filter(Boolean).join(' · ').trim() || null;
+      const ins = await rawDb.execute(rawSql`
+        INSERT INTO car_sharing_rides (
+          driver_id, vehicle_category_id, from_location, to_location,
+          departure_time, seat_price, max_seats, status, created_at, updated_at
+        )
+        VALUES (
+          ${driver.id}::uuid, ${vehicleCategoryId}::uuid, ${String(fromLocation).trim()}, ${String(toLocation).trim()},
+          ${depTs.toISOString()}, ${price}, ${seats}, 'active', NOW(), NOW()
+        )
+        RETURNING *
+      `);
+      res.status(201).json({ success: true, ride: camelize(ins.rows[0]) });
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  app.get('/api/app/driver/car-sharing/rides/:rideId/manifest', authApp, requireDriver, async (req, res) => {
+    try {
+      const driver = (req as any).currentUser;
+      const rideId = String(req.params.rideId || '');
+      const own = await rawDb.execute(rawSql`
+        SELECT id FROM car_sharing_rides WHERE id=${rideId}::uuid AND driver_id=${driver.id}::uuid LIMIT 1
+      `);
+      if (!own.rows.length) return res.status(404).json({ message: 'Ride not found' });
+      const r = await rawDb.execute(rawSql`
+        SELECT b.*, u.full_name as passenger_name, u.phone as passenger_phone
+        FROM car_sharing_bookings b
+        LEFT JOIN users u ON u.id = b.customer_id
+        WHERE b.ride_id=${rideId}::uuid AND b.status != 'cancelled'
+        ORDER BY b.created_at ASC
+      `);
+      res.json({ passengers: camelize(r.rows) });
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  app.post('/api/app/driver/car-sharing/rides/:rideId/start', authApp, requireDriver, async (req, res) => {
+    try {
+      const driver = (req as any).currentUser;
+      const rideId = String(req.params.rideId || '');
+      const upd = await rawDb.execute(rawSql`
+        UPDATE car_sharing_rides SET status='started', updated_at=NOW()
+        WHERE id=${rideId}::uuid AND driver_id=${driver.id}::uuid AND status IN ('active','scheduled')
+        RETURNING id
+      `);
+      if (!upd.rows.length) return res.status(404).json({ message: 'Ride not found or cannot be started' });
+      res.json({ success: true });
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  app.post('/api/app/driver/car-sharing/rides/:rideId/complete', authApp, requireDriver, async (req, res) => {
+    try {
+      const driver = (req as any).currentUser;
+      const rideId = String(req.params.rideId || '');
+      const fareR = await rawDb.execute(rawSql`
+        SELECT COALESCE(SUM(total_fare),0) as total FROM car_sharing_bookings
+        WHERE ride_id=${rideId}::uuid AND status != 'cancelled'
+      `);
+      const driverEarnings = parseFloat(String((fareR.rows[0] as any)?.total || 0));
+      const upd = await rawDb.execute(rawSql`
+        UPDATE car_sharing_rides SET status='completed', updated_at=NOW()
+        WHERE id=${rideId}::uuid AND driver_id=${driver.id}::uuid AND status IN ('active','started')
+        RETURNING id
+      `);
+      if (!upd.rows.length) return res.status(404).json({ message: 'Ride not found or already completed' });
+      res.json({ success: true, driverEarnings });
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  app.post('/api/app/driver/car-sharing/rides/:rideId/cancel', authApp, requireDriver, async (req, res) => {
+    try {
+      const driver = (req as any).currentUser;
+      const rideId = String(req.params.rideId || '');
+      const own = await rawDb.execute(rawSql`
+        SELECT id FROM car_sharing_rides WHERE id=${rideId}::uuid AND driver_id=${driver.id}::uuid LIMIT 1
+      `);
+      if (!own.rows.length) return res.status(404).json({ message: 'Ride not found' });
+      await rawDb.transaction(async (tx) => {
+        const bookings = await tx.execute(rawSql`
+          SELECT id, customer_id, total_fare FROM car_sharing_bookings
+          WHERE ride_id=${rideId}::uuid AND status != 'cancelled'
+        `);
+        for (const b of bookings.rows as any[]) {
+          const refund = parseFloat(String(b.total_fare || 0));
+          if (refund > 0) {
+            await tx.execute(rawSql`
+              UPDATE users SET wallet_balance = wallet_balance + ${refund} WHERE id=${b.customer_id}::uuid
+            `);
+          }
+          await tx.execute(rawSql`
+            UPDATE car_sharing_bookings SET status='cancelled' WHERE id=${b.id}::uuid
+          `);
+        }
+        await tx.execute(rawSql`
+          UPDATE car_sharing_rides SET status='cancelled', updated_at=NOW() WHERE id=${rideId}::uuid
+        `);
+      });
+      res.json({ success: true, message: 'Ride cancelled and passengers refunded' });
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  // Customer browse driver location for active car-sharing booking
+  app.get('/api/app/customer/car-sharing/bookings/:bookingId/driver-location', authApp, async (req, res) => {
+    try {
+      const user = (req as any).currentUser;
+      const bookingId = String(req.params.bookingId || '');
+      const r = await rawDb.execute(rawSql`
+        SELECT b.id, b.status, cs.status as ride_status, cs.from_location, cs.to_location,
+          dl.lat, dl.lng, dl.heading, dl.speed, dl.updated_at as location_updated_at,
+          u.full_name as driver_name, u.phone as driver_phone, vc.name as vehicle_name
+        FROM car_sharing_bookings b
+        JOIN car_sharing_rides cs ON cs.id = b.ride_id
+        LEFT JOIN users u ON u.id = cs.driver_id
+        LEFT JOIN driver_locations dl ON dl.driver_id = cs.driver_id
+        LEFT JOIN vehicle_categories vc ON vc.id = cs.vehicle_category_id
+        WHERE b.id=${bookingId}::uuid AND b.customer_id=${user.id}::uuid
+        LIMIT 1
+      `);
+      if (!r.rows.length) return res.status(404).json({ message: 'Booking not found' });
+      res.json({ location: camelize(r.rows[0]) });
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  // Alias: driver outstation manifest path used by older app builds
+  app.get('/api/app/driver/outstation-pool/rides/:id/bookings', authApp, requireDriver, async (req, res) => {
+    try {
+      const driver = (req as any).currentUser;
+      const rideId = String(req.params.id || '');
+      const ownRide = await rawDb.execute(rawSql`
+        SELECT id FROM outstation_pool_rides
+        WHERE id=${rideId}::uuid AND driver_id=${driver.id}::uuid
+        LIMIT 1
+      `);
+      if (!ownRide.rows.length) return res.status(404).json({ message: "Ride not found" });
+      const r = await rawDb.execute(rawSql`
+        SELECT opb.*, u.full_name as passenger_name, u.phone as passenger_phone
+        FROM outstation_pool_bookings opb
+        LEFT JOIN users u ON u.id = opb.customer_id
+        WHERE opb.ride_id=${rideId}::uuid AND opb.status != 'cancelled'
+        ORDER BY COALESCE(opb.pickup_order, 1), opb.created_at ASC
+      `);
+      res.json({ bookings: camelize(r.rows), passengers: camelize(r.rows) });
+    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+  });
+
+  // ??????????????????????????????????????????????????????????????????
   // CAR SHARING ï¿½ Customer browse & book
   // ??????????????????????????????????????????????????????????????????
   app.get('/api/app/customer/car-sharing/rides', authApp, async (req, res) => {
@@ -16900,14 +17113,42 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         WHERE service_status = 'active'
         ORDER BY sort_order ASC
       `);
-      const services = (r.rows as any[]).map(row => ({
-        key: row.key,
-        name: row.name,
-        category: row.category || 'rides',
-        icon: row.icon || '??',
-        color: row.color || '#2F80ED',
-        description: row.description || '',
-      }));
+      const iconFallback: Record<string, string> = {
+        bike_ride: "🏍️",
+        auto_ride: "🛺",
+        mini_car: "🚗",
+        sedan: "🚕",
+        suv: "🚙",
+        city_pool: "🚐",
+        intercity_pool: "🛣️",
+        outstation_pool: "🛣️",
+        parcel_delivery: "📦",
+      };
+      const colorFallback: Record<string, string> = {
+        bike_ride: "#2D8CFF",
+        auto_ride: "#5B9DFF",
+        mini_car: "#2563EB",
+        sedan: "#1A6FDB",
+        suv: "#1A6FDB",
+        city_pool: "#2D8CFF",
+        intercity_pool: "#5B9DFF",
+        outstation_pool: "#1A6FDB",
+        parcel_delivery: "#1A6FDB",
+      };
+      const services = (r.rows as any[]).map(row => {
+        const key = String(row.key || "");
+        const rawIcon = String(row.icon || "").trim();
+        const icon = rawIcon && rawIcon !== "??" ? rawIcon : (iconFallback[key] || "🚖");
+        const color = String(row.color || "").trim() || colorFallback[key] || "#2D8CFF";
+        return {
+          key: row.key,
+          name: row.name,
+          category: row.category || 'rides',
+          icon,
+          color,
+          description: row.description || '',
+        };
+      });
       res.json({ services });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });

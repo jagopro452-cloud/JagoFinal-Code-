@@ -2,41 +2,32 @@ class ApiConfig {
   // Override at compile time:  --dart-define=API_BASE_URL=https://yourdomain.com
   static const String compileTimeBaseUrl = String.fromEnvironment('API_BASE_URL', defaultValue: '');
 
-  // Production server URL
-  static const String _prodUrl = 'https://sea-lion-app-h5luj.ondigitalocean.app';
-
-  // For Android Emulator use 10.0.2.2. For Physical Device use your PC's IP (e.g. 192.168.0.x)
-  static const String _lanDevUrl = 'http://192.168.1.89:5000'; // Target specific physical IP
-
-  static bool _isProd = true; // PRODUCTION BUILD
+  // Production EC2 server (ap-south-1)
+  static const String _prodUrl = 'http://15.207.65.184:5000';
 
   static String get baseUrl {
     if (compileTimeBaseUrl.isNotEmpty) {
       final u = compileTimeBaseUrl;
       return u.endsWith('/') ? u.substring(0, u.length - 1) : u;
     }
-    return _isProd ? _prodUrl : _lanDevUrl;
+    return _prodUrl;
   }
-  static bool get isDev => !_isProd;
-  static void useProduction() => _isProd = true;
-  static void useDevelopment() => _isProd = false;
 
-  // Set at build time: --dart-define=GOOGLE_MAPS_KEY=AIzaSy...
-  // Never hardcode — key must be rotated in Google Cloud Console
-  static const String googleMapsApiKey = String.fromEnvironment('GOOGLE_MAPS_KEY');
+  // MUST be supplied at build time:
+  //   flutter build apk --dart-define=GOOGLE_MAPS_KEY=AIzaSy...
+  // Never commit a real key as the defaultValue.
+  static const String googleMapsApiKey =
+      String.fromEnvironment('GOOGLE_MAPS_KEY', defaultValue: '');
 
   // Socket.IO base URL (same server, no path)
   static String get socketUrl => baseUrl;
 
   static String get loginPassword => '$baseUrl/api/app/login-password';
-  static String get forgotPassword => '$baseUrl/api/app/forgot-password';
-  static String get resetPassword => '$baseUrl/api/app/reset-password';
   static String get registerAccount => '$baseUrl/api/app/register';
-  static String get refreshSession => '$baseUrl/api/app/auth/refresh';
+  static String get forgotPassword => '$baseUrl/api/app/forgot-password';
   static String get logout => '$baseUrl/api/app/logout';
   static String get fcmToken => '$baseUrl/api/app/fcm-token';
   static String get configs => '$baseUrl/api/app/configs';
-  static String get runtimeConfig => '$baseUrl/api/app/runtime-config';
   static String get sos => '$baseUrl/api/app/sos';
   static String get notifications => '$baseUrl/api/app/notifications';
   static String get notificationsReadAll => '$baseUrl/api/app/notifications/read-all';
@@ -48,8 +39,6 @@ class ApiConfig {
   static String get driverOnlineStatus => '$baseUrl/api/app/driver/online-status';
   static String get driverActiveTrip => '$baseUrl/api/app/driver/active-trip';
   static String get driverIncomingTrip => '$baseUrl/api/app/driver/incoming-trip';
-  static String get driverPendingOffer => '$baseUrl/api/app/driver/pending-offer';
-  static String get driverOfferAck => '$baseUrl/api/app/driver/offer-ack';
   static String get driverAcceptTrip => '$baseUrl/api/app/driver/accept-trip';
   static String get driverRejectTrip => '$baseUrl/api/app/driver/reject-trip';
   static String get driverArrived => '$baseUrl/api/app/driver/arrived';
@@ -105,9 +94,34 @@ class ApiConfig {
 
   // ── Parcel Delivery ───────────────────────────────────────────────────
   static String get driverParcelPending => '$baseUrl/api/app/driver/parcel/pending';
+  static String get driverParcelActive => '$baseUrl/api/app/driver/parcel/active';
   static String driverParcelAccept(String id) => '$baseUrl/api/app/driver/parcel/$id/accept';
   static String driverParcelPickupOtp(String id) => '$baseUrl/api/app/driver/parcel/$id/pickup-otp';
   static String driverParcelDropOtp(String id) => '$baseUrl/api/app/driver/parcel/$id/drop-otp';
+
+  // Outstation Pool
+  static String get driverOutstationPoolRides => '$baseUrl/api/app/driver/outstation-pool/rides';
+  static String driverOutstationPoolRide(String id) => '$baseUrl/api/app/driver/outstation-pool/rides/$id';
+  static String driverCompleteOutstationPoolRide(String id) => '$baseUrl/api/app/driver/outstation-pool/rides/$id/complete';
+  static String driverOutstationPoolBookings(String rideId) =>
+      '$baseUrl/api/app/driver/outstation-pool/rides/$rideId/passengers';
+  static String driverOutstationPoolStart(String rideId) =>
+      '$baseUrl/api/app/driver/outstation-pool/rides/$rideId/start';
+  static String driverOutstationPoolLocation(String rideId) =>
+      '$baseUrl/api/app/driver/outstation-pool/rides/$rideId/location';
+
+  // Local Pool (City Car Sharing — driver side)
+  static String get driverCarSharingRides => '$baseUrl/api/app/driver/car-sharing/rides';
+  static String get driverCarSharingCreate => '$baseUrl/api/app/driver/car-sharing/create';
+  static String driverCarSharingRide(String id) => '$baseUrl/api/app/driver/car-sharing/rides/$id';
+  static String driverCarSharingManifest(String rideId) =>
+      '$baseUrl/api/app/driver/car-sharing/rides/$rideId/manifest';
+  static String driverCarSharingStart(String rideId) =>
+      '$baseUrl/api/app/driver/car-sharing/rides/$rideId/start';
+  static String driverCarSharingComplete(String rideId) =>
+      '$baseUrl/api/app/driver/car-sharing/rides/$rideId/complete';
+  static String driverCarSharingCancel(String rideId) =>
+      '$baseUrl/api/app/driver/car-sharing/rides/$rideId/cancel';
 
   // ── Heatmap Earnings Predictor ────────────────────────────────────────
   static String driverHeatmap({double lat = 17.38, double lng = 78.49, double radius = 10}) =>
@@ -120,20 +134,6 @@ class ApiConfig {
 
   // ── Module Revenue Config ─────────────────────────────────────────────
   static String get revenueConfig => '$baseUrl/api/app/revenue-config';
-  static String get localPoolSessionStart => '$baseUrl/api/app/driver/pool/session/start';
-  static String get localPoolSessionActive => '$baseUrl/api/app/driver/pool/session/active';
-  static String get localPoolSessionAccepting => '$baseUrl/api/app/driver/pool/session/accepting';
-  static String get localPoolSessionEnd => '$baseUrl/api/app/driver/pool/session/end';
-  static String get localPoolLocation => '$baseUrl/api/app/driver/pool/location';
-  static String localPoolPickup(String requestId) => '$baseUrl/api/app/driver/pool/passengers/$requestId/pickup';
-  static String localPoolAcceptPassenger(String requestId) => '$baseUrl/api/app/driver/pool/passengers/$requestId/accept';
-  static String localPoolSkipPassenger(String requestId) => '$baseUrl/api/app/driver/pool/passengers/$requestId/skip';
-  static String localPoolDrop(String requestId) => '$baseUrl/api/app/driver/pool/passengers/$requestId/drop';
-  static String localPoolNoShow(String requestId) => '$baseUrl/api/app/driver/pool/passengers/$requestId/no-show';
-  static String localPoolRatePassenger(String requestId) => '$baseUrl/api/app/driver/pool/requests/$requestId/rate-passenger';
-  static String outstationPoolRatePassenger(String bookingId) => '$baseUrl/api/app/driver/outstation-pool/bookings/$bookingId/rate-passenger';
-  static String get poolBlockUser => '$baseUrl/api/app/driver/pool/block-user';
-  static String get poolShare => '$baseUrl/api/app/driver/pool/share';
 
   // ── Mapping (proxied through server — avoids hardcoded key) ─────────────
   static String get reverseGeocode => '$baseUrl/api/app/reverse-geocode';
