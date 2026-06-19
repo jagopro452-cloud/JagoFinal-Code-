@@ -42,7 +42,7 @@ class _TripCompletionScreenState extends State<TripCompletionScreen> {
     final trip = widget.trip;
     final driverName = trip['driverName']?.toString() ?? 
                        trip['driver_name']?.toString() ?? 
-                       trip['pilot_name']?.toString() ?? 'Pilot';
+                       trip['pilot_name']?.toString() ?? 'Driver';
     final driverPhoto = trip['driverPhoto']?.toString() ?? 
                         trip['driver_photo']?.toString();
     final driverRating = trip['driverRating'] ?? trip['driver_rating'] ?? '5.00';
@@ -180,7 +180,7 @@ class _TripCompletionScreenState extends State<TripCompletionScreen> {
                             ),
                             const SizedBox(height: 24),
 
-                            // Pilot Info Row
+                            // Driver Info Row
                             _buildPilotCard(driverName, driverPhoto, driverRating),
                             const SizedBox(height: 20),
 
@@ -208,7 +208,7 @@ class _TripCompletionScreenState extends State<TripCompletionScreen> {
                               child: Column(
                                 children: [
                                   Text(
-                                    _isRatingSubmitted ? 'Rating received!' : 'Rate your Pilot',
+                                    _isRatingSubmitted ? 'Rating received!' : 'Rate your Driver',
                                     style: GoogleFonts.poppins(
                                       fontSize: 14,
                                       fontWeight: FontWeight.w500,
@@ -416,7 +416,7 @@ class _TripCompletionScreenState extends State<TripCompletionScreen> {
                         borderRadius: BorderRadius.circular(999),
                       ),
                       child: Text(
-                        'Pilot',
+                        'Driver',
                         style: GoogleFonts.poppins(
                             fontSize: 11,
                             fontWeight: FontWeight.w600,
@@ -525,7 +525,7 @@ class _TripCompletionScreenState extends State<TripCompletionScreen> {
       children: [
         Expanded(
           child: Container(
-            height: 52,
+            height: 56,
             padding: const EdgeInsets.symmetric(horizontal: 16),
             decoration: BoxDecoration(
               color: Colors.white,
@@ -555,7 +555,7 @@ class _TripCompletionScreenState extends State<TripCompletionScreen> {
   Widget _iconBtn(IconData icon, Color color, Color bg) {
     return Container(
       width: 52,
-      height: 52,
+      height: 56,
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(14),
@@ -654,7 +654,7 @@ class _TripCompletionScreenState extends State<TripCompletionScreen> {
               ),
               Text(
                 '₹${actualFare.toString()}',
-                style: GoogleFonts.outfit(
+                style: GoogleFonts.poppins(
                   fontSize: 24,
                   fontWeight: FontWeight.w800,
                   color: _ridePrimary,

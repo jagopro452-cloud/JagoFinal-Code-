@@ -6,9 +6,17 @@ function normalizeIndianPhone(phone: string): string {
   return digits.slice(-10);
 }
 
+// SMS type for SMSLogin: 1=OTP, 2=Transactional, 4=Promotional
+function getSmsLoginType(purpose?: string): string {
+  const p = (purpose || "").toLowerCase();
+  if (p.includes("login") || p.includes("otp") || p.includes("reset") || p.includes("verify")) return "1";
+  return "2";
+}
+
 type SmsMeta = {
   purpose?: string;
   userType?: string;
+  templateId?: string;
 };
 
 async function sendViaTwilio(phone: string, text: string): Promise<boolean> {
@@ -29,6 +37,78 @@ async function sendViaTwilio(phone: string, text: string): Promise<boolean> {
     return true;
   } catch (error: any) {
     console.warn(`[SMS] Twilio send failed: ${error?.message || error}`);
+    return false;
+  }
+}
+
+async function sendViaSmsLogin(phone: string, text: string, meta: SmsMeta = {}): Promise<boolean> {
+  // SMSLogin v3 credentials
+  const username = await getConf("SMSLOGIN_USERNAME", "smslogin_username");
+  const password = await getConf("SMSLOGIN_PASSWORD", "smslogin_password");
+  const sender   = await getConf("SMSLOGIN_SENDER_ID", "smslogin_sender_id");
+  if (!username || !password || !sender) return false;
+
+  // Base URL — normalised to always end with sendmsg.php
+  const rawUrl = (await getConf("SMSLOGIN_API_URL", "smslogin_api_url") || "https://smslogin.co/v3/http/").trim();
+  const apiUrl = rawUrl.endsWith("sendmsg.php") ? rawUrl : rawUrl.replace(/\/?$/, "/") + "sendmsg.php";
+
+  // DLT IDs (mandatory for India post-2021)
+  const entityId  = await getConf("SMSLOGIN_ENTITY_ID", "smslogin_entity_id");
+  // Per-purpose template override, then global fallback
+  const purposeKey = `SMSLOGIN_TEMPLATE_${(meta.purpose || "").toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
+  const templateId = meta.templateId
+    || (await getConf(purposeKey, purposeKey.toLowerCase()))
+    || (await getConf("SMSLOGIN_TEMPLATE_ID", "smslogin_template_id"));
+
+  const smsType = getSmsLoginType(meta.purpose);
+
+  const params = new URLSearchParams();
+  params.set("username", username);
+  params.set("password", password);
+  params.set("type",     smsType);
+  params.set("sender",   sender);
+  params.set("number",   phone);
+  params.set("message",  text);
+  if (templateId) params.set("template_id", templateId);
+  if (entityId)   params.set("entity_id",   entityId);
+
+  try {
+    const response = await fetch(apiUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: params.toString(),
+    });
+
+    const raw = await response.text().catch(() => "");
+    const body = raw.trim();
+    console.log(`[SMS] SMSLogin response (${response.status}): ${body}`);
+
+    if (!response.ok) {
+      console.warn(`[SMS] SMSLogin HTTP ${response.status}: ${body}`);
+      return false;
+    }
+
+    if (!body) return true;
+
+    // SMSLogin returns JSON or plain text
+    try {
+      const payload = JSON.parse(body) as any;
+      const ok =
+        payload?.success === true ||
+        payload?.status === true ||
+        String(payload?.status  || "").toLowerCase() === "success" ||
+        String(payload?.message || "").toLowerCase().includes("success") ||
+        String(payload?.code    || "") === "200";
+      if (!ok) console.warn(`[SMS] SMSLogin rejected: ${body}`);
+      return !!ok;
+    } catch {
+      // Plain text response: "success", "1701", "sent", etc.
+      const ok = /success|^1[0-9]{3}$|sent|queued|accepted/i.test(body);
+      if (!ok) console.warn(`[SMS] SMSLogin unexpected: ${body}`);
+      return ok;
+    }
+  } catch (error: any) {
+    console.warn(`[SMS] SMSLogin send failed: ${error?.message || error}`);
     return false;
   }
 }
@@ -61,75 +141,10 @@ async function sendViaFast2Sms(phone: string, text: string): Promise<boolean> {
 
     const payload = await response.json().catch(() => null) as any;
     const ok = payload?.return === true || payload?.message?.some?.((item: string) => /sms sent/i.test(item));
-    if (!ok) {
-      console.warn(`[SMS] Fast2SMS rejected payload: ${JSON.stringify(payload)}`);
-    }
+    if (!ok) console.warn(`[SMS] Fast2SMS rejected: ${JSON.stringify(payload)}`);
     return !!ok;
   } catch (error: any) {
     console.warn(`[SMS] Fast2SMS send failed: ${error?.message || error}`);
-    return false;
-  }
-}
-
-async function sendViaSmsLogin(phone: string, text: string, meta: SmsMeta = {}): Promise<boolean> {
-  const apiUrl = await getConf("SMSLOGIN_API_URL", "smslogin_api_url");
-  const apiKey = await getConf("SMSLOGIN_API_KEY", "smslogin_api_key");
-  const senderId = await getConf("SMSLOGIN_SENDER_ID", "smslogin_sender_id");
-  const route = await getConf("SMSLOGIN_ROUTE", "smslogin_route");
-  const templateId = await getConf("SMSLOGIN_TEMPLATE_ID", "smslogin_template_id");
-  const entityId = await getConf("SMSLOGIN_ENTITY_ID", "smslogin_entity_id");
-  if (!apiUrl || !apiKey || !senderId) return false;
-
-  const params = new URLSearchParams();
-  params.set("api_key", apiKey);
-  params.set("sender_id", senderId);
-  params.set("number", phone);
-  params.set("message", text);
-  params.set("purpose", meta.purpose || "transactional");
-  params.set("user_type", meta.userType || "customer");
-  if (route) params.set("route", route);
-  if (templateId) params.set("template_id", templateId);
-  if (entityId) params.set("entity_id", entityId);
-
-  try {
-    const response = await fetch(apiUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: params.toString(),
-    });
-
-    if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      console.warn(`[SMS] SMSLogin HTTP ${response.status}: ${body}`);
-      return false;
-    }
-
-    const raw = await response.text().catch(() => "");
-    const body = raw.trim();
-    if (!body) return true;
-
-    try {
-      const payload = JSON.parse(body) as any;
-      const ok =
-        payload?.success === true ||
-        payload?.status === true ||
-        String(payload?.status || "").toLowerCase() === "success" ||
-        String(payload?.message || "").toLowerCase().includes("success");
-      if (!ok) {
-        console.warn(`[SMS] SMSLogin rejected payload: ${body}`);
-      }
-      return !!ok;
-    } catch {
-      const ok = /success|sent|queued|accepted/i.test(body);
-      if (!ok) {
-        console.warn(`[SMS] SMSLogin unexpected payload: ${body}`);
-      }
-      return ok;
-    }
-  } catch (error: any) {
-    console.warn(`[SMS] SMSLogin send failed: ${error?.message || error}`);
     return false;
   }
 }
@@ -142,30 +157,34 @@ export async function sendCustomSms(phone: string, text: string, meta: SmsMeta =
   }
 
   if (String(process.env.AUTH_DEV_CONSOLE_SMS || "").trim().toLowerCase() === "true") {
-    console.log(`[SMS-DEV] Sending to ${normalizedPhone}: ${text}`);
+    console.log(`[SMS-DEV] ${normalizedPhone}: ${text}`);
     return true;
   }
 
-  if (await sendViaTwilio(normalizedPhone, text)) {
-    console.log(`[SMS] Sent via Twilio to ${normalizedPhone}`);
-    return true;
-  }
-
+  // Try SMSLogin first (primary provider)
   if (await sendViaSmsLogin(normalizedPhone, text, meta)) {
     console.log(`[SMS] Sent via SMSLogin to ${normalizedPhone}`);
     return true;
   }
 
+  // Twilio fallback
+  if (await sendViaTwilio(normalizedPhone, text)) {
+    console.log(`[SMS] Sent via Twilio to ${normalizedPhone}`);
+    return true;
+  }
+
+  // Fast2SMS fallback
   if (await sendViaFast2Sms(normalizedPhone, text)) {
     console.log(`[SMS] Sent via Fast2SMS to ${normalizedPhone}`);
     return true;
   }
 
+  // Dev mode: always succeed, log to console
   if (process.env.NODE_ENV !== "production") {
-    console.log(`[SMS-DEV] Sending to ${normalizedPhone}: ${text}`);
+    console.log(`[SMS-DEV] ${normalizedPhone}: ${text}`);
     return true;
   }
 
-  console.warn(`[SMS] No SMS provider configured for ${normalizedPhone}`);
+  console.warn(`[SMS] All providers failed for ${normalizedPhone}`);
   return false;
 }

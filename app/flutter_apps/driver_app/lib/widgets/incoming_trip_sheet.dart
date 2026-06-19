@@ -4,8 +4,6 @@ import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../services/alarm_service.dart';
 
-/// Redesigned Full-screen ride request overlay inspired by Rapido.
-/// Pushed as a Navigator route so it sits above the home map.
 class IncomingTripSheet extends StatefulWidget {
   final Map<String, dynamic> trip;
   final VoidCallback onAccept;
@@ -22,13 +20,13 @@ class IncomingTripSheet extends StatefulWidget {
   State<IncomingTripSheet> createState() => _IncomingTripSheetState();
 }
 
-class _IncomingTripSheetState extends State<IncomingTripSheet> with TickerProviderStateMixin {
+class _IncomingTripSheetState extends State<IncomingTripSheet>
+    with TickerProviderStateMixin {
   late AnimationController _ringCtrl;
   int _countdown = 40;
   Timer? _countdownTimer;
   bool _responded = false;
 
-  // Jago Pro Lavender & Blue Palette
   static const Color _jagoBlue = Color(0xFF1677FF);
   static const Color _jagoLavender = Color(0xFF8B5CF6);
   static const Color _jagoBg = Color(0xFFF8FAFF);
@@ -48,7 +46,10 @@ class _IncomingTripSheetState extends State<IncomingTripSheet> with TickerProvid
     _triggerAlertBurst();
 
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
-      if (!mounted) { t.cancel(); return; }
+      if (!mounted) {
+        t.cancel();
+        return;
+      }
       if (_countdown <= 0) {
         t.cancel();
         _autoReject();
@@ -71,6 +72,7 @@ class _IncomingTripSheetState extends State<IncomingTripSheet> with TickerProvid
 
   Future<void> _stopAndRespond(bool accepted) async {
     if (_responded) return;
+    HapticFeedback.mediumImpact();
     _responded = true;
     _countdownTimer?.cancel();
     await AlarmService().stopAlarm();
@@ -92,19 +94,24 @@ class _IncomingTripSheetState extends State<IncomingTripSheet> with TickerProvid
   void dispose() {
     _ringCtrl.dispose();
     _countdownTimer?.cancel();
-    if (!_responded) AlarmService().stopAlarm();
+    if (!_responded) {
+      AlarmService().stopAlarm();
+    }
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final trip = widget.trip;
-    final pickup = trip['pickupAddress'] ?? 'Pickup location';
-    final dest = trip['destinationAddress'] ?? 'Destination';
-    final pickupShort = trip['pickupShortName'] ?? trip['pickup_short_name'] ?? '';
-    final destShort = trip['destinationShortName'] ?? trip['destination_short_name'] ?? '';
+    final pickup = trip['pickupAddress']?.toString() ?? 'Pickup location';
+    final dest = trip['destinationAddress']?.toString() ?? 'Destination';
+    final pickupShort = trip['pickupShortName']?.toString() ??
+        trip['pickup_short_name']?.toString() ??
+        '';
+    final destShort = trip['destinationShortName']?.toString() ??
+        trip['destination_short_name']?.toString() ??
+        '';
 
-    // Format distances to 2 decimal places
     String formatDist(dynamic d) {
       if (d == null) return '0.0';
       final val = double.tryParse(d.toString()) ?? 0.0;
@@ -113,9 +120,10 @@ class _IncomingTripSheetState extends State<IncomingTripSheet> with TickerProvid
 
     final pickupDist = formatDist(trip['driverDistanceKm'] ?? '1.4');
     final tripDist = formatDist(trip['estimatedDistance'] ?? '4.8');
-    final fare = trip['estimatedFare'] ?? '121';
-    final extra = trip['incentive'] ?? '13';
-    final vehicleType = (trip['vehicleCategoryName'] ?? 'Bike').toString();
+    final fare = trip['estimatedFare']?.toString() ?? '121';
+    final extra = trip['incentive']?.toString() ?? '13';
+    final vehicleType =
+        (trip['vehicleCategoryName'] ?? 'Bike').toString();
 
     return PopScope(
       canPop: false,
@@ -124,452 +132,329 @@ class _IncomingTripSheetState extends State<IncomingTripSheet> with TickerProvid
         body: SafeArea(
           child: Column(
             children: [
-              // ── Header (Jago Pro Style) ────────────────────────────────────
-              _buildTopNav(),
-              
-              Expanded(
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
                 child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // ── Left Queue Sidebar ───────────────────────────────────
-                    _buildQueueSidebar(extra),
-                    
-                    // ── Main Card Content ────────────────────────────────────
                     Expanded(
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(0, 20, 16, 20),
-                        child: SingleChildScrollView(
-                          physics: const BouncingScrollPhysics(),
-                          child: _buildMainTripCard(
-                            vehicleType: vehicleType,
-                            extra: extra,
-                            fare: fare,
-                            pickup: pickup,
-                            dest: dest,
-                            pickupShort: pickupShort,
-                            destShort: destShort,
-                            pickupDist: pickupDist,
-                            tripDist: tripDist,
-                          ),
+                      child: Text(
+                        'Incoming Ride',
+                        style: GoogleFonts.poppins(
+                          fontSize: 24,
+                          fontWeight: FontWeight.w700,
+                          color: _textDark,
                         ),
                       ),
                     ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildTopNav() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        boxShadow: [
-          BoxShadow(color: _jagoBlue.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 2)),
-        ],
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(
-            'New Request',
-            style: GoogleFonts.outfit(
-              fontSize: 22,
-              fontWeight: FontWeight.w700,
-              color: _textDark,
-              letterSpacing: -0.5,
-            ),
-          ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [_jagoBlue, _jagoLavender],
-              ),
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.timer_rounded, color: Colors.white, size: 15),
-                const SizedBox(width: 5),
-                Text(
-                  '${_countdown}s',
-                  style: GoogleFonts.outfit(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w800,
-                    fontSize: 13,
-                  ),
-                ),
-                const SizedBox(width: 6),
-                const Icon(Icons.volume_up_rounded, color: Colors.white, size: 16),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildQueueSidebar(dynamic extra) {
-    return Container(
-      width: 75,
-      padding: const EdgeInsets.symmetric(vertical: 20),
-      child: Column(
-        children: [
-          // Current Active Trip indicator
-          _sidebarItem(active: true, extra: extra),
-          const SizedBox(height: 20),
-          // Other placeholder
-          _sidebarItem(active: false, extra: '10'),
-        ],
-      ),
-    );
-  }
-
-  Widget _sidebarItem({required bool active, required dynamic extra}) {
-    final color = active ? _jagoLavender : Colors.grey.shade300;
-    return Column(
-      children: [
-        Container(
-          width: 36,
-          height: 36,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            border: Border.all(color: color, width: 2.5),
-          ),
-          child: active 
-            ? AnimatedBuilder(
-                animation: _ringCtrl,
-                builder: (context, child) {
-                  return CircularProgressIndicator(
-                    value: 1.0 - _ringCtrl.value,
-                    strokeWidth: 2.5,
-                    color: _jagoLavender,
-                    backgroundColor: Colors.transparent,
-                  );
-                },
-              )
-            : null,
-        ),
-        if (extra != null) ...[
-          const SizedBox(height: 6),
-          Text(
-            '+₹$extra',
-            style: GoogleFonts.outfit(
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-              color: _jagoLavender,
-            ),
-          ),
-        ],
-      ],
-    );
-  }
-
-  Widget _buildMainTripCard({
-    required String vehicleType,
-    required dynamic extra,
-    required dynamic fare,
-    required String pickup,
-    required String dest,
-    required String pickupShort,
-    required String destShort,
-    required dynamic pickupDist,
-    required dynamic tripDist,
-  }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // "Go To" pill
-        Container(
-          margin: const EdgeInsets.only(bottom: 12),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-          decoration: BoxDecoration(
-            color: _jagoBlue.withValues(alpha: 0.1),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: _jagoBlue.withValues(alpha: 0.2)),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.location_on_rounded, size: 16, color: _jagoBlue),
-              const SizedBox(width: 6),
-              Text(
-                'Go To',
-                style: GoogleFonts.outfit(fontSize: 14, fontWeight: FontWeight.w600, color: _jagoBlue),
-              ),
-            ],
-          ),
-        ),
-        Container(
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: _jagoLavender.withValues(alpha: 0.3), width: 2),
-            boxShadow: [
-              BoxShadow(
-                color: _jagoBlue.withValues(alpha: 0.08),
-                blurRadius: 20,
-                offset: const Offset(0, 8),
-              ),
-            ],
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Card Header: Vehicle Type & Full Fare
-              Padding(
-                padding: const EdgeInsets.all(20),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: _jagoBlue.withValues(alpha: 0.08),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Row(
-                            children: [
-                              const Icon(Icons.directions_bike_rounded, size: 16, color: _jagoBlue),
-                              const SizedBox(width: 6),
-                              Text(
-                                vehicleType,
-                                style: GoogleFonts.outfit(fontSize: 13, fontWeight: FontWeight.w700, color: _jagoBlue),
-                              ),
-                            ],
-                          ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [_jagoBlue, _jagoLavender],
                         ),
-                        if (extra != null && extra != '0') ...[
-                          const SizedBox(height: 8),
-                          Text(
-                            '+₹$extra incentive',
-                            style: GoogleFonts.outfit(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: _jagoLavender,
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                    Text(
-                      '₹$fare',
-                      style: GoogleFonts.outfit(
-                        fontSize: 38,
-                        fontWeight: FontWeight.w900,
-                        color: _jagoBlue,
-                        letterSpacing: -1,
+                        borderRadius: BorderRadius.circular(18),
                       ),
-                    ),
-                  ],
-                ),
-              ),
-
-              // Card Body: Address Timeline
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: _buildAddressTimeline(pickup, dest, pickupShort, destShort, pickupDist, tripDist),
-              ),
-
-              const SizedBox(height: 24),
-
-              // Card Footer: Action Bar
-              Container(
-                padding: const EdgeInsets.fromLTRB(20, 15, 20, 20),
-                decoration: BoxDecoration(
-                  color: _jagoBg,
-                  borderRadius: const BorderRadius.only(
-                    bottomLeft: Radius.circular(24),
-                    bottomRight: Radius.circular(24),
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    // Reject Button
-                    GestureDetector(
-                      onTap: () => _stopAndRespond(false),
-                      child: Stack(
-                        alignment: Alignment.center,
+                      child: Row(
                         children: [
-                          SizedBox(
-                            width: 46,
-                            height: 46,
-                            child: AnimatedBuilder(
-                              animation: _ringCtrl,
-                              builder: (context, child) {
-                                return CircularProgressIndicator(
-                                  value: 1.0 - _ringCtrl.value,
-                                  strokeWidth: 3,
-                                  color: Colors.red.shade400,
-                                  backgroundColor: Colors.grey.shade200,
-                                );
-                              },
-                            ),
-                          ),
-                          Container(
-                            width: 34,
-                            height: 34,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
+                          const Icon(Icons.timer_rounded,
+                              color: Colors.white, size: 16),
+                          const SizedBox(width: 6),
+                          Text(
+                            '${_countdown}s',
+                            style: GoogleFonts.poppins(
                               color: Colors.white,
-                              boxShadow: [
-                                BoxShadow(color: Colors.black.withValues(alpha: 0.1), blurRadius: 4),
-                              ],
+                              fontWeight: FontWeight.w800,
+                              fontSize: 14,
                             ),
-                            child: const Icon(Icons.close_rounded, color: Colors.black, size: 20),
                           ),
                         ],
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    // Accept Button
-                    Expanded(
-                      child: GestureDetector(
-                        onTap: () => _stopAndRespond(true),
-                        child: Container(
-                          height: 64,
-                          decoration: BoxDecoration(
-                            gradient: const LinearGradient(
-                              colors: [_jagoBlue, _jagoLavender],
-                              begin: Alignment.centerLeft,
-                              end: Alignment.centerRight,
-                            ),
-                            borderRadius: BorderRadius.circular(32),
-                            boxShadow: [
-                              BoxShadow(
-                                color: _jagoBlue.withValues(alpha: 0.3),
-                                blurRadius: 12,
-                                offset: const Offset(0, 4),
-                              ),
-                            ],
-                          ),
-                          child: Center(
-                            child: Text(
-                              'Accept Trip',
-                              style: GoogleFonts.outfit(
-                                color: Colors.white,
-                                fontSize: 22,
-                                fontWeight: FontWeight.w800,
-                                letterSpacing: 0.5,
-                              ),
-                            ),
-                          ),
-                        ),
                       ),
                     ),
                   ],
                 ),
               ),
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                  child: Column(
+                    children: [
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(20),
+                        decoration: BoxDecoration(
+                          gradient: const LinearGradient(
+                            colors: [_jagoBlue, _jagoLavender],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                          ),
+                          borderRadius: BorderRadius.circular(24),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.18),
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                              child: Text(
+                                vehicleType,
+                                style: GoogleFonts.poppins(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 14),
+                            Text(
+                              '₹$fare',
+                              style: GoogleFonts.poppins(
+                                color: Colors.white,
+                                fontSize: 34,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Pickup in $pickupDist km · Ride $tripDist km · Bonus ₹$extra',
+                              style: GoogleFonts.poppins(
+                                color: Colors.white.withValues(alpha: 0.92),
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(18),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Route overview',
+                              style: GoogleFonts.poppins(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w700,
+                                color: _textDark,
+                              ),
+                            ),
+                            const SizedBox(height: 14),
+                            _routeStop(
+                              icon: Icons.my_location_rounded,
+                              label: 'Pickup',
+                              shortText: pickupShort.isNotEmpty
+                                  ? pickupShort
+                                  : pickup,
+                              fullText: pickup,
+                              accent: const Color(0xFF16A34A),
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.only(left: 11),
+                              child: Container(
+                                width: 2,
+                                height: 28,
+                                color: const Color(0xFFE5E7EB),
+                              ),
+                            ),
+                            _routeStop(
+                              icon: Icons.location_on_rounded,
+                              label: 'Drop',
+                              shortText:
+                                  destShort.isNotEmpty ? destShort : dest,
+                              fullText: dest,
+                              accent: const Color(0xFFDC2626),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _metricCard(
+                              icon: Icons.route_rounded,
+                              label: 'Trip distance',
+                              value: '$tripDist km',
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: _metricCard(
+                              icon: Icons.access_time_rounded,
+                              label: 'Decision time',
+                              value: '${_countdown}s',
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 18),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 56,
+                        child: AnimatedScale(
+                          duration: const Duration(milliseconds: 180),
+                          scale: _responded ? 0.985 : 1,
+                          child: ElevatedButton.icon(
+                            onPressed: () => _stopAndRespond(true),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: _jagoBlue,
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(18),
+                              ),
+                            ),
+                            icon: const Icon(Icons.check_circle_rounded, size: 20),
+                            label: Text(
+                              'Accept Ride',
+                              style: GoogleFonts.poppins(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 56,
+                        child: AnimatedOpacity(
+                          duration: const Duration(milliseconds: 180),
+                          opacity: _responded ? 0.65 : 1,
+                          child: OutlinedButton.icon(
+                            onPressed: () => _stopAndRespond(false),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: _textDark,
+                              side: BorderSide(color: Colors.grey.shade300),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(18),
+                              ),
+                            ),
+                            icon: const Icon(Icons.close_rounded, size: 20),
+                            label: Text(
+                              'Decline',
+                              style: GoogleFonts.poppins(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             ],
           ),
         ),
-      ],
+      ),
     );
   }
 
-  Widget _buildAddressTimeline(
-      String pickup, String dest, String pickupShort, String destShort, dynamic pickupDist, dynamic tripDist) {
+  Widget _routeStop({
+    required IconData icon,
+    required String label,
+    required String shortText,
+    required String fullText,
+    required Color accent,
+  }) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Timeline
-        Column(
-          children: [
-            const SizedBox(height: 8),
-            Container(
-              width: 12,
-              height: 12,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: _jagoBlue,
-                border: Border.all(color: Colors.white, width: 2),
-                boxShadow: [BoxShadow(color: _jagoBlue.withValues(alpha: 0.3), blurRadius: 4)],
-              ),
-            ),
-            // Dynamic connector
-            Container(
-              width: 2,
-              height: 48,
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [_jagoBlue, _jagoLavender.withValues(alpha: 0.5)],
-                ),
-              ),
-            ),
-            Icon(Icons.location_on_rounded, size: 20, color: _jagoLavender),
-          ],
+        Container(
+          width: 22,
+          height: 22,
+          decoration: BoxDecoration(
+            color: accent.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(11),
+          ),
+          child: Icon(icon, color: accent, size: 14),
         ),
-        const SizedBox(width: 16),
-        // Texts
+        const SizedBox(width: 12),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      pickupShort.isNotEmpty ? pickupShort : pickup,
-                      style: GoogleFonts.outfit(fontSize: 19, fontWeight: FontWeight.w800, color: _textDark),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    '$pickupDist Km',
-                    style: GoogleFonts.outfit(fontSize: 14, fontWeight: FontWeight.w700, color: _jagoBlue),
-                  ),
-                ],
+              Text(
+                label,
+                style: GoogleFonts.poppins(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: _textGrey,
+                ),
               ),
               const SizedBox(height: 2),
               Text(
-                pickupShort.isNotEmpty ? pickup : 'Pickup location',
-                style: GoogleFonts.outfit(fontSize: 12, fontWeight: FontWeight.w400, color: _textGrey),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              const SizedBox(height: 18),
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      destShort.isNotEmpty ? destShort : dest,
-                      style: GoogleFonts.outfit(fontSize: 19, fontWeight: FontWeight.w800, color: _textDark),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    '$tripDist Km',
-                    style: GoogleFonts.outfit(fontSize: 14, fontWeight: FontWeight.w700, color: _jagoLavender),
-                  ),
-                ],
+                shortText,
+                style: GoogleFonts.poppins(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: _textDark,
+                ),
               ),
               const SizedBox(height: 2),
               Text(
-                destShort.isNotEmpty ? dest : 'Destination',
-                style: GoogleFonts.outfit(fontSize: 12, fontWeight: FontWeight.w400, color: _textGrey),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+                fullText,
+                style: GoogleFonts.poppins(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: _textGrey,
+                ),
               ),
             ],
           ),
         ),
       ],
+    );
+  }
+
+  Widget _metricCard({
+    required IconData icon,
+    required String label,
+    required String value,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: _jagoBlue, size: 18),
+          const SizedBox(height: 10),
+          Text(
+            label,
+            style: GoogleFonts.poppins(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: _textGrey,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: GoogleFonts.poppins(
+              fontSize: 18,
+              fontWeight: FontWeight.w800,
+              color: _textDark,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

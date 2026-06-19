@@ -25,6 +25,21 @@ fs.writeFileSync(
   JSON.stringify(
     {
       gitSha: readGitSha(),
+      deploymentSha:
+        process.env.DEPLOYMENT_SHA ||
+        process.env.SOURCE_COMMIT_HASH ||
+        process.env.GITHUB_SHA ||
+        process.env.COMMIT_SHA ||
+        readGitSha(),
+      runningSha:
+        process.env.RUNNING_SHA ||
+        process.env.DEPLOYMENT_SHA ||
+        process.env.SOURCE_COMMIT_HASH ||
+        process.env.GITHUB_SHA ||
+        process.env.COMMIT_SHA ||
+        readGitSha(),
+      deploymentId: process.env.DEPLOYMENT_ID || process.env.DO_DEPLOYMENT_ID || null,
+      appEnv: process.env.APP_ENV || process.env.DEPLOY_ENV || process.env.NODE_ENV || null,
       builtAt: new Date().toISOString(),
     },
     null,

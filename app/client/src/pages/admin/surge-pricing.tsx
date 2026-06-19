@@ -23,17 +23,19 @@ export default function SurgePricingPage() {
       toast({ title: editing ? "Updated" : "Created" });
       setEditing(null);
     },
-    onError: () => toast({ title: "Failed", variant: "destructive" }),
+    onError: (e: any) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => apiRequest("DELETE", `/api/surge-pricing/${id}`),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/surge-pricing"] }); toast({ title: "Deleted" }); },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/surge-pricing"] }); toast({ title: "Surge rule deleted" }); },
+    onError: (e: any) => toast({ title: "Delete failed", description: e.message, variant: "destructive" }),
   });
 
   const toggleMutation = useMutation({
     mutationFn: ({ id, isActive }: any) => apiRequest("PATCH", `/api/surge-pricing/${id}`, { isActive }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/surge-pricing"] }),
+    onError: (e: any) => { queryClient.invalidateQueries({ queryKey: ["/api/surge-pricing"] }); toast({ title: "Toggle failed", description: e.message, variant: "destructive" }); },
   });
 
   const openAdd = () => { setEditing(null); setForm({ zoneId: "", startTime: "", endTime: "", multiplier: "", reason: "", isActive: true }); setShowModal(true); };

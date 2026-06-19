@@ -13,6 +13,7 @@ const EMPTY_FORM = {
   maxDiscountAmount: "",
   limitPerUser: "1",
   totalUsageLimit: "",
+  startDate: "",
   endDate: "",
 };
 
@@ -99,7 +100,13 @@ function CouponModal({ open, onClose, editing, form, setForm, onSave, saving }: 
               <label className="form-label-jago">Total Usage Limit</label>
               <input type="number" min="0" className="form-control" value={form.totalUsageLimit} onChange={e => f("totalUsageLimit", e.target.value)} placeholder="Unlimited" />
             </div>
-            <div className="col-4">
+          </div>
+          <div className="row g-3">
+            <div className="col-6">
+              <label className="form-label-jago">Start Date</label>
+              <input type="date" className="form-control" value={form.startDate} onChange={e => f("startDate", e.target.value)} />
+            </div>
+            <div className="col-6">
               <label className="form-label-jago">Expiry Date</label>
               <input type="date" className="form-control" value={form.endDate} onChange={e => f("endDate", e.target.value)} />
             </div>
@@ -145,6 +152,7 @@ export default function Coupons() {
       setOpen(false);
       setEditing(null);
       resetForm();
+      if (!editing) setPage(1);
     },
     onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
@@ -155,6 +163,7 @@ export default function Coupons() {
       qc.invalidateQueries({ queryKey: ["/api/coupons"] });
       toast({ title: "Coupon deleted" });
     },
+    onError: (e: any) => toast({ title: "Delete failed", description: e.message, variant: "destructive" }),
   });
 
   const toggleStatus = useMutation({
@@ -172,6 +181,7 @@ export default function Coupons() {
   const openEdit = (c: any) => {
     setEditing(c);
     const endDate = c.endDate ? c.endDate.substring(0, 10) : "";
+    const startDate = c.startDate ? c.startDate.substring(0, 10) : "";
     setForm({
       name: c.name || "",
       code: c.code || "",
@@ -181,6 +191,7 @@ export default function Coupons() {
       maxDiscountAmount: c.maxDiscountAmount ? String(c.maxDiscountAmount) : "",
       limitPerUser: String(c.limitPerUser || 1),
       totalUsageLimit: c.totalUsageLimit ? String(c.totalUsageLimit) : "",
+      startDate,
       endDate,
     });
     setOpen(true);

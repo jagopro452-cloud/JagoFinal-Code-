@@ -70,6 +70,7 @@ export const vehicleCategories = pgTable("vehicle_categories", {
   icon: varchar("icon", { length: 255 }),
   type: varchar("type", { length: 50 }).default("ride"),
   vehicleType: varchar("vehicle_type", { length: 50 }),  // bike, auto, mini_car, sedan, suv, carpool
+  serviceType: varchar("service_type", { length: 30 }).default("ride"),
   // Pricing fields (zone-specific overrides live in trip_fares)
   baseFare: numeric("base_fare", { precision: 10, scale: 2 }).default("0"),
   farePerKm: numeric("fare_per_km", { precision: 10, scale: 2 }).default("0"),
@@ -272,6 +273,8 @@ export const discounts = pgTable("discounts", {
   minOrderAmount: numeric("min_order_amount", { precision: 23, scale: 3 }).default("0"),
   maxDiscountAmount: numeric("max_discount_amount", { precision: 23, scale: 3 }).default("0"),
   isActive: boolean("is_active").default(true),
+  serviceType: varchar("service_type", { length: 50 }).default("both"),
+  vehicleCategoryId: uuid("vehicle_category_id").references(() => vehicleCategories.id),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -430,6 +433,16 @@ export const referrals = pgTable("referrals", {
   rewardAmount: numeric("reward_amount", { precision: 10, scale: 2 }).default("0"),
   status: varchar("status", { length: 30 }).notNull().default("pending"),
   createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const franchiseServiceAssignments = pgTable("franchise_service_assignments", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  franchiseeId: uuid("franchisee_id").notNull(),
+  serviceKey: varchar("service_key", { length: 80 }).notNull(),
+  isEnabled: boolean("is_enabled").notNull().default(true),
+  updatedBy: varchar("updated_by", { length: 191 }),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
 });
 
 export const notificationLogs = pgTable("notification_logs", {

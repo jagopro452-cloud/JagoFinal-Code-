@@ -1,17 +1,16 @@
 import { expect, test } from "@playwright/test";
 import type { Socket } from "socket.io-client";
 import { LiveClient, type MobileSession } from "../support/live-client";
-import { createManagedRideBooking, pickCustomerForRideBooking } from "../support/live-booking-manager";
+import { createManagedRideBooking } from "../support/live-booking-manager";
 import { createQaTag, runtime } from "../support/runtime";
 import {
   connectLiveSocket,
   extractTripId,
-  qaAddress,
   waitForConnect,
   waitForSocketEventAny,
   waitForSocketEvent,
 } from "../support/live-utils";
-import { markLiveBookingReleased, recordLiveArtifact, recordLiveNote, requireLiveSuiteState } from "../support/live-suite-state";
+import { markLiveBookingReleased, recordLiveArtifact, recordLiveNote } from "../support/live-suite-state";
 
 test.describe("Live Race And Recovery", () => {
   test.describe.configure({ mode: "serial" });
@@ -23,17 +22,23 @@ test.describe("Live Race And Recovery", () => {
     let driverTwoSocket: Socket | null = null;
 
     try {
-      const sharedState = await requireLiveSuiteState();
-      const customer = (await pickCustomerForRideBooking(client, "race-recovery")).session;
-      const [driverOne, driverTwo] = await pickAvailableDrivers(client, [
-        sharedState.actors.driverBikeSecondary.session,
-        sharedState.actors.driverBikeTertiary.session,
-        sharedState.actors.driverBikeQuaternary.session,
-      ]);
+      const bootstrap = await client.seedTestAccounts();
+      const customer = bootstrap.sessions?.customers?.find((entry) => entry.phone === runtime.liveCustomerPhone)?.session;
+      const driverOne = bootstrap.sessions?.drivers?.find((entry) => entry.phone === "9100000002")?.session;
+      const driverTwo = bootstrap.sessions?.drivers?.find((entry) => entry.phone === "9100000003")?.session;
+      if (!customer || !driverOne || !driverTwo) {
+        throw new Error("Seed bootstrap did not return reusable customer/driver sessions.");
+      }
 
       await client.bestEffortCancelActiveTrip(customer, createQaTag("race pre-cleanup"));
-
-      customerSocket = await connectAuthenticatedSocket(client, customer, "customer");
+      const bikePhones = ["9100000001", "9100000002", "9100000003", "9100000004"];
+      for (const phone of bikePhones) {
+        const bikeDriver = bootstrap.sessions?.drivers?.find((entry) => entry.phone === phone)?.session;
+        if (!bikeDriver) {
+          throw new Error(`Missing seeded driver session for ${phone}`);
+        }
+        await client.setDriverOnlineStatus(bikeDriver, { isOnline: false, lat: runtime.ridePickupLat, lng: runtime.ridePickupLng });
+      }
       driverOneSocket = await connectAuthenticatedSocket(client, driverOne, "driver");
       driverTwoSocket = await connectAuthenticatedSocket(client, driverTwo, "driver");
 
@@ -46,12 +51,12 @@ test.describe("Live Race And Recovery", () => {
         await waitForSocketEvent(socket, "driver:online_ack");
       }
 
-      const bikeCategory = sharedState.categories.bike;
+      const bikeCategory = await client.getCategoryByLabel("bike");
       const managed = await createManagedRideBooking(client, "race-recovery", () => ({
-        pickupAddress: qaAddress("race pickup"),
+        pickupAddress: createQaTag("Hyderabad QA race pickup"),
         pickupLat: runtime.ridePickupLat,
         pickupLng: runtime.ridePickupLng,
-        destinationAddress: qaAddress("race destination"),
+        destinationAddress: createQaTag("Hyderabad QA race destination"),
         destinationLat: runtime.rideDestinationLat,
         destinationLng: runtime.rideDestinationLng,
         vehicleCategoryId: bikeCategory.id,
@@ -61,20 +66,26 @@ test.describe("Live Race And Recovery", () => {
         paymentMethod: "cash",
       }));
       const rideCustomer = managed.customer;
+      customerSocket = await connectAuthenticatedSocket(client, rideCustomer, "customer");
       const tripId = managed.tripId || extractTripId(managed.booking) || extractTripId(await client.getCustomerActiveTrip(rideCustomer));
       expect(tripId).toBeTruthy();
       await recordLiveArtifact("tripIds", String(tripId));
       customerSocket.emit("customer:track_trip", { tripId });
 
-      const rejectedBy: string[] = [];
+      await waitForIncomingTripAssignment(client, [driverOne, driverTwo], String(tripId));
 
+      const rejectedBy: string[] = [];
       driverOneSocket.once("driver:accept_trip_error", () => rejectedBy.push(driverOne.user.id));
       driverTwoSocket.once("driver:accept_trip_error", () => rejectedBy.push(driverTwo.user.id));
+
+      // Arm the customer listener before emitting accepts so we do not miss a fast
+      // trip:driver_assigned/trip:accepted event under low-latency local runs.
+      const assignmentPromise = waitForSocketEventAny<any>(customerSocket, ["trip:driver_assigned", "trip:accepted"], 25_000);
 
       driverOneSocket.emit("driver:accept_trip", { tripId });
       driverTwoSocket.emit("driver:accept_trip", { tripId });
 
-      const assignment = await waitForSocketEventAny<any>(customerSocket, ["trip:driver_assigned", "trip:accepted"], 25_000);
+      const assignment = await assignmentPromise;
       const claimedDriverId = assignment.payload?.driver?.id || assignment.payload?.driverId || null;
       expect(claimedDriverId).toBeTruthy();
 
@@ -129,4 +140,24 @@ async function connectAuthenticatedSocket(
     await waitForConnect(socket, 20_000);
     return socket;
   }
+}
+
+async function waitForIncomingTripAssignment(
+  client: LiveClient,
+  sessions: MobileSession[],
+  tripId: string,
+  timeoutMs = 20_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    for (const session of sessions) {
+      const incoming = await client.getDriverIncomingTrip(session);
+      const incomingTripId = incoming?.trip?.tripId || incoming?.trip?.id || null;
+      if (incomingTripId === tripId) {
+        return incoming;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  throw new Error(`Timed out waiting for incoming trip assignment for ${tripId}`);
 }

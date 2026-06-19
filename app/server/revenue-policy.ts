@@ -272,6 +272,33 @@ export async function syncAllRevenueModuleConfigs(): Promise<void> {
   }
 }
 
+function isParcelTripType(tripType: unknown): boolean {
+  const tt = String(tripType || "").toLowerCase();
+  return tt === "parcel" || tt === "delivery" || tt === "cargo";
+}
+
+/** Load rides_model from revenue_model_settings (defaults to commission). */
+export async function getRidesRevenueModel(): Promise<string> {
+  const r = await rawDb.execute(rawSql`
+    SELECT value FROM revenue_model_settings WHERE key_name='rides_model' LIMIT 1
+  `).catch(() => ({ rows: [] as any[] }));
+  return String((r.rows[0] as any)?.value || "commission").toLowerCase();
+}
+
+/** P0 gate: ride trips require active subscription when rides_model is subscription/hybrid. */
+export async function assertDriverCanAcceptRideTrip(driverId: string, tripType?: unknown): Promise<void> {
+  if (isParcelTripType(tripType)) return;
+  const ridesModel = await getRidesRevenueModel();
+  if (!["subscription", "hybrid"].includes(ridesModel)) return;
+  const hasSubscription = await driverHasActiveSubscription(driverId);
+  if (!hasSubscription) {
+    const err: any = new Error("Active subscription required to accept rides. Please subscribe to continue.");
+    err.statusCode = 403;
+    err.code = "SUBSCRIPTION_REQUIRED";
+    throw err;
+  }
+}
+
 export async function driverHasActiveSubscription(driverId: string): Promise<boolean> {
   const freeR = await rawDb.execute(rawSql`
     SELECT launch_free_active, free_period_end

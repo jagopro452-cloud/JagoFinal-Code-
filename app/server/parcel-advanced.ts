@@ -510,10 +510,14 @@ async function resolveAllowedCategoryIds(parcelKey: string): Promise<string[]> {
   if (!allowedNames || !allowedNames.length) return [];
 
   const lowered = allowedNames.map((t) => t.toLowerCase());
+  const ilikePatterns = allowedNames.map((t) => `%${t.replace(/_/g, "%")}%`);
   const r = await rawDb.execute(rawSql`
     SELECT id FROM vehicle_categories
     WHERE REGEXP_REPLACE(LOWER(name), '[^a-z0-9]+', '_', 'g') = ANY(${lowered})
        OR REGEXP_REPLACE(LOWER(COALESCE(vehicle_type, '')), '[^a-z0-9]+', '_', 'g') = ANY(${lowered})
+       OR LOWER(COALESCE(vehicle_type, '')) = ${parcelKey.toLowerCase()}
+       OR LOWER(name) LIKE ANY(${ilikePatterns})
+       OR LOWER(COALESCE(vehicle_type, '')) LIKE ANY(${ilikePatterns})
   `).catch(() => ({ rows: [] as any[] }));
 
   const ids = (r.rows as any[]).map((row) => String(row.id));

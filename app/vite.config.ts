@@ -22,18 +22,20 @@ export default defineConfig({
     chunkSizeWarningLimit: 1500,
     rollupOptions: {
       output: {
-        manualChunks: {
-          "vendor-react": ["react", "react-dom"],
-          "vendor-query": ["@tanstack/react-query"],
-          "vendor-ui": [
-            "@radix-ui/react-dialog",
-            "@radix-ui/react-dropdown-menu",
-            "@radix-ui/react-select",
-            "@radix-ui/react-tabs",
-            "@radix-ui/react-toast",
-            "@radix-ui/react-tooltip",
-          ],
-          "vendor-motion": ["framer-motion"],
+        manualChunks(id) {
+          // Leaflet — only loads when user visits a map page (fleet-view, heat-map, zones)
+          if (id.includes("node_modules/leaflet")) return "leaflet";
+          // Recharts / d3 — only loads when user visits dashboard or reports
+          if (id.includes("node_modules/recharts") || id.includes("node_modules/d3") || id.includes("node_modules/victory")) return "charts";
+          // Radix UI components
+          if (id.includes("node_modules/@radix-ui")) return "vendor-ui";
+          // Tanstack Query
+          if (id.includes("node_modules/@tanstack/react-query")) return "vendor-query";
+          // Framer motion
+          if (id.includes("node_modules/framer-motion")) return "vendor-motion";
+          // React core — keep in its own chunk for long-term caching
+          if (id.includes("node_modules/react-dom")) return "vendor-react-dom";
+          if (id.includes("node_modules/react/")) return "vendor-react";
         },
       },
     },

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { adminFetch } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 
 interface CityData {
   city_name: string;
@@ -18,6 +19,7 @@ interface PlatformService {
 
 export default function CityServices() {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const [newCity, setNewCity] = useState({ name: "", lat: "", lng: "", radius: "30" });
   const [showAddCity, setShowAddCity] = useState(false);
 
@@ -51,6 +53,7 @@ export default function CityServices() {
       if (!r.ok) throw new Error("Failed");
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/admin/city-services"] }),
+    onError: (e: any) => { qc.invalidateQueries({ queryKey: ["/api/admin/city-services"] }); toast({ title: "Toggle failed", description: e.message, variant: "destructive" }); },
   });
 
   const addCityMut = useMutation({
@@ -65,6 +68,7 @@ export default function CityServices() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/admin/city-services"] });
     },
+    onError: (e: any) => toast({ title: "Failed to add city service", description: e.message, variant: "destructive" }),
   });
 
   const enableAllServicesForCity = async (cityName: string, lat: number, lng: number) => {

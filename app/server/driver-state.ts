@@ -52,7 +52,7 @@ export function transitionDriverState(current: DriverState, next: DriverState): 
 }
 
 export function activeDriverEligibilitySql(alias = "u") {
-  return rawSql.raw(`${alias}.is_active = true AND ${alias}.is_locked = false AND ${alias}.verification_status = 'approved'`);
+  return rawSql.raw(`${alias}.is_active = true AND ${alias}.is_locked = false AND ${alias}.verification_status IN ('approved', 'verified')`);
 }
 
 export async function logDriverEvent(driverId: string, event: string, meta: DriverStateMeta = {}): Promise<void> {

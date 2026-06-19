@@ -28,6 +28,8 @@ services:
     envs:
       - key: NODE_ENV
         value: "production"
+      - key: APP_ENV
+        value: "production"
       - key: PORT
         value: "8080"
       # --- Secrets: set these ONLY in DigitalOcean dashboard, NOT here ---
@@ -79,6 +81,8 @@ services:
         value: "false"
       # To enable 2FA: set ADMIN_2FA_REQUIRED=true and ADMIN_PHONE=+91XXXXXXXXXX in DO dashboard
       - key: ENABLE_DEV_OTP_RESPONSES
+        value: "false"
+      - key: ALLOW_QA_TEST_SEEDING
         value: "false"
       - key: SOCKET_ALLOWED_ORIGINS
         value: "https://jagopro.org"

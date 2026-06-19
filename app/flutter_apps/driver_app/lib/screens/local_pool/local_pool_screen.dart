@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 import '../../config/api_config.dart';
 import '../../config/jago_theme.dart';
@@ -28,6 +29,40 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
   StreamSubscription<Map<String, dynamic>>? _seatSub;
   StreamSubscription<Map<String, dynamic>>? _cancelSub;
   StreamSubscription<Map<String, dynamic>>? _callIncomingSub;
+
+  Widget _buildSheetHandle() {
+    return Container(
+      width: 44,
+      height: 4,
+      decoration: BoxDecoration(
+        color: _border,
+        borderRadius: BorderRadius.circular(4),
+      ),
+    );
+  }
+
+  Widget _buildLoadingState() {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(
+            width: 44,
+            height: 44,
+            child: CircularProgressIndicator(
+              color: _primary,
+              strokeWidth: 2.5,
+            ),
+          ),
+          const SizedBox(height: 14),
+          Text(
+            'Preparing your pool dashboard...',
+            style: GoogleFonts.poppins(fontSize: 13, color: _textSec),
+          ),
+        ],
+      ),
+    );
+  }
 
   bool _loading = true;
   bool _starting = false;
@@ -247,6 +282,7 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
           controller: _otpCtrl,
           keyboardType: TextInputType.number,
           maxLength: 4,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
           decoration: const InputDecoration(hintText: '4-digit OTP'),
         ),
         actions: [
@@ -449,6 +485,281 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
     }
   }
 
+  double? _readDouble(dynamic value) {
+    if (value == null) return null;
+    final parsed = double.tryParse(value.toString());
+    if (parsed == null || parsed == 0) return null;
+    return parsed;
+  }
+
+  Widget _buildPoolMapHero() {
+    final currentLat = _readDouble(_session?['current_lat']);
+    final currentLng = _readDouble(_session?['current_lng']);
+    final points = <LatLng>[];
+    final markers = <Marker>{};
+
+    if (currentLat != null && currentLng != null) {
+      final self = LatLng(currentLat, currentLng);
+      points.add(self);
+      markers.add(
+        Marker(
+          markerId: const MarkerId('driver'),
+          position: self,
+          infoWindow: const InfoWindow(title: 'Driver'),
+          icon: BitmapDescriptor.defaultMarkerWithHue(
+            BitmapDescriptor.hueAzure,
+          ),
+        ),
+      );
+    }
+
+    for (var i = 0; i < _passengers.length; i++) {
+      final p = _passengers[i] as Map<String, dynamic>;
+      final pickupLat = _readDouble(p['pickup_lat'] ?? p['pickupLat']);
+      final pickupLng = _readDouble(p['pickup_lng'] ?? p['pickupLng']);
+      final dropLat = _readDouble(p['drop_lat'] ?? p['dropLat']);
+      final dropLng = _readDouble(p['drop_lng'] ?? p['dropLng']);
+      final status = p['status']?.toString() ?? '';
+
+      if (pickupLat != null &&
+          pickupLng != null &&
+          status != 'picked_up' &&
+          status != 'dropped') {
+        final pickup = LatLng(pickupLat, pickupLng);
+        points.add(pickup);
+        markers.add(
+          Marker(
+            markerId: MarkerId('pickup_$i'),
+            position: pickup,
+            infoWindow: InfoWindow(
+              title: 'Pickup ${i + 1}',
+              snippet: p['customer_name']?.toString() ?? 'Passenger',
+            ),
+            icon: BitmapDescriptor.defaultMarkerWithHue(
+              BitmapDescriptor.hueGreen,
+            ),
+          ),
+        );
+      }
+
+      if (dropLat != null && dropLng != null) {
+        final drop = LatLng(dropLat, dropLng);
+        points.add(drop);
+        markers.add(
+          Marker(
+            markerId: MarkerId('drop_$i'),
+            position: drop,
+            infoWindow: InfoWindow(
+              title: 'Drop ${i + 1}',
+              snippet: p['customer_name']?.toString() ?? 'Passenger',
+            ),
+            icon: BitmapDescriptor.defaultMarkerWithHue(
+              BitmapDescriptor.hueRed,
+            ),
+          ),
+        );
+      }
+    }
+
+    final center = points.isNotEmpty ? points.first : const LatLng(17.3850, 78.4867);
+    final polyline = points.length >= 2
+        ? {
+            Polyline(
+              polylineId: const PolylineId('pool_route'),
+              points: points,
+              color: _primary,
+              width: 5,
+              startCap: Cap.roundCap,
+              endCap: Cap.roundCap,
+            ),
+          }
+        : <Polyline>{};
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(24),
+      child: Stack(
+        children: [
+          SizedBox(
+            height: 320,
+            child: GoogleMap(
+              initialCameraPosition: CameraPosition(target: center, zoom: 13.2),
+              markers: markers,
+              polylines: polyline,
+              myLocationEnabled: false,
+              myLocationButtonEnabled: false,
+              zoomControlsEnabled: false,
+              mapToolbarEnabled: false,
+              compassEnabled: false,
+            ),
+          ),
+          Positioned(
+            left: 16,
+            right: 16,
+            top: 16,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(18),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Shared route live',
+                          style: GoogleFonts.poppins(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                            color: _textPri,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Pickup order, drop order, and seat queue are visible here.',
+                          style: GoogleFonts.poppins(
+                            fontSize: 12,
+                            color: _textSec,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: _primary.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Text(
+                      '${_passengers.length} riders',
+                      style: GoogleFonts.poppins(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                        color: _primary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSequenceCard() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: _border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Pickup & Drop Order',
+            style: GoogleFonts.poppins(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: _textPri,
+            ),
+          ),
+          const SizedBox(height: 12),
+          if (_passengers.isEmpty)
+            Text(
+              'Passenger queue will appear here once pooling starts.',
+              style: GoogleFonts.poppins(fontSize: 12, color: _textSec),
+            ),
+          ...List.generate(_passengers.length, (index) {
+            final p = _passengers[index] as Map<String, dynamic>;
+            final status = p['status']?.toString() ?? 'matched';
+            return Padding(
+              padding: EdgeInsets.only(bottom: index == _passengers.length - 1 ? 0 : 10),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: _primary.withValues(alpha: 0.10),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Center(
+                      child: Text(
+                        '${index + 1}',
+                        style: GoogleFonts.poppins(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: _primary,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          p['customer_name']?.toString() ?? 'Passenger',
+                          style: GoogleFonts.poppins(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: _textPri,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          'Pickup: ${p['pickup_address'] ?? '-'}',
+                          style: GoogleFonts.poppins(fontSize: 11.5, color: _textSec),
+                        ),
+                        Text(
+                          'Drop: ${p['drop_address'] ?? '-'}',
+                          style: GoogleFonts.poppins(fontSize: 11.5, color: _textSec),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: status == 'picked_up'
+                          ? const Color(0xFF16A34A).withValues(alpha: 0.10)
+                          : _primary.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      status == 'picked_up'
+                          ? 'Onboard'
+                          : status == 'pending_driver_accept'
+                              ? 'Awaiting accept'
+                              : 'Boarding OTP',
+                      style: GoogleFonts.poppins(
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w600,
+                        color: status == 'picked_up'
+                            ? const Color(0xFF16A34A)
+                            : _primary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -468,31 +779,86 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
         ],
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator(color: _primary, strokeWidth: 2.5))
+          ? _buildLoadingState()
           : _error != null
               ? _buildError()
-              : RefreshIndicator(
-                  onRefresh: _load,
-                  color: _primary,
-                  child: ListView(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
-                    children: [
-                      if (_session == null) _buildStarter() else ...[
-                        _buildSessionHero(),
-                        const SizedBox(height: 14),
-                        _buildAcceptingControl(),
-                        const SizedBox(height: 14),
-                        _buildMetrics(),
-                        const SizedBox(height: 14),
-                        _buildSafetyActions(),
-                        const SizedBox(height: 14),
-                        _buildSeatDeck(),
-                        const SizedBox(height: 14),
-                        _buildPassengers(),
-                      ],
-                    ],
-                  ),
-                ),
+              : _session == null
+                  ? RefreshIndicator(
+                      onRefresh: _load,
+                      color: _primary,
+                      child: ListView(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+                        children: [_buildStarter()],
+                      ),
+                    )
+                  : RefreshIndicator(
+                      onRefresh: _load,
+                      color: _primary,
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          final sheetMaxHeight =
+                              constraints.maxHeight > 820 ? 380.0 : 350.0;
+                          return Stack(
+                            children: [
+                              Positioned.fill(
+                                child: ListView(
+                                  physics: const AlwaysScrollableScrollPhysics(),
+                                  children: [
+                                    SizedBox(
+                                      height: constraints.maxHeight,
+                                      child: _buildPoolMapHero(),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Align(
+                                alignment: Alignment.bottomCenter,
+                                child: Container(
+                                  constraints:
+                                      BoxConstraints(maxHeight: sheetMaxHeight),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white,
+                                    borderRadius: const BorderRadius.vertical(
+                                      top: Radius.circular(24),
+                                    ),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.black.withValues(alpha: 0.12),
+                                        blurRadius: 24,
+                                        offset: const Offset(0, -8),
+                                      ),
+                                    ],
+                                  ),
+                                  child: SingleChildScrollView(
+                                    physics: const ClampingScrollPhysics(),
+                                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                                    child: Column(
+                                      children: [
+                                        _buildSheetHandle(),
+                                        const SizedBox(height: 12),
+                                        _buildSessionHero(),
+                                        const SizedBox(height: 14),
+                                        _buildAcceptingControl(),
+                                        const SizedBox(height: 14),
+                                        _buildMetrics(),
+                                        const SizedBox(height: 14),
+                                        _buildSequenceCard(),
+                                        const SizedBox(height: 14),
+                                        _buildSeatDeck(),
+                                        const SizedBox(height: 14),
+                                        _buildSafetyActions(),
+                                        const SizedBox(height: 14),
+                                        _buildPassengers(),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                    ),
     );
   }
 
@@ -539,7 +905,7 @@ class _LocalPoolScreenState extends State<LocalPoolScreen> {
           const SizedBox(height: 18),
           SizedBox(
             width: double.infinity,
-            height: 52,
+            height: 56,
             child: ElevatedButton(
               onPressed: _starting ? null : _startSession,
               style: ElevatedButton.styleFrom(

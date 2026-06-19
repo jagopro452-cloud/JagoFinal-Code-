@@ -265,7 +265,7 @@ export default function AlertEnginePage() {
         toast({ title: "Reload blocked", description: data.error, variant: "destructive" });
       }
     },
-    onError: () => toast({ title: "Reload failed", variant: "destructive" }),
+    onError: (e: any) => toast({ title: "Reload failed", description: e.message, variant: "destructive" }),
   });
 
   const testMut = useMutation({

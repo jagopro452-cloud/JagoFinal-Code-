@@ -65,12 +65,14 @@ export default function CancellationReasonsPage() {
   const remove = useMutation({
     mutationFn: (id: string) => apiRequest("DELETE", `/api/cancellation-reasons/${id}`),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/cancellation-reasons"] }); toast({ title: "Reason deleted" }); },
+    onError: (e: any) => toast({ title: "Delete failed", description: e.message, variant: "destructive" }),
   });
 
   const toggleStatus = useMutation({
     mutationFn: ({ id, isActive }: { id: string; isActive: boolean }) =>
       apiRequest("PATCH", `/api/cancellation-reasons/${id}`, { isActive }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/cancellation-reasons"] }),
+    onError: (e: any) => { qc.invalidateQueries({ queryKey: ["/api/cancellation-reasons"] }); toast({ title: "Toggle failed", description: e.message, variant: "destructive" }); },
   });
 
   const openCreate = () => { setEditing(null); setForm({ reason: "", userType: "customer" }); setOpen(true); };

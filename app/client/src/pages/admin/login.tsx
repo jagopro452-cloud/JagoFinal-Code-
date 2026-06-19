@@ -85,7 +85,7 @@ export default function AdminLogin() {
     const saved = localStorage.getItem("jago-admin");
     if (!saved) return;
     verifyAdminSession()
-      .then(() => setLocation("/admin/dashboard"))
+      .then(() => window.location.replace("/admin/dashboard"))
       .catch(() => clearAdminSession("stale-login-session"));
   }, [setLocation]);
 
@@ -143,7 +143,7 @@ export default function AdminLogin() {
       const data = await res.json();
       if (res.ok && data?.token) {
         saveAdminSession({ ...(data.admin || data), token: data.token, refreshToken: data.refreshToken || null, expiresAt: data.expiresAt });
-        setLocation("/admin/dashboard");
+        window.location.replace("/admin/dashboard");
       } else {
         // 2FA disabled - just show error message
         setError(data.message || "Invalid credentials. Please try again.");
@@ -168,7 +168,7 @@ export default function AdminLogin() {
       const data = await res.json();
       if (res.ok && data?.token) {
         saveAdminSession({ ...(data.admin || data), token: data.token, refreshToken: data.refreshToken || null, expiresAt: data.expiresAt });
-        setLocation("/admin/dashboard");
+        window.location.replace("/admin/dashboard");
       } else {
         setError(data.message || "Invalid OTP. Please try again.");
       }

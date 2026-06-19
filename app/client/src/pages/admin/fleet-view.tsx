@@ -2,11 +2,18 @@
 import { useQuery } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 import L from "leaflet";
-import "leaflet/dist/leaflet.css";
 
-/*  CSS injected once  */
+/*  CSS injected once — only when map page is actually rendered  */
 function injectMapStyles() {
   if (document.getElementById("jago-map-styles")) return;
+  // Leaflet CSS — load on demand (not at import time) to avoid affecting non-map pages
+  if (!document.getElementById("leaflet-css")) {
+    const leafletCss = document.createElement("link");
+    leafletCss.id = "leaflet-css";
+    leafletCss.rel = "stylesheet";
+    leafletCss.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+    document.head.appendChild(leafletCss);
+  }
   const style = document.createElement("style");
   style.id = "jago-map-styles";
   style.textContent = `

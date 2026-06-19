@@ -31,6 +31,7 @@ const CHANGE_META: Record<string, { label: string; area: string; risk: "high" | 
   razorpay_mode: { label: "Razorpay Mode", area: "Payment Gateway", risk: "high", note: "Moving to live mode will charge real customer payments." },
   razorpay_key_id: { label: "Razorpay Key ID", area: "Payment Gateway", risk: "high", note: "Publishing a new payment key changes the active processor identity." },
   razorpay_key_secret: { label: "Razorpay Key Secret", area: "Payment Gateway", risk: "high", note: "A new secret immediately changes payment authentication." },
+  razorpay_webhook_secret: { label: "Razorpay Webhook Secret", area: "Payment Gateway", risk: "high", note: "Webhook verification will fail until the active secret matches Razorpay dashboard settings." },
   cash_enabled: { label: "Cash Payment", area: "Payment Gateway", risk: "medium", note: "Turning cash off changes customer payment fallback behavior." },
   wallet_enabled: { label: "Wallet Payment", area: "Payment Gateway", risk: "medium", note: "Turning wallet off affects stored-balance settlement flows." },
   driver_commission_percent: { label: "Driver Commission Percent", area: "Commission", risk: "high", note: "Commission changes affect every newly completed ride." },
@@ -45,9 +46,11 @@ const CHANGE_META: Record<string, { label: string; area: string; risk: "high" | 
   helper_booking_enabled: { label: "Helper Booking Enabled", area: "Dispatch Settings", risk: "medium", note: "This affects parcel and porter booking availability." },
   intercity_driver_verification: { label: "Intercity Driver Verification", area: "Dispatch Settings", risk: "high", note: "Turning this off may allow unverified drivers on intercity trips." },
   firebase_enabled: { label: "Firebase Notifications", area: "Firebase & SMS", risk: "medium", note: "This impacts push delivery for app alerts and fallback flows." },
+  firebase_web_api_key: { label: "Firebase Web API Key", area: "Firebase & SMS", risk: "high", note: "This key is required for app auth and client-side Firebase flows." },
   sms_provider: { label: "SMS Provider", area: "Firebase & SMS", risk: "high", note: "Provider changes immediately alter OTP delivery routing." },
   sms_api_key: { label: "SMS API Key", area: "Firebase & SMS", risk: "high", note: "Publishing a new key changes the active OTP delivery credential." },
   google_maps_key: { label: "Google Maps Key", area: "Google Maps", risk: "high", note: "Maps key changes affect pickup search, routing and app geolocation." },
+  app_base_url: { label: "App Base URL", area: "Google Maps", risk: "medium", note: "Deep links, receipts and customer-facing redirects depend on the public base URL." },
   anthropic_api_key: { label: "Anthropic API Key", area: "Claude AI", risk: "medium", note: "This changes live AI routing for voice booking requests." },
   sound_sos: { label: "SOS Alert Sound", area: "Sound Alerts", risk: "high", note: "Disabling this reduces urgency signalling for active safety incidents." },
   sound_repeat_count: { label: "Alert Sound Repeat Count", area: "Sound Alerts", risk: "medium", note: "This affects how strongly incoming ride alerts are surfaced." },
@@ -369,7 +372,7 @@ export default function ConfigurationsPage() {
       setReviewState(null);
       toast({ title: "Settings saved successfully" });
     },
-    onError: () => toast({ title: "Failed to save settings", variant: "destructive" }),
+    onError: (e: any) => toast({ title: "Failed to save settings", description: e.message, variant: "destructive" }),
   });
 
   const curTab = CONFIG_TABS.find(t => t.id === tab)!;
@@ -700,6 +703,18 @@ export default function ConfigurationsPage() {
                       placeholder="Enter secret key"
                       data-testid="input-razorpay-secret" style={{ fontSize: 12 }} />
                   </div>
+                  <div className="col-12">
+                    <label style={{ fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 6, display: "block" }}>
+                      Webhook Secret <span className="text-danger">*</span>
+                    </label>
+                    <input type="password" className="admin-form-control"
+                      value={get("razorpay_webhook_secret")} onChange={e => set("razorpay_webhook_secret")(e.target.value)}
+                      placeholder="Enter Razorpay webhook secret"
+                      data-testid="input-razorpay-webhook-secret" style={{ fontSize: 12 }} />
+                    <div style={{ fontSize: 11.5, color: "#94a3b8", marginTop: 6 }}>
+                      Payment verification and webhook replay correct ga work avvalante Razorpay dashboard lo set chesina same secret ikkada undali.
+                    </div>
+                  </div>
                 </div>
 
                 <div className="mt-3 p-3 rounded-3" style={{ background: "#f8fafc", border: "1px solid #e2e8f0" }}>
@@ -835,6 +850,11 @@ export default function ConfigurationsPage() {
                 value={get("firebase_service_account")} onChange={set("firebase_service_account")}
                 type="password" placeholder='{"type":"service_account","project_id":"..."}' />
 
+              <Field label="Firebase Web API Key" id="firebase_web_api_key"
+                desc="Firebase app auth and client SDK readiness kosam required. Project settings nunchi Web API key paste cheyyi."
+                value={get("firebase_web_api_key")} onChange={set("firebase_web_api_key")}
+                type="password" placeholder="AIzaSy..." />
+
               <div style={{ height: 24 }} />
               <div style={{ fontSize: 13, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: ".5px", marginBottom: 12 }}>
                 SMS Gateway
@@ -891,6 +911,11 @@ export default function ConfigurationsPage() {
                 desc="Enable Maps SDK for Android, iOS and Places API in Google Cloud Console"
                 value={get("google_maps_key")} onChange={set("google_maps_key")}
                 type="password" placeholder="AIzaSy..." />
+
+              <Field label="Public App Base URL" id="app_base_url"
+                desc="Receipts, redirects, deep links, and customer-facing callback URLs kosam use ayye public domain. Example: https://jagopro.org"
+                value={get("app_base_url")} onChange={set("app_base_url")}
+                placeholder="https://your-domain.com" />
 
               <div className="mt-3 p-3 rounded-3" style={{ background: "#f8fafc", border: "1px solid #e2e8f0" }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 6 }}>

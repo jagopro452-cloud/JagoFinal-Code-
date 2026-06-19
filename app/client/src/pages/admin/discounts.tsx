@@ -125,7 +125,7 @@ export default function DiscountsPage() {
       setEditing(null);
       setForm({ ...EMPTY_FORM });
     },
-    onError: () => toast({ title: "Failed to save", variant: "destructive" }),
+    onError: (e: any) => toast({ title: "Failed to save", description: e.message, variant: "destructive" }),
   });
 
   const deleteMutation = useMutation({
@@ -134,6 +134,7 @@ export default function DiscountsPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/discounts"] });
       toast({ title: "Discount deleted" });
     },
+    onError: (e: any) => toast({ title: "Delete failed", description: e.message, variant: "destructive" }),
   });
 
   const toggleMutation = useMutation({
@@ -143,7 +144,7 @@ export default function DiscountsPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/discounts"] });
       toast({ title: "Status updated" });
     },
-    onError: () => toast({ title: "Failed to update status", variant: "destructive" }),
+    onError: (e: any) => { queryClient.invalidateQueries({ queryKey: ["/api/discounts"] }); toast({ title: "Failed to update status", description: e.message, variant: "destructive" }); },
   });
 
   const openAdd = () => {

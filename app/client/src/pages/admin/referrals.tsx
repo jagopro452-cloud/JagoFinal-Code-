@@ -56,7 +56,7 @@ export default function ReferralsPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/referrals"] });
       queryClient.invalidateQueries({ queryKey: ["/api/referrals/stats"] });
     },
-    onError: () => toast({ title: "Failed to update", variant: "destructive" }),
+    onError: (e: any) => toast({ title: "Failed to update", description: e.message, variant: "destructive" }),
   });
 
   const expireMutation = useMutation({
@@ -66,7 +66,7 @@ export default function ReferralsPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/referrals"] });
       queryClient.invalidateQueries({ queryKey: ["/api/referrals/stats"] });
     },
-    onError: () => toast({ title: "Failed to update", variant: "destructive" }),
+    onError: (e: any) => toast({ title: "Failed to update", description: e.message, variant: "destructive" }),
   });
 
   const statCards = [

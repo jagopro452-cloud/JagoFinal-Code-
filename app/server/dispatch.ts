@@ -101,9 +101,9 @@ async function persistDriverOffer(
   session: DispatchSession,
   driver: DriverMatchScore,
   payload: Record<string, any>,
-): Promise<void> {
+): Promise<{ rowCount: number; offeredDriverId: string | null }> {
   const timeoutSec = Math.max(1, Math.ceil(session.config.driverTimeoutMs / 1000));
-  await rawDb.execute(rawSql`
+  const result = await rawDb.execute(rawSql`
     UPDATE trip_requests
     SET offered_driver_id=${driver.driverId}::uuid,
         offer_expires_at=NOW() + (${timeoutSec} * INTERVAL '1 second'),
@@ -112,7 +112,13 @@ async function persistDriverOffer(
     WHERE id=${session.tripId}::uuid
       AND current_status='searching'
       AND driver_id IS NULL
+    RETURNING offered_driver_id
   `);
+  const offeredDriverId = (result.rows[0] as any)?.offered_driver_id
+    ? String((result.rows[0] as any).offered_driver_id)
+    : null;
+  console.log(`[DISPATCH_TRACE] trip=${session.tripId} persistDriverOffer driver=${driver.driverId} rowCount=${result.rows.length} offeredDriverId=${offeredDriverId || "null"}`);
+  return { rowCount: result.rows.length, offeredDriverId };
 }
 
 async function clearPersistedOffer(tripId: string, driverId?: string): Promise<void> {
@@ -461,6 +467,7 @@ async function searchAndDispatchNextRadius(session: DispatchSession): Promise<vo
         config.driversPerStep
       );
     }
+    console.log(`[DISPATCH_TRACE] trip=${session.tripId} radius=${radiusKm} candidateCount=${drivers.length} candidateIds=${drivers.map((driver) => driver.driverId).join(",") || "none"}`);
 
     if (session.status !== "searching" && session.status !== "offered") return;
 
@@ -524,13 +531,16 @@ async function dispatchNextDriver(session: DispatchSession): Promise<void> {
   while (session.queueIndex < session.driverQueue.length) {
     const driver = session.driverQueue[session.queueIndex];
     session.queueIndex++;
+    console.log(`[DISPATCH_TRACE] trip=${session.tripId} queueIndex=${session.queueIndex}/${session.driverQueue.length} evaluatingDriver=${driver.driverId}`);
 
     if (session.notifiedDriverIds.has(driver.driverId) || session.rejectedDriverIds.has(driver.driverId)) {
+      console.log(`[DISPATCH_TRACE] trip=${session.tripId} skipDriver=${driver.driverId} reason=${session.notifiedDriverIds.has(driver.driverId) ? "already_notified" : "already_rejected"}`);
       continue; // Skip already-notified or rejected drivers
     }
 
     // Verify driver is still available (online, no active trip)
     const isAvailable = await checkDriverAvailability(driver.driverId, session.requirements);
+    console.log(`[DISPATCH_TRACE] trip=${session.tripId} availability driver=${driver.driverId} available=${isAvailable}`);
     if (!isAvailable) continue;
 
     // Send request to this single driver
@@ -552,6 +562,7 @@ async function offerTripToDriver(session: DispatchSession, driver: DriverMatchSc
   session.status = "offered";
   session.currentOfferedDriverId = driver.driverId;
   session.notifiedDriverIds.add(driver.driverId);
+  console.log(`[DISPATCH_TRACE] trip=${session.tripId} offerTripToDriver driver=${driver.driverId} notifiedCount=${session.notifiedDriverIds.size}`);
 
   const payload = {
     tripId: session.tripId,
@@ -564,9 +575,11 @@ async function offerTripToDriver(session: DispatchSession, driver: DriverMatchSc
     timeoutMs: session.config.driverTimeoutMs,
   };
 
-  await persistDriverOffer(session, driver, payload).catch((err: any) => {
+  const persistResult = await persistDriverOffer(session, driver, payload).catch((err: any) => {
     console.error(`[DISPATCH] Failed to persist driver offer trip=${session.tripId} pilot=${driver.driverId}:`, err?.message || err);
+    return { rowCount: 0, offeredDriverId: null };
   });
+  console.log(`[DISPATCH_TRACE] trip=${session.tripId} offerUpdateResult driver=${driver.driverId} rowCount=${persistResult.rowCount} offeredDriverId=${persistResult.offeredDriverId || "null"}`);
 
   // Socket notification (foreground)
   if (io) {
@@ -649,6 +662,8 @@ async function expireDispatch(session: DispatchSession, message: string): Promis
     session.driverQueue = [];
     session.queueIndex = 0;
     session.status = "searching";
+    session.notifiedDriverIds = new Set();
+    session.rejectedDriverIds = new Set();
     console.log(`[DISPATCH] No drivers found for trip ${session.tripId} — scheduling retry #${session.retryCount} in 45s`);
 
     // Notify customer we're still searching

@@ -17,6 +17,7 @@ import { calculateRevenueBreakdown, settleRevenue } from "./revenue-engine";
 import { enforceDriverRevenuePolicy } from "./revenue-policy";
 import { sendFcmNotification } from "./fcm";
 import { assertSchemaObjectsOrThrow } from "./schema-health";
+import { getMatchingDriverCategoryIds } from "./vehicle-matching";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -387,7 +388,6 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any, requi
           dd.vehicle_category_id,
           vc.id,
           vc.name,
-          vc.slug,
           vc.type,
           vc.service_type,
           vc.vehicle_type,
@@ -775,6 +775,7 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any, requi
         fromCity, toCity,
         pickupLat, pickupLng, dropLat, dropLng,
         date, seats = "1",
+        vehicleCategoryId, vehicleType,
       } = req.query as any;
 
       if (!fromCity || !toCity) return res.status(400).json({ message: "fromCity and toCity required" });
@@ -789,14 +790,38 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any, requi
       const dLat = dropLat   ? parseFloat(dropLat)   : null;
       const dLng = dropLng   ? parseFloat(dropLng)   : null;
 
+      const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      let categoryFilter = rawSql``;
+      if (vehicleCategoryId && uuidRe.test(String(vehicleCategoryId))) {
+        const matchingIds = (await getMatchingDriverCategoryIds(String(vehicleCategoryId)) || [String(vehicleCategoryId)])
+          .filter((id) => uuidRe.test(id));
+        if (matchingIds.length === 1) {
+          categoryFilter = rawSql`AND opr.vehicle_category_id = ${matchingIds[0]}::uuid`;
+        } else if (matchingIds.length > 1) {
+          categoryFilter = rawSql`AND opr.vehicle_category_id IN (${rawSql.join(
+            matchingIds.map((id) => rawSql`${id}::uuid`),
+            rawSql`, `,
+          )})`;
+        }
+      } else if (vehicleType) {
+        const vt = String(vehicleType).trim().toLowerCase();
+        categoryFilter = rawSql`AND (
+          LOWER(COALESCE(vc.vehicle_type, '')) = ${vt}
+          OR LOWER(COALESCE(vc.name, '')) LIKE ${`%${vt}%`}
+        )`;
+      }
+
       const r = await rawDb.execute(rawSql`
         SELECT opr.*,
           u.full_name as driver_name, u.phone as driver_phone,
           dd.avg_rating as driver_rating, dd.vehicle_number, dd.vehicle_model,
+          COALESCE(vc.name, '') as vehicle_category_name,
+          COALESCE(vc.vehicle_type, '') as vehicle_type,
           COUNT(opb.id) FILTER (WHERE opb.status != 'cancelled')::int as booked_count
         FROM outstation_pool_rides opr
         JOIN users u ON u.id = opr.driver_id
         LEFT JOIN driver_details dd ON dd.user_id = opr.driver_id
+        LEFT JOIN vehicle_categories vc ON vc.id = opr.vehicle_category_id
         LEFT JOIN outstation_pool_bookings opb ON opb.ride_id = opr.id
         WHERE opr.is_active = true
           AND opr.status IN ('scheduled', 'active')
@@ -805,7 +830,8 @@ export function registerOutstationPoolV2Routes(app: Express, authApp: any, requi
           AND LOWER(opr.from_city) LIKE LOWER(${`%${fromCity}%`})
           AND LOWER(opr.to_city) LIKE LOWER(${`%${toCity}%`})
           ${date ? rawSql`AND opr.departure_date = ${date}::date` : rawSql``}
-        GROUP BY opr.id, u.full_name, u.phone, dd.avg_rating, dd.vehicle_number, dd.vehicle_model
+          ${categoryFilter}
+        GROUP BY opr.id, u.full_name, u.phone, dd.avg_rating, dd.vehicle_number, dd.vehicle_model, vc.name, vc.vehicle_type
         ORDER BY opr.departure_date ASC, opr.departure_time ASC
         LIMIT 20
       `);

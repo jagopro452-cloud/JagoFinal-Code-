@@ -33,9 +33,9 @@ function VerifyModal({ driver, open, onClose }: { driver: any; open: boolean; on
   const [showRejectForm, setShowRejectForm] = useState(false);
 
   const saveDocs = useMutation({
-    mutationFn: (d: any) => apiRequest("PATCH", `/api/drivers/${driver.id}/documents`, d),
+    mutationFn: (d: any) => apiRequest("PATCH", `/api/admin/drivers/${driver.id}/documents`, d),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/users"] }); },
-    onError: () => toast({ title: "Failed to save document info", variant: "destructive" }),
+    onError: (e: any) => toast({ title: "Failed to save document info", description: e.message, variant: "destructive" }),
   });
 
   const verify = useMutation({

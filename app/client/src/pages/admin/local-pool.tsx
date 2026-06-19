@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { adminFetch, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -8,6 +8,7 @@ const STATUS_COLORS: Record<string, string> = {
   ended: "#16a34a",
   completed: "#16a34a",
   cancelled: "#dc2626",
+  pending_driver_accept: "#f59e0b",
   matched: "#2563eb",
   picked_up: "#0891b2",
   dropped: "#16a34a",
@@ -110,6 +111,11 @@ export default function LocalPool() {
 
   const { data: statsData } = useQuery<any>({ queryKey: ["/api/admin/local-pool/stats"] });
   const stats = statsData || {};
+  const { data: settingsData } = useQuery<any>({
+    queryKey: ["/api/admin/local-pool/settings"],
+    queryFn: () => apiRequest("GET", "/api/admin/local-pool/settings").then(r => r.json()),
+  });
+  const liveSettings = settingsData?.settings || {};
 
   const { data: ridesData, isLoading } = useQuery<any>({
     queryKey: ["/api/admin/local-pool/rides", statusFilter],
@@ -179,6 +185,7 @@ export default function LocalPool() {
       toast({ title: "Settings saved" });
       setSettingsOpen(false);
       qc.invalidateQueries({ queryKey: ["/api/admin/local-pool/stats"] });
+      qc.invalidateQueries({ queryKey: ["/api/admin/local-pool/settings"] });
     },
     onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
@@ -196,6 +203,27 @@ export default function LocalPool() {
   const occupiedSeats = rides.reduce((sum: number, ride: any) => sum + (parseInt(ride.bookedSeats) || 0), 0);
   const occupancyPct = totalSeatCapacity > 0 ? Math.round((occupiedSeats / totalSeatCapacity) * 100) : 0;
   const pendingPoolRefunds = poolRefunds.filter((item: any) => item.status === "pending");
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    setSettingsForm({
+      mode: String(liveSettings.local_pool_mode || "on"),
+      collectionSecs: String(liveSettings.local_pool_collection_secs || "300"),
+      matchRadiusKm: String(liveSettings.local_pool_match_radius_km || "4"),
+      maxDetourKm: String(liveSettings.local_pool_max_detour_km || "2.5"),
+      directionToleranceDeg: String(liveSettings.local_pool_direction_tolerance_deg || "50"),
+    });
+  }, [settingsOpen, liveSettings.local_pool_mode, liveSettings.local_pool_collection_secs, liveSettings.local_pool_match_radius_km, liveSettings.local_pool_max_detour_km, liveSettings.local_pool_direction_tolerance_deg]);
+
+  function buildSettingsPayload() {
+    return {
+      local_pool_mode: settingsForm.mode,
+      local_pool_collection_secs: settingsForm.collectionSecs,
+      local_pool_match_radius_km: settingsForm.matchRadiusKm,
+      local_pool_max_detour_km: settingsForm.maxDetourKm,
+      local_pool_direction_tolerance_deg: settingsForm.directionToleranceDeg,
+    };
+  }
 
   return (
     <div className="container-fluid">
@@ -724,7 +752,7 @@ export default function LocalPool() {
               <small className="text-muted">Controls realtime matching strictness: pickup radius, max route detour and route-direction tolerance.</small>
               <div className="d-flex gap-2 justify-content-end mt-2">
                 <button className="btn btn-outline-secondary" onClick={() => setSettingsOpen(false)}>Cancel</button>
-                <button className="btn btn-primary" onClick={() => saveSettings.mutate(settingsForm)} disabled={saveSettings.isPending}>
+                <button className="btn btn-primary" onClick={() => saveSettings.mutate(buildSettingsPayload())} disabled={saveSettings.isPending}>
                   {saveSettings.isPending ? "Saving..." : "Save Settings"}
                 </button>
               </div>

@@ -48,7 +48,7 @@ export default function BusinessSetupPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/business-settings"] });
       toast({ title: "Business settings saved" });
     },
-    onError: () => toast({ title: "Failed to save", variant: "destructive" }),
+    onError: (e: any) => toast({ title: "Failed to save", description: e.message, variant: "destructive" }),
   });
 
   const tabs = [

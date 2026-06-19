@@ -215,7 +215,7 @@ function OtpSettingsPanel() {
       qc.invalidateQueries({ queryKey: ["/api/otp-settings"] });
       toast({ title: "OTP settings saved" });
     },
-    onError: () => toast({ title: "Error saving OTP settings", variant: "destructive" }),
+    onError: (e: any) => toast({ title: "Error saving OTP settings", description: e.message, variant: "destructive" }),
   });
 
   if (isLoading) return <div className="d-flex justify-content-center py-4"><div className="spinner-border text-primary" role="status"></div></div>;
@@ -363,7 +363,7 @@ export default function Settings() {
       qc.invalidateQueries({ queryKey: ["/api/settings"] });
       toast({ title: "Settings saved successfully" });
     },
-    onError: () => toast({ title: "Error saving settings", variant: "destructive" }),
+    onError: (e: any) => toast({ title: "Error saving settings", description: e.message, variant: "destructive" }),
   });
 
   const activeGroupData = settingGroups.find(g => g.type === activeGroup);

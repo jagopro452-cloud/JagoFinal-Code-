@@ -327,9 +327,11 @@ function allowedVehicleKeys(meta: VehicleCategoryMeta): string[] {
       case "carpool":
       case "city_pool":
       case "local_pool":
+        return ["carpool", "city_pool", "local_pool", "car_pool_4", "car_pool_6"];
       case "intercity_pool":
+        return ["intercity_pool", "car_pool_4", "car_pool_6"];
       case "outstation_pool":
-        return ["carpool", "city_pool", "local_pool", "intercity_pool", "outstation_pool", "car_pool_4", "car_pool_6", "pool_mini", "pool_sedan", "pool_suv"];
+        return ["outstation_pool", "car_pool_4", "car_pool_6", "pool_sedan", "pool_suv"];
       default:
         return [key];
     }
@@ -450,6 +452,8 @@ export function getPlatformServiceKeyForCategory(meta: VehicleCategoryMeta | nul
 
   if (meta.serviceType === "parcel") return "parcel_delivery";
   if (meta.serviceType === "pool" || meta.isCarpool || key.includes("pool") || key.includes("share")) {
+    if (key.includes("outstation")) return "outstation_pool";
+    if (key.includes("intercity")) return "intercity_pool";
     return "city_pool";
   }
   if (key === "bike") return "bike_ride";

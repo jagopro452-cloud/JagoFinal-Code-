@@ -266,8 +266,65 @@ class SocketService {
     _socket!.on('trip:payment_pending', (data) {
       _paymentPendingController.add(Map<String, dynamic>.from(data));
     });
-    _socket!.on('pool:status', (data) {
-      _poolStatusController.add(Map<String, dynamic>.from(data));
+    // Local pool real-time status events — backend emits these, not 'pool:status'
+    _socket!.on('pool:matched', (data) {
+      final payload = Map<String, dynamic>.from(data);
+      payload['module'] = 'local_pool';
+      payload['status'] = payload['pendingDriverAccept'] == true
+          ? 'pending_driver_accept'
+          : 'matched';
+      payload['eventType'] = 'matched';
+      _poolStatusController.add(payload);
+    });
+    _socket!.on('pool:driver_confirmed', (data) {
+      final payload = Map<String, dynamic>.from(data);
+      payload['module'] = 'local_pool';
+      payload['status'] = 'matched';
+      payload['eventType'] = 'driver_confirmed';
+      _poolStatusController.add(payload);
+    });
+    _socket!.on('pool:picked_up', (data) {
+      final payload = Map<String, dynamic>.from(data);
+      payload['module'] = 'local_pool';
+      payload['status'] = 'picked_up';
+      payload['eventType'] = 'picked_up';
+      _poolStatusController.add(payload);
+    });
+    _socket!.on('pool:dropped', (data) {
+      final payload = Map<String, dynamic>.from(data);
+      payload['module'] = 'local_pool';
+      payload['status'] = 'dropped';
+      payload['eventType'] = 'dropped';
+      _poolStatusController.add(payload);
+    });
+    _socket!.on('pool:cancelled', (data) {
+      final payload = Map<String, dynamic>.from(data);
+      payload['module'] = 'local_pool';
+      payload['status'] = 'cancelled';
+      payload['eventType'] = 'cancelled';
+      _poolStatusController.add(payload);
+    });
+    _socket!.on('pool:driver_confirm_timeout', (data) {
+      final payload = Map<String, dynamic>.from(data);
+      payload['module'] = 'local_pool';
+      payload['status'] = 'searching';
+      payload['eventType'] = 'driver_confirm_timeout';
+      _poolStatusController.add(payload);
+    });
+    _socket!.on('pool:search_timeout', (data) {
+      final payload = Map<String, dynamic>.from(data);
+      payload['module'] = 'local_pool';
+      payload['status'] = 'search_timeout';
+      payload['eventType'] = 'search_timeout';
+      _poolStatusController.add(payload);
+    });
+    // Driver skipped this passenger — back to searching immediately
+    _socket!.on('pool:driver_skipped', (data) {
+      final payload = Map<String, dynamic>.from(data);
+      payload['module'] = 'local_pool';
+      payload['status'] = 'searching';
+      payload['eventType'] = 'driver_skipped';
+      _poolStatusController.add(payload);
     });
     _socket!.on('pool:seat_update', (data) {
       _poolSeatUpdateController.add(Map<String, dynamic>.from(data));

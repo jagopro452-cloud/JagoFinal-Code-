@@ -26,7 +26,7 @@ export default function BannersPage() {
       setEditing(null);
       setForm({ title: "", imageUrl: "", redirectUrl: "", zone: "", isActive: true });
     },
-    onError: () => toast({ title: "Failed to save banner", variant: "destructive" }),
+    onError: (e: any) => toast({ title: "Failed to save banner", description: e.message, variant: "destructive" }),
   });
 
   const deleteMutation = useMutation({
@@ -35,12 +35,13 @@ export default function BannersPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/banners"] });
       toast({ title: "Banner deleted" });
     },
-    onError: () => toast({ title: "Failed to delete", variant: "destructive" }),
+    onError: (e: any) => toast({ title: "Failed to delete", description: e.message, variant: "destructive" }),
   });
 
   const toggleMutation = useMutation({
     mutationFn: ({ id, isActive }: any) => apiRequest("PUT", `/api/banners/${id}`, { isActive }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/banners"] }),
+    onError: (e: any) => { queryClient.invalidateQueries({ queryKey: ["/api/banners"] }); toast({ title: "Toggle failed", description: e.message, variant: "destructive" }); },
   });
 
   const openEdit = (b: any) => {

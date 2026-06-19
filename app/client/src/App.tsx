@@ -1,4 +1,4 @@
-import { Switch, Route, useLocation } from "wouter";
+import { Switch, Route, Redirect, useLocation } from "wouter";
 import { Suspense, lazy, useEffect } from "react";
 import { logoutAdminSession, queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -9,6 +9,8 @@ import { ThemeProvider } from "@/components/theme-provider";
 const LandingPage = lazy(() => import("@/pages/landing"));
 const AdminLogin = lazy(() => import("@/pages/admin/login"));
 const AdminRoutes = lazy(() => import("@/pages/admin/admin-routes"));
+const FranchiseLogin = lazy(() => import("@/pages/franchise/franchise-login"));
+const FranchiseDashboard = lazy(() => import("@/pages/franchise/franchise-dashboard"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 const AboutPage = lazy(() => import("@/pages/policy-pages").then((m) => ({ default: m.AboutPage })));
 const PrivacyPage = lazy(() => import("@/pages/policy-pages").then((m) => ({ default: m.PrivacyPage })));
@@ -60,7 +62,15 @@ function Router() {
       <Route path="/admin/login" component={AdminLogin} />
       <Route path="/admin/auth/login" component={AdminLogin} />
       <Route path="/admin/auth/logout" component={AdminLogout} />
+      <Route path="/admin">
+        <Redirect to="/admin/dashboard" />
+      </Route>
       <Route path="/admin/:rest*" component={AdminRoutes} />
+      <Route path="/franchise">
+        <Redirect to="/franchise/login" />
+      </Route>
+      <Route path="/franchise/login" component={FranchiseLogin} />
+      <Route path="/franchise/dashboard" component={FranchiseDashboard} />
       <Route component={NotFound} />
     </Switch>
   );

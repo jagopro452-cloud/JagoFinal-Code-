@@ -6,6 +6,7 @@ import {
   getVehicleCategoryMeta,
   normalizeVehicleKey,
 } from "./vehicle-matching";
+import { driverHasActiveSubscription, getRidesRevenueModel } from "./revenue-policy";
 
 export interface DispatchRequirements {
   tripId?: string;
@@ -132,9 +133,9 @@ export async function buildDispatchRequirementsFromTripInput(input: {
     || inferPlatformServiceKey(tripType, categoryKey || null, categoryMeta?.serviceType || null);
   const dispatchServiceType = inferDispatchServiceType(tripType, categoryKey || null);
   const seatsRequired = Math.max(1, Number(input.seatsBooked || 1) || 1);
-  const strictCategoryIds = input.vehicleCategoryId
-    ? [input.vehicleCategoryId]
-    : (await getMatchingDriverCategoryIds(input.vehicleCategoryId || null));
+  // Expand to all equivalent category UUIDs (bike↔bike_ride, mini_car↔cab, etc.)
+  // so dispatch never misses drivers registered under a sibling category row.
+  const strictCategoryIds = await getMatchingDriverCategoryIds(input.vehicleCategoryId || null);
 
   return {
     tripId: input.tripId,
@@ -289,6 +290,14 @@ export async function isDriverEligibleForDispatch(
   if (requirements.strictCategoryIds?.length && !requirements.strictCategoryIds.includes(profile.vehicleCategoryId || "")) {
     return { eligible: false, reason: "vehicle_category_mismatch", profile };
   }
+  const driverVehicleKey = profile.vehicleCategoryKey || "";
+  const isParcelVehicle = ["parcel", "cargo", "truck", "tempo", "pickup"].some((token) => driverVehicleKey.includes(token));
+  if (!requirements.requiresParcel && isParcelVehicle) {
+    return { eligible: false, reason: "parcel_vehicle_on_ride_trip", profile };
+  }
+  if (requirements.requiresParcel && !profile.parcelEligibility && !isParcelVehicle) {
+    return { eligible: false, reason: "ride_vehicle_on_parcel_trip", profile };
+  }
   if (requirements.platformServiceKey && !profile.serviceEligibility.includes(requirements.platformServiceKey)) {
     return { eligible: false, reason: "service_not_enabled", profile };
   }
@@ -313,6 +322,18 @@ export async function isDriverEligibleForDispatch(
       return { eligible: false, reason: "city_not_enabled", profile };
     }
   }
+  // P0: exclude drivers without subscription from ride dispatch when rides_model requires it
+  if (!requirements.requiresParcel) {
+    const tripType = normalizeVehicleKey(requirements.tripType || "");
+    const isRideTrip = !["parcel", "delivery", "cargo", "carpool", "pool", "city_pool", "intercity", "outstation"].includes(tripType);
+    if (isRideTrip) {
+      const ridesModel = await getRidesRevenueModel();
+      if (["subscription", "hybrid"].includes(ridesModel)) {
+        const hasSub = await driverHasActiveSubscription(driverId);
+        if (!hasSub) return { eligible: false, reason: "subscription_required", profile };
+      }
+    }
+  }
   return { eligible: true, profile };
 }
 
@@ -330,11 +351,22 @@ export async function findEligibleDriversForDispatch(input: {
 
   const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const safeExclude = excludeDriverIds.filter((id) => uuidRe.test(id));
+  const safeStrictCategoryIds = (requirements.strictCategoryIds || []).filter((id) => uuidRe.test(id));
   const excludeClause = safeExclude.length > 0
-    ? rawSql`AND NOT (u.id = ANY(${safeExclude}::uuid[]))`
+    ? safeExclude.length === 1
+      ? rawSql`AND u.id <> ${safeExclude[0]}::uuid`
+      : rawSql`AND u.id NOT IN (${rawSql.join(
+          safeExclude.map((id) => rawSql`${id}::uuid`),
+          rawSql`, `,
+        )})`
     : rawSql``;
-  const categoryClause = requirements.strictCategoryIds?.length
-    ? rawSql`AND dd.vehicle_category_id = ANY(${requirements.strictCategoryIds}::uuid[])`
+  const categoryClause = safeStrictCategoryIds.length
+    ? safeStrictCategoryIds.length === 1
+      ? rawSql`AND dd.vehicle_category_id = ${safeStrictCategoryIds[0]}::uuid`
+      : rawSql`AND dd.vehicle_category_id IN (${rawSql.join(
+          safeStrictCategoryIds.map((id) => rawSql`${id}::uuid`),
+          rawSql`, `,
+        )})`
     : requirements.vehicleCategoryId
       ? rawSql`AND dd.vehicle_category_id = ${requirements.vehicleCategoryId}::uuid`
       : rawSql``;
@@ -385,14 +417,163 @@ export async function findEligibleDriversForDispatch(input: {
       ) <= ${radiusKm}
     ORDER BY distance_km ASC
     LIMIT ${Math.max(limit * 4, 20)}
-  `).catch(() => ({ rows: [] as any[] }));
+  `).catch((error) => {
+    console.error(
+      `[DISPATCH_DEBUG] candidate-query-error trip=${requirements.tripId || "unknown"} radius=${radiusKm}:`,
+      (error as any)?.message || error,
+    );
+    return { rows: [] as any[] };
+  });
+
+  if (requirements.tripId) {
+    console.log(
+      `[DISPATCH_DEBUG] trip=${requirements.tripId} strict-sql candidates=${(candidates.rows as any[]).length} radius=${radiusKm} service=${requirements.platformServiceKey || "unknown"} category=${requirements.vehicleCategoryId || "any"} strictIds=${safeStrictCategoryIds.join(",") || "none"}`,
+    );
+    if (!(candidates.rows as any[]).length) {
+      const stepCounts = await rawDb.execute(rawSql`
+        SELECT
+          COUNT(*) FILTER (WHERE u.user_type = 'driver')::int AS base_count,
+          COUNT(*) FILTER (
+            WHERE u.user_type = 'driver'
+              AND SQRT(
+                POW((dl.lat - ${Number(pickupLat)}) * 111.32, 2) +
+                POW((dl.lng - ${Number(pickupLng)}) * 111.32 * COS(RADIANS(${Number(pickupLat)})), 2)
+              ) <= ${radiusKm}
+          )::int AS in_radius,
+          COUNT(*) FILTER (
+            WHERE u.user_type = 'driver'
+              AND SQRT(
+                POW((dl.lat - ${Number(pickupLat)}) * 111.32, 2) +
+                POW((dl.lng - ${Number(pickupLng)}) * 111.32 * COS(RADIANS(${Number(pickupLat)})), 2)
+              ) <= ${radiusKm}
+              AND u.is_active = true
+              AND u.is_locked = false
+          )::int AS active_unlocked,
+          COUNT(*) FILTER (
+            WHERE u.user_type = 'driver'
+              AND SQRT(
+                POW((dl.lat - ${Number(pickupLat)}) * 111.32, 2) +
+                POW((dl.lng - ${Number(pickupLng)}) * 111.32 * COS(RADIANS(${Number(pickupLat)})), 2)
+              ) <= ${radiusKm}
+              AND u.is_active = true
+              AND u.is_locked = false
+              AND dl.is_online = true
+          )::int AS dl_online_count,
+          COUNT(*) FILTER (
+            WHERE u.user_type = 'driver'
+              AND SQRT(
+                POW((dl.lat - ${Number(pickupLat)}) * 111.32, 2) +
+                POW((dl.lng - ${Number(pickupLng)}) * 111.32 * COS(RADIANS(${Number(pickupLat)})), 2)
+              ) <= ${radiusKm}
+              AND u.is_active = true
+              AND u.is_locked = false
+              AND dl.is_online = true
+              AND u.current_trip_id IS NULL
+          )::int AS not_busy_count,
+          COUNT(*) FILTER (
+            WHERE u.user_type = 'driver'
+              AND SQRT(
+                POW((dl.lat - ${Number(pickupLat)}) * 111.32, 2) +
+                POW((dl.lng - ${Number(pickupLng)}) * 111.32 * COS(RADIANS(${Number(pickupLat)})), 2)
+              ) <= ${radiusKm}
+              AND u.is_active = true
+              AND u.is_locked = false
+              AND dl.is_online = true
+              AND u.current_trip_id IS NULL
+              AND dl.lat != 0 AND dl.lng != 0
+          )::int AS valid_gps_count,
+          COUNT(*) FILTER (
+            WHERE u.user_type = 'driver'
+              AND SQRT(
+                POW((dl.lat - ${Number(pickupLat)}) * 111.32, 2) +
+                POW((dl.lng - ${Number(pickupLng)}) * 111.32 * COS(RADIANS(${Number(pickupLat)})), 2)
+              ) <= ${radiusKm}
+              AND u.is_active = true
+              AND u.is_locked = false
+              AND dl.is_online = true
+              AND u.current_trip_id IS NULL
+              AND dl.lat != 0 AND dl.lng != 0
+              AND dl.updated_at > NOW() - INTERVAL '90 seconds'
+              ${excludeClause}
+          )::int AS fresh_count,
+          COUNT(*) FILTER (
+            WHERE u.user_type = 'driver'
+              AND SQRT(
+                POW((dl.lat - ${Number(pickupLat)}) * 111.32, 2) +
+                POW((dl.lng - ${Number(pickupLng)}) * 111.32 * COS(RADIANS(${Number(pickupLat)})), 2)
+              ) <= ${radiusKm}
+              AND u.is_active = true
+              AND u.is_locked = false
+              AND dl.is_online = true
+              AND u.current_trip_id IS NULL
+              AND dl.lat != 0 AND dl.lng != 0
+              AND dl.updated_at > NOW() - INTERVAL '90 seconds'
+              ${excludeClause}
+              ${categoryClause}
+          )::int AS category_count
+        FROM users u
+        JOIN driver_locations dl ON dl.driver_id = u.id
+        LEFT JOIN driver_details dd ON dd.user_id = u.id
+      `).catch(() => ({ rows: [] as any[] }));
+      console.log(`[DISPATCH_DEBUG] trip=${requirements.tripId} step-counts=${JSON.stringify((stepCounts.rows as any[])[0] || {})}`);
+      const nearbyDebug = await rawDb.execute(rawSql`
+        SELECT
+          u.id,
+          u.is_online,
+          u.current_trip_id,
+          dl.is_online AS dl_online,
+          dl.lat,
+          dl.lng,
+          dl.updated_at,
+          EXTRACT(EPOCH FROM (NOW() - dl.updated_at))::int AS age_seconds,
+          dd.vehicle_category_id
+        FROM users u
+        JOIN driver_locations dl ON dl.driver_id = u.id
+        LEFT JOIN driver_details dd ON dd.user_id = u.id
+        WHERE u.user_type = 'driver'
+          AND SQRT(
+            POW((dl.lat - ${Number(pickupLat)}) * 111.32, 2) +
+            POW((dl.lng - ${Number(pickupLng)}) * 111.32 * COS(RADIANS(${Number(pickupLat)})), 2)
+          ) <= ${radiusKm}
+        ORDER BY dl.updated_at DESC NULLS LAST
+        LIMIT 10
+      `).catch(() => ({ rows: [] as any[] }));
+      for (const row of nearbyDebug.rows as any[]) {
+        const reasons: string[] = [];
+        if (!(row as any).dl_online) reasons.push("dl_offline");
+        if ((row as any).current_trip_id) reasons.push("busy");
+        if ((row as any).lat == null || (row as any).lng == null || ((row as any).lat === 0 && (row as any).lng === 0)) reasons.push("gps_invalid");
+        if ((row as any).age_seconds == null || Number((row as any).age_seconds) > 90) reasons.push(`stale_${String((row as any).age_seconds)}`);
+        if (safeStrictCategoryIds.length && !safeStrictCategoryIds.includes(String((row as any).vehicle_category_id || ""))) reasons.push("category_mismatch");
+        if (safeExclude.includes(String((row as any).id))) reasons.push("in_exclude_list");
+        console.log(
+          `[DISPATCH_DEBUG] trip=${requirements.tripId} nearby-driver=${String((row as any).id)} ` +
+          `uOnline=${String((row as any).is_online)} dlOnline=${String((row as any).dl_online)} ageSec=${String((row as any).age_seconds)} ` +
+          `vc=${String((row as any).vehicle_category_id || "")} reject=${reasons.join("|") || "none"}`,
+        );
+      }
+    }
+  }
 
   const filtered: any[] = [];
   for (const row of candidates.rows as any[]) {
     const profile = await getDriverDispatchProfile(row.id);
-    if (!profile) continue;
+    if (!profile) {
+      if (requirements.tripId) {
+        console.log(`[DISPATCH_DEBUG] trip=${requirements.tripId} driver=${row.id} rejected=profile_missing`);
+      }
+      continue;
+    }
     const eligibility = await isDriverEligibleForDispatch(row.id, requirements);
-    if (!eligibility.eligible) continue;
+    if (!eligibility.eligible) {
+      if (requirements.tripId) {
+        console.log(
+          `[DISPATCH_DEBUG] trip=${requirements.tripId} driver=${row.id} rejected=${eligibility.reason || "unknown"} ` +
+          `diagFields={uOnline:${String((row as any).is_online)},dlOnline:${String((row as any).dl_online)},vc:${String((row as any).vehicle_category_id || "")},updated:${String((row as any).updated_at || "")}}`,
+        );
+      }
+      continue;
+    }
     filtered.push({
       driverId: row.id,
       fullName: row.full_name || "Pilot",
@@ -409,6 +590,12 @@ export async function findEligibleDriversForDispatch(input: {
       seatCapacity: profile.seatCapacity,
     });
     if (filtered.length >= limit) break;
+  }
+
+  if (requirements.tripId) {
+    console.log(
+      `[DISPATCH_DEBUG] trip=${requirements.tripId} strict-filtered=${filtered.length}`,
+    );
   }
 
   return filtered;

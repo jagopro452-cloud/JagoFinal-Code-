@@ -112,6 +112,7 @@ export const navSections: NavSection[] = [
     category: "Zone Management",
     items: [
       { label: "Zone Setup", icon: "bi-map", href: "/admin/zones" },
+      { label: "Franchise Setup", icon: "bi-building", href: "/admin/franchisees" },
     ],
   },
   {
@@ -321,7 +322,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       .catch((error) => {
         if (!active) return;
         setAuthError(error?.message || "Admin session verification failed");
-        setLocation("/admin/login");
+        window.location.replace("/admin/login");
       })
       .finally(() => {
         if (active) setAuthChecking(false);
@@ -329,7 +330,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
     const onAuthCleared = () => {
       if (!window.location.pathname.includes("/admin/login")) {
-        setLocation("/admin/login");
+        window.location.replace("/admin/login");
       }
     };
     window.addEventListener("jago-admin-auth-cleared", onAuthCleared);

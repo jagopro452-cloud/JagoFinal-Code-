@@ -38,7 +38,7 @@ class _OutstationPoolScreenState extends State<OutstationPoolScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: JT.bgSoft,
+      backgroundColor: Colors.white,
       appBar: AppBar(
         backgroundColor: JT.primary,
         foregroundColor: Colors.white,
@@ -587,9 +587,9 @@ class _BookBottomSheetState extends State<_BookBottomSheet> {
           children: [
             Center(
               child: Container(
-                width: 40, height: 4,
+                width: 44, height: 4,
                 margin: const EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
+                decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(4)),
               ),
             ),
             Text('Confirm Booking', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500, color: JT.textPrimary)),
@@ -1027,6 +1027,26 @@ class _OutstationPoolBookingDetailScreenState
   StreamSubscription<Map<String, dynamic>>? _safetyUpdateSub;
   LatLng? _driverLatLng;
 
+  Widget _buildLoadingState() {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(
+            width: 44,
+            height: 44,
+            child: CircularProgressIndicator(color: JT.primary, strokeWidth: 2.5),
+          ),
+          const SizedBox(height: 14),
+          Text(
+            'Loading journey details...',
+            style: JT.body.copyWith(color: JT.textSecondary, fontSize: 13),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -1199,6 +1219,178 @@ class _OutstationPoolBookingDetailScreenState
       return 'Pay the driver at boarding time and keep the receipt reference safe.';
     }
     return 'Payment is still pending. Contact support if the status does not update after pickup.';
+  }
+
+  Widget _journeyProgressCard(String status) {
+    const steps = ['confirmed', 'picked_up', 'dropped', 'completed'];
+    final labels = <String, String>{
+      'confirmed': 'Confirmed',
+      'picked_up': 'Boarded',
+      'dropped': 'Dropped',
+      'completed': 'Journey Completed',
+    };
+    final rawIndex = steps.indexOf(status);
+    final activeIndex = rawIndex < 0 ? 0 : rawIndex;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: JT.cardShadow,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Journey Progress', style: JT.h5),
+          const SizedBox(height: 12),
+          Row(
+            children: List.generate(steps.length, (index) {
+              final done = index <= activeIndex;
+              return Expanded(
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 250),
+                        height: 6,
+                        decoration: BoxDecoration(
+                          color: done ? JT.primary : JT.border,
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                      ),
+                    ),
+                    if (index < steps.length - 1) const SizedBox(width: 6),
+                  ],
+                ),
+              );
+            }),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: steps.map((step) {
+              final idx = steps.indexOf(step);
+              final done = idx <= activeIndex;
+              return Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: done ? JT.primary.withValues(alpha: 0.08) : JT.bgSoft,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: done
+                        ? JT.primary.withValues(alpha: 0.16)
+                        : JT.border,
+                  ),
+                ),
+                child: Text(
+                  labels[step] ?? step,
+                  style: JT.caption.copyWith(
+                    color: done ? JT.primary : JT.textSecondary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _sharedJourneyCard({
+    required String pickupAddress,
+    required String dropoffAddress,
+    required int seats,
+    required String status,
+  }) {
+    final boardingOtp =
+        _booking?['boardingOtp']?.toString() ?? _booking?['boarding_otp']?.toString();
+    final dropOtp =
+        _booking?['dropOtp']?.toString() ?? _booking?['drop_otp']?.toString();
+
+    Widget node({
+      required int index,
+      required String title,
+      required String subtitle,
+      required bool active,
+    }) {
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 28,
+            height: 28,
+            decoration: BoxDecoration(
+              color: active ? JT.primary.withValues(alpha: 0.10) : JT.bgSoft,
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Center(
+              child: Text(
+                '$index',
+                style: JT.caption.copyWith(
+                  fontWeight: FontWeight.w700,
+                  color: active ? JT.primary : JT.textSecondary,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: JT.subtitle2),
+                const SizedBox(height: 2),
+                Text(subtitle, style: JT.smallText),
+              ],
+            ),
+          ),
+        ],
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: JT.cardShadow,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Shared Trip Sequence', style: JT.h5),
+          const SizedBox(height: 12),
+          node(
+            index: 1,
+            title: 'Boarding point',
+            subtitle: pickupAddress,
+            active: true,
+          ),
+          const SizedBox(height: 10),
+          node(
+            index: 2,
+            title: 'Seat + boarding verification',
+            subtitle: boardingOtp != null && boardingOtp.isNotEmpty
+                ? 'Show boarding OTP $boardingOtp only at pickup.'
+                : 'Your booked seats: $seats. Keep booking open during boarding.',
+            active: status == 'confirmed' || status == 'picked_up' || status == 'dropped' || status == 'completed',
+          ),
+          const SizedBox(height: 10),
+          node(
+            index: 3,
+            title: 'Destination drop',
+            subtitle: dropOtp != null && dropOtp.isNotEmpty
+                ? '$dropoffAddress · Drop OTP $dropOtp'
+                : dropoffAddress,
+            active: status == 'picked_up' || status == 'dropped' || status == 'completed',
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _openCancellationFlow() async {
@@ -1476,7 +1668,7 @@ class _OutstationPoolBookingDetailScreenState
         title: Text('Pool Booking', style: JT.h5),
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator(color: JT.primary))
+          ? _buildLoadingState()
           : _error != null
               ? Center(
                   child: Padding(
@@ -1534,6 +1726,17 @@ class _OutstationPoolBookingDetailScreenState
                         ),
                       ),
                       const SizedBox(height: 14),
+                      _liveMapCard(),
+                      const SizedBox(height: 12),
+                      _journeyProgressCard(status),
+                      const SizedBox(height: 12),
+                      _sharedJourneyCard(
+                        pickupAddress: pickupAddress,
+                        dropoffAddress: dropoffAddress,
+                        seats: seats,
+                        status: status,
+                      ),
+                      const SizedBox(height: 12),
                       Row(
                         children: [
                           Expanded(child: _infoTile(Icons.event_seat_rounded, 'Seats', '$seats booked')),
@@ -1551,8 +1754,6 @@ class _OutstationPoolBookingDetailScreenState
                       _infoTile(Icons.trip_origin_rounded, 'Pickup Point', pickupAddress),
                       const SizedBox(height: 12),
                       _infoTile(Icons.location_on_rounded, 'Drop Point', dropoffAddress),
-                      const SizedBox(height: 12),
-                      _liveMapCard(),
                       const SizedBox(height: 12),
                       _infoTile(
                         Icons.person_rounded,

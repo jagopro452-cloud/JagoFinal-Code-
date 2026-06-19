@@ -1000,7 +1000,8 @@ export async function getDashboardMetrics(forceRefresh = false): Promise<Dashboa
   } catch { /* not yet initialised */ }
 
   const redisHealth = await checkRedis();
-  const redisHealthy = redisHealth.status === "ok";
+  const requireRedis = Boolean(process.env.REDIS_URL);
+  const redisHealthy = !requireRedis || redisHealth.status === "ok";
 
   const metrics: DashboardMetrics = {
     otpFailLast1h:       otpFail,

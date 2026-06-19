@@ -28,6 +28,7 @@ import {
   isDriverEligibleForDispatch,
   resolveDispatchRequirementsFromTrip,
 } from "./dispatch-eligibility";
+import { assertDriverCanAcceptRideTrip } from "./revenue-policy";
 import {
   appendTripStatus,
   emitRealtimeOpsSnapshot,
@@ -300,6 +301,59 @@ export function setupSocket(httpServer: HttpServer) {
       emitRealtimeOpsSnapshot("admin_connected").catch(() => {});
       console.log(`[SOCKET] Admin ${userId} connected to admin:ops`);
     } else if (userType === "driver") {
+      const handleDriverOnline = async (data: { isOnline: boolean; lat?: number; lng?: number }) => {
+        try {
+          const { isOnline, lat, lng } = data;
+          noteSocketActivity({ userId, userType: "driver" });
+          const hasValidCoords = lat != null && lng != null && isFinite(lat) && isFinite(lng) && (lat !== 0 || lng !== 0);
+
+          if (hasValidCoords) {
+            await rawDb.execute(rawSql`
+              INSERT INTO driver_locations (driver_id, lat, lng, is_online, updated_at)
+              VALUES (${userId}::uuid, ${lat}, ${lng}, ${isOnline}, NOW())
+              ON CONFLICT (driver_id) DO UPDATE
+                SET lat=${lat}, lng=${lng}, is_online=${isOnline}, updated_at=NOW()
+            `);
+          } else {
+            await rawDb.execute(rawSql`
+              INSERT INTO driver_locations (driver_id, lat, lng, is_online, updated_at)
+              VALUES (${userId}::uuid, 0, 0, ${isOnline}, NOW())
+              ON CONFLICT (driver_id) DO UPDATE
+                SET is_online=${isOnline}, updated_at=NOW()
+            `);
+          }
+          await rawDb.execute(rawSql`
+            UPDATE users
+            SET is_online=${isOnline},
+                current_lat=COALESCE(${lat ?? null}, current_lat),
+                current_lng=COALESCE(${lng ?? null}, current_lng)
+            WHERE id=${userId}::uuid
+          `);
+          socket.emit("driver:online_ack", { isOnline });
+          if (!isOnline) {
+            const pending = pendingOfflineTimers.get(userId);
+            if (pending) { clearTimeout(pending); pendingOfflineTimers.delete(userId); }
+          }
+          console.log(`[SOCKET] Driver ${userId} ${isOnline ? "ONLINE" : "offline"} lat=${lat} lng=${lng}`);
+
+          if (isOnline && hasValidCoords && lat != null && lng != null) {
+            await notifyDriverNearbyTrips(userId, lat, lng);
+            getRebalancingSuggestion(userId, lat, lng).then((suggestion) => {
+              if (suggestion) {
+                socket.emit("driver:rebalancing_suggestion", suggestion);
+              }
+            }).catch(() => { });
+          }
+        } catch (e: any) {
+          console.error("[SOCKET] driver:online error:", e.message);
+        }
+      };
+
+      // Register this before any awaited bootstrap work so an immediate
+      // driver:online emit right after connect does not get dropped.
+      socket.on("driver:online", handleDriverOnline);
+      (socket.data as any).driverOnlineHandlerMovedEarlier = true;
+
       await disconnectDuplicateUserSockets(userId, socket.id).catch(() => {});
       addSocketPresence("driver", userId, socket.id).catch(() => {});
       socket.join(`drivers`);
@@ -437,6 +491,9 @@ export function setupSocket(httpServer: HttpServer) {
 
       // ── Driver: go online/offline ──────────────────────────────────────────
       socket.on("driver:online", async (data: { isOnline: boolean; lat?: number; lng?: number }) => {
+        if ((socket.data as any).driverOnlineHandlerMovedEarlier) {
+          return;
+        }
         try {
           const { isOnline, lat, lng } = data;
           noteSocketActivity({ userId, userType: "driver" });
@@ -539,8 +596,20 @@ export function setupSocket(httpServer: HttpServer) {
 
           // Verify trip is still in searching/driver_assigned state
           const tripR = await rawDb.execute(rawSql`
-            SELECT t.*, u.full_name as customer_name, u.fcm_token as customer_fcm,
-              dd.vehicle_category_id, dl.lat as driver_lat, dl.lng as driver_lng
+            SELECT
+              t.*,
+              u.full_name as customer_name,
+              (
+                SELECT ud.fcm_token
+                FROM user_devices ud
+                WHERE ud.user_id = u.id
+                  AND ud.fcm_token IS NOT NULL
+                ORDER BY ud.updated_at DESC NULLS LAST, ud.created_at DESC NULLS LAST
+                LIMIT 1
+              ) as customer_fcm,
+              dd.vehicle_category_id,
+              dl.lat as driver_lat,
+              dl.lng as driver_lng
             FROM trip_requests t
             JOIN users u ON u.id = t.customer_id
             LEFT JOIN driver_details dd ON dd.user_id=${userId}::uuid
@@ -571,6 +640,17 @@ export function setupSocket(httpServer: HttpServer) {
               message: `Driver not eligible for this booking: ${driverEligibility.reason || "dispatch_mismatch"}`,
               code: "DISPATCH_MISMATCH",
               reason: driverEligibility.reason || "dispatch_mismatch",
+            });
+            return;
+          }
+
+          // P0: subscription gate (matches HTTP accept-trip)
+          try {
+            await assertDriverCanAcceptRideTrip(userId, dispatchRequirements.tripType);
+          } catch (subErr: any) {
+            socket.emit("driver:accept_trip_error", {
+              message: subErr?.message || "Active subscription required to accept rides.",
+              code: subErr?.code || "SUBSCRIPTION_REQUIRED",
             });
             return;
           }
@@ -1016,7 +1096,7 @@ export function setupSocket(httpServer: HttpServer) {
           const r = await rawDb.execute(rawSql`
             SELECT customer_id FROM parcel_orders
             WHERE id = ${orderId}::uuid AND driver_id = ${userId}::uuid
-              AND current_status IN ('driver_assigned', 'in_transit')
+              AND current_status IN ('driver_assigned', 'accepted', 'picked_up', 'in_transit')
           `);
           if (!r.rows.length) return;
           const customerId = (r.rows[0] as any).customer_id;
@@ -1714,6 +1794,8 @@ export function setupSocket(httpServer: HttpServer) {
         }
       }
     });
+
+    socket.emit("socket:ready", { userId, userType });
 
     socket.on("disconnect", (reason) => {
       for (const session of findCallSessionForUser(userId)) {

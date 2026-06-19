@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 import '../../config/api_config.dart';
 import '../../config/jago_theme.dart';
@@ -25,6 +26,37 @@ class _OutstationPoolTripScreenState extends State<OutstationPoolTripScreen> {
   bool _loading = true;
   bool _actionLoading = false;
   Timer? _refreshTimer;
+
+  Widget _buildSheetHandle() {
+    return Container(
+      width: 44,
+      height: 4,
+      decoration: BoxDecoration(
+        color: _border,
+        borderRadius: BorderRadius.circular(4),
+      ),
+    );
+  }
+
+  Widget _buildLoadingState() {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(
+            width: 44,
+            height: 44,
+            child: CircularProgressIndicator(color: _primary, strokeWidth: 2.5),
+          ),
+          const SizedBox(height: 14),
+          Text(
+            'Preparing shared journey controls...',
+            style: GoogleFonts.poppins(fontSize: 13, color: _textSec),
+          ),
+        ],
+      ),
+    );
+  }
   Timer? _locationTimer;
   StreamSubscription<Map<String, dynamic>>? _callIncomingSub;
   StreamSubscription<Map<String, dynamic>>? _poolBookingSub;
@@ -396,6 +428,275 @@ class _OutstationPoolTripScreenState extends State<OutstationPoolTripScreen> {
     ) ?? false;
   }
 
+  double? _readDouble(dynamic value) {
+    if (value == null) return null;
+    final parsed = double.tryParse(value.toString());
+    if (parsed == null || parsed == 0) return null;
+    return parsed;
+  }
+
+  Widget _buildTripMapHero() {
+    final currentLat = _readDouble(_ride['current_lat']);
+    final currentLng = _readDouble(_ride['current_lng']);
+    final points = <LatLng>[];
+    final markers = <Marker>{};
+
+    if (currentLat != null && currentLng != null) {
+      final driver = LatLng(currentLat, currentLng);
+      points.add(driver);
+      markers.add(
+        Marker(
+          markerId: const MarkerId('driver'),
+          position: driver,
+          infoWindow: const InfoWindow(title: 'Driver'),
+          icon: BitmapDescriptor.defaultMarkerWithHue(
+            BitmapDescriptor.hueAzure,
+          ),
+        ),
+      );
+    }
+
+    for (var i = 0; i < _passengers.length; i++) {
+      final p = _passengers[i] as Map<String, dynamic>;
+      final pickupLat = _readDouble(p['pickup_lat'] ?? p['pickupLat']);
+      final pickupLng = _readDouble(p['pickup_lng'] ?? p['pickupLng']);
+      final dropLat = _readDouble(
+        p['drop_lat'] ?? p['dropLat'] ?? p['dropoff_lat'] ?? p['dropoffLat'],
+      );
+      final dropLng = _readDouble(
+        p['drop_lng'] ?? p['dropLng'] ?? p['dropoff_lng'] ?? p['dropoffLng'],
+      );
+
+      if (pickupLat != null && pickupLng != null) {
+        final pickup = LatLng(pickupLat, pickupLng);
+        points.add(pickup);
+        markers.add(
+          Marker(
+            markerId: MarkerId('pickup_$i'),
+            position: pickup,
+            infoWindow: InfoWindow(
+              title: 'Pickup ${i + 1}',
+              snippet: p['passenger_name']?.toString() ?? 'Passenger',
+            ),
+            icon: BitmapDescriptor.defaultMarkerWithHue(
+              BitmapDescriptor.hueGreen,
+            ),
+          ),
+        );
+      }
+
+      if (dropLat != null && dropLng != null) {
+        final drop = LatLng(dropLat, dropLng);
+        points.add(drop);
+        markers.add(
+          Marker(
+            markerId: MarkerId('drop_$i'),
+            position: drop,
+            infoWindow: InfoWindow(
+              title: 'Drop ${i + 1}',
+              snippet: p['passenger_name']?.toString() ?? 'Passenger',
+            ),
+            icon: BitmapDescriptor.defaultMarkerWithHue(
+              BitmapDescriptor.hueRed,
+            ),
+          ),
+        );
+      }
+    }
+
+    final center = points.isNotEmpty ? points.first : const LatLng(17.3850, 78.4867);
+    final polyline = points.length >= 2
+        ? {
+            Polyline(
+              polylineId: const PolylineId('outstation_route'),
+              points: points,
+              color: _primary,
+              width: 5,
+              startCap: Cap.roundCap,
+              endCap: Cap.roundCap,
+            ),
+          }
+        : <Polyline>{};
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(24),
+      child: Stack(
+        children: [
+          SizedBox(
+            height: 320,
+            child: GoogleMap(
+              initialCameraPosition: CameraPosition(target: center, zoom: 11.8),
+              markers: markers,
+              polylines: polyline,
+              myLocationEnabled: false,
+              myLocationButtonEnabled: false,
+              zoomControlsEnabled: false,
+              mapToolbarEnabled: false,
+              compassEnabled: false,
+            ),
+          ),
+          Positioned(
+            left: 16,
+            right: 16,
+            top: 16,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(18),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Intercity route live',
+                          style: GoogleFonts.poppins(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                            color: _textPri,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Shared stops, seat occupancy, and route progress stay visible here.',
+                          style: GoogleFonts.poppins(
+                            fontSize: 12,
+                            color: _textSec,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: _primary.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Text(
+                      '${_passengers.length} pax',
+                      style: GoogleFonts.poppins(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                        color: _primary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStopSequenceCard() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: _border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Passenger Sequence',
+            style: GoogleFonts.poppins(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: _textPri,
+            ),
+          ),
+          const SizedBox(height: 12),
+          if (_passengers.isEmpty)
+            Text(
+              'Confirmed passengers will appear here with pickup and drop order.',
+              style: GoogleFonts.poppins(fontSize: 12, color: _textSec),
+            ),
+          ...List.generate(_passengers.length, (index) {
+            final p = _passengers[index] as Map<String, dynamic>;
+            final status = p['status']?.toString() ?? 'confirmed';
+            return Padding(
+              padding: EdgeInsets.only(bottom: index == _passengers.length - 1 ? 0 : 10),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: _primary.withValues(alpha: 0.10),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Center(
+                      child: Text(
+                        '${index + 1}',
+                        style: GoogleFonts.poppins(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: _primary,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          p['passenger_name']?.toString() ?? 'Passenger',
+                          style: GoogleFonts.poppins(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: _textPri,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          'Pickup: ${p['pickup_address'] ?? '-'}',
+                          style: GoogleFonts.poppins(fontSize: 11.5, color: _textSec),
+                        ),
+                        Text(
+                          'Drop: ${p['dropoff_address'] ?? p['drop_address'] ?? p['to_city'] ?? '-'}',
+                          style: GoogleFonts.poppins(fontSize: 11.5, color: _textSec),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: status == 'picked_up'
+                          ? _green.withValues(alpha: 0.10)
+                          : _amber.withValues(alpha: 0.10),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      status == 'picked_up' ? 'Onboard' : 'Boarding',
+                      style: GoogleFonts.poppins(
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w600,
+                        color: status == 'picked_up' ? _green : _amber,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -425,57 +726,101 @@ class _OutstationPoolTripScreenState extends State<OutstationPoolTripScreen> {
           const SizedBox(width: 4),
         ],
       ),
-      body: Column(
-        children: [
-          _buildRideInfo(),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-            child: _PrimaryButton(
-              label: 'Pool SOS',
-              icon: Icons.sos_rounded,
-              onTap: _sendPoolSos,
-            ),
-          ),
-          if (_isScheduled)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-              child: _PrimaryButton(
-                label: _actionLoading ? 'Starting...' : 'Start Trip',
-                icon: Icons.play_arrow_rounded,
-                onTap: _actionLoading ? null : _startTrip,
-                loading: _actionLoading,
-              ),
-            ),
-          Expanded(
-            child: _loading
-                ? const Center(child: CircularProgressIndicator(color: _primary, strokeWidth: 2.5))
-                : _passengers.isEmpty
-                    ? _buildEmpty()
-                    : RefreshIndicator(
-                        color: _primary,
-                        onRefresh: _loadPassengers,
-                        child: ListView.builder(
-                          padding: const EdgeInsets.fromLTRB(16, 4, 16, 32),
-                          itemCount: _passengers.length,
-                          itemBuilder: (ctx, i) => _PassengerCard(
-                            booking: _passengers[i],
-                            rideActive: _isActive,
-                            actionLoading: _actionLoading,
-                            onPickup: () => _pickupPassenger(
-                              _passengers[i]['id']?.toString() ?? '',
-                              _passengers[i]['passenger_name'] ?? 'Passenger',
+      body: _loading
+          ? _buildLoadingState()
+          : RefreshIndicator(
+              color: _primary,
+              onRefresh: _loadPassengers,
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final sheetMaxHeight =
+                      constraints.maxHeight > 820 ? 390.0 : 360.0;
+                  return Stack(
+                    children: [
+                      Positioned.fill(
+                        child: ListView(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          children: [
+                            SizedBox(
+                              height: constraints.maxHeight,
+                              child: _buildTripMapHero(),
                             ),
-                            onDrop: () => _dropPassenger(_passengers[i]),
-                            onChat: () => _openPassengerChat(_passengers[i]),
-                            onCall: () => _startPassengerCall(_passengers[i]),
-                            onShare: () => _sharePassenger(_passengers[i]),
-                            onBlock: () => _blockPassenger(_passengers[i]),
+                          ],
+                        ),
+                      ),
+                      Align(
+                        alignment: Alignment.bottomCenter,
+                        child: Container(
+                          constraints: BoxConstraints(maxHeight: sheetMaxHeight),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: const BorderRadius.vertical(
+                              top: Radius.circular(24),
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.12),
+                                blurRadius: 24,
+                                offset: const Offset(0, -8),
+                              ),
+                            ],
+                          ),
+                          child: SingleChildScrollView(
+                            physics: const ClampingScrollPhysics(),
+                            padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                            child: Column(
+                              children: [
+                                _buildSheetHandle(),
+                                const SizedBox(height: 12),
+                                _buildRideInfo(),
+                                const SizedBox(height: 12),
+                                _buildStopSequenceCard(),
+                                const SizedBox(height: 12),
+                                _PrimaryButton(
+                                  label: 'Pool SOS',
+                                  icon: Icons.sos_rounded,
+                                  onTap: _sendPoolSos,
+                                ),
+                                if (_isScheduled) ...[
+                                  const SizedBox(height: 12),
+                                  _PrimaryButton(
+                                    label: _actionLoading ? 'Starting...' : 'Start Trip',
+                                    icon: Icons.play_arrow_rounded,
+                                    onTap: _actionLoading ? null : _startTrip,
+                                    loading: _actionLoading,
+                                  ),
+                                ],
+                                const SizedBox(height: 12),
+                                if (_passengers.isEmpty)
+                                  _buildEmpty()
+                                else
+                                  ...List.generate(
+                                    _passengers.length,
+                                    (i) => _PassengerCard(
+                                      booking: _passengers[i],
+                                      rideActive: _isActive,
+                                      actionLoading: _actionLoading,
+                                      onPickup: () => _pickupPassenger(
+                                        _passengers[i]['id']?.toString() ?? '',
+                                        _passengers[i]['passenger_name'] ?? 'Passenger',
+                                      ),
+                                      onDrop: () => _dropPassenger(_passengers[i]),
+                                      onChat: () => _openPassengerChat(_passengers[i]),
+                                      onCall: () => _startPassengerCall(_passengers[i]),
+                                      onShare: () => _sharePassenger(_passengers[i]),
+                                      onBlock: () => _blockPassenger(_passengers[i]),
+                                    ),
+                                  ),
+                              ],
+                            ),
                           ),
                         ),
                       ),
-          ),
-        ],
-      ),
+                    ],
+                  );
+                },
+              ),
+            ),
     );
   }
 
@@ -821,7 +1166,7 @@ class _DropConfirmSheet extends StatelessWidget {
             child: Container(width: 36, height: 4,
               decoration: BoxDecoration(
                 color: const Color(0xFFE5E9F0),
-                borderRadius: BorderRadius.circular(2))),
+                borderRadius: BorderRadius.circular(4))),
           ),
           const SizedBox(height: 18),
           Text('Drop $passengerName',
@@ -1137,7 +1482,7 @@ class _PrimaryButton extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        height: 52,
+        height: 56,
         decoration: BoxDecoration(
           color: const Color(0xFF2D8CFF),
           borderRadius: BorderRadius.circular(14),

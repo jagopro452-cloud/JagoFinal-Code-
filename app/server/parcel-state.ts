@@ -45,6 +45,27 @@ function canonicalStatus(status: string): string {
   return CANONICAL_PARCEL_STATUS[status] || status.toUpperCase();
 }
 
+const ONLINE_PARCEL_PAYMENT_METHODS = new Set([
+  "upi", "online", "razorpay", "wallet", "card", "b2b_wallet",
+]);
+
+export function initialParcelPaymentStatus(paymentMethod?: string): string {
+  const method = String(paymentMethod || "cash").toLowerCase();
+  if (method === "b2b_wallet") return "paid";
+  if (ONLINE_PARCEL_PAYMENT_METHODS.has(method)) return "paid_online";
+  return "unpaid";
+}
+
+export function settledParcelPaymentStatus(paymentMethod?: string, current?: string): string {
+  const method = String(paymentMethod || "cash").toLowerCase();
+  const existing = String(current || "").toLowerCase();
+  if (["paid", "paid_online", "wallet_paid", "partial_payment"].includes(existing)) {
+    return existing;
+  }
+  if (ONLINE_PARCEL_PAYMENT_METHODS.has(method)) return "paid";
+  return "paid";
+}
+
 async function getParcelSnapshot(orderId: string): Promise<ParcelSnapshot | null> {
   const result = await rawDb.execute(sql`
     SELECT id, current_status, COALESCE(version, 0) AS version, driver_id, customer_id

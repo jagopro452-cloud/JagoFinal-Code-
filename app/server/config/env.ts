@@ -115,7 +115,6 @@ export function validateProductionReadiness(env: AppEnv): void {
   const warnings: string[] = [];
   const invalid: string[] = [];
 
-  if (!env.ADMIN_PASSWORD) critical.push("ADMIN_PASSWORD");
   if (!env.GOOGLE_MAPS_API_KEY) critical.push("GOOGLE_MAPS_API_KEY");
   if (!env.ALLOWED_ORIGINS) critical.push("ALLOWED_ORIGINS");
   if (!env.SOCKET_ALLOWED_ORIGINS) critical.push("SOCKET_ALLOWED_ORIGINS");
@@ -128,6 +127,7 @@ export function validateProductionReadiness(env: AppEnv): void {
   if (!env.FIREBASE_WEB_API_KEY) critical.push("FIREBASE_WEB_API_KEY");
 
   if (!env.OPS_API_KEY) warnings.push("OPS_API_KEY");
+  if (!env.ADMIN_PASSWORD) warnings.push("ADMIN_PASSWORD");
   if (isTrue(env.REQUIRE_EXTERNAL_ALERT_WEBHOOK) && !env.ALERT_WEBHOOK_URL) {
     warnings.push("ALERT_WEBHOOK_URL (external ops webhook required by REQUIRE_EXTERNAL_ALERT_WEBHOOK=true)");
   }

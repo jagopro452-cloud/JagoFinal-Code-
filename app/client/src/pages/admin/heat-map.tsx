@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import L from "leaflet";
-import "leaflet/dist/leaflet.css";
 
 const DEMAND_COLORS: Record<string, string> = {
   high: "#ef4444",
@@ -106,6 +105,14 @@ export default function HeatMapPage() {
   }, [config]);
 
   useEffect(() => {
+    // Inject leaflet CSS on demand — only when this page is actually rendered
+    if (!document.getElementById("leaflet-css")) {
+      const link = document.createElement("link");
+      link.id = "leaflet-css";
+      link.rel = "stylesheet";
+      link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+      document.head.appendChild(link);
+    }
     setMapReady(true);
 
     return () => {

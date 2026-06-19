@@ -1,7 +1,7 @@
 import { expect, request, type APIRequestContext } from "@playwright/test";
 import { runtime } from "./runtime";
 import type { SharedLiveSuiteState } from "./live-suite-state";
-import { updateLiveActorSession } from "./live-suite-state";
+import { readLiveSuiteState, updateLiveActorSession } from "./live-suite-state";
 
 export type AdminSession = {
   token: string;
@@ -16,12 +16,33 @@ export type AdminSession = {
 
 export type MobileSession = {
   token: string;
+  refreshToken?: string;
+  expiresAt?: string;
   user: {
     id: string;
     fullName: string;
     phone: string;
     userType: string;
     walletBalance?: number;
+  };
+};
+
+type AccessTokenPayload = {
+  sub?: string;
+  userType?: string;
+  deviceId?: string;
+  typ?: string;
+  iat?: number;
+  exp?: number;
+  jti?: string;
+};
+
+type SeedBootstrapPayload = {
+  bootstrapMode?: "seed" | "fallback";
+  adminSession?: AdminSession;
+  sessions?: {
+    customers?: Array<{ phone: string; session: MobileSession | null }>;
+    drivers?: Array<{ phone: string; session: MobileSession | null }>;
   };
 };
 
@@ -32,6 +53,25 @@ export type VehicleCategory = {
   vehicleType?: string;
   serviceType?: string;
   isCarpool?: boolean;
+};
+
+export type DriverEligibleServicesResponse = {
+  services: Array<{ key: string; name?: string; category?: string }>;
+  parcelVehicles: Array<{ key: string; name?: string }>;
+  dispatchProfile?: {
+    vehicleCategoryKey?: string | null;
+    serviceEligibility?: string[];
+    parcelEligibility?: boolean;
+    poolEligibility?: boolean;
+    outstationEligibility?: boolean;
+    seatCapacity?: number;
+  };
+  modules?: Array<{
+    key: string;
+    enabled: boolean;
+    availableByCategory?: boolean;
+    blockedReasons?: string[];
+  }>;
 };
 
 function authHeaders(token: string) {
@@ -102,8 +142,22 @@ export class LiveClient {
       );
 
       if (response.ok()) {
+        const payload = await response.json() as SeedBootstrapPayload;
+        if (payload.adminSession?.token) {
+          this.cachedAdminSession = payload.adminSession;
+        }
+        for (const entry of payload.sessions?.customers || []) {
+          if (entry?.session?.token && entry?.phone) {
+            this.mobileSessionCache.set(this.getMobileCacheKey(entry.phone, "customer"), entry.session);
+          }
+        }
+        for (const entry of payload.sessions?.drivers || []) {
+          if (entry?.session?.token && entry?.phone) {
+            this.mobileSessionCache.set(this.getMobileCacheKey(entry.phone, "driver"), entry.session);
+          }
+        }
         return {
-          ...(await response.json()),
+          ...payload,
           bootstrapMode: "seed" as const,
         };
       }
@@ -119,7 +173,7 @@ export class LiveClient {
   async initializeSharedState(): Promise<SharedLiveSuiteState> {
     const bootstrap = await this.seedTestAccounts();
     const [admin, bike, auto, cab, pool] = await Promise.all([
-      this.loginAdmin(),
+      bootstrap.adminSession?.token ? Promise.resolve(bootstrap.adminSession) : this.loginAdmin(),
       this.getCategoryByLabel("bike"),
       this.getCategoryByLabel("auto"),
       this.getCategoryByLabel("cab"),
@@ -196,6 +250,18 @@ export class LiveClient {
       return this.cachedAdminSession;
     }
 
+    if (!forceRefresh) {
+      try {
+        const state = await readLiveSuiteState();
+        if (state.admin.session?.token) {
+          this.cachedAdminSession = state.admin.session;
+          return this.cachedAdminSession;
+        }
+      } catch {
+        // Fall through to a direct login attempt.
+      }
+    }
+
     const response = await this.requestWithBackoff(
       () => this.api.post("/api/admin/login", {
         data: {
@@ -223,7 +289,17 @@ export class LiveClient {
       headers: authHeaders(admin.token),
     });
     if (response.status() === 401) {
-      admin = await this.loginAdmin(true);
+      try {
+        const bootstrap = await this.seedTestAccounts();
+        if (bootstrap?.adminSession?.token) {
+          this.cachedAdminSession = bootstrap.adminSession;
+          admin = bootstrap.adminSession;
+        } else {
+          admin = await this.loginAdmin(true);
+        }
+      } catch {
+        admin = await this.loginAdmin(true);
+      }
       response = await this.api.get(path, {
         headers: authHeaders(admin.token),
       });
@@ -232,11 +308,21 @@ export class LiveClient {
   }
 
   async getRazorpayDiag(token: string) {
-    const response = token
+    let response = token
       ? await this.api.get("/api/diag/razorpay", { headers: authHeaders(token) })
       : await this.adminGet("/api/diag/razorpay");
+    if (response.status() === 401) {
+      response = await this.adminGet("/api/diag/razorpay");
+    }
     expect(response.ok()).toBeTruthy();
     return response.json();
+  }
+
+  async getSeededCustomerSessions() {
+    const bootstrap = await this.seedTestAccounts();
+    return (bootstrap.sessions?.customers || [])
+      .map((entry) => entry.session)
+      .filter((session): session is MobileSession => Boolean(session?.token && session?.user?.phone));
   }
 
   async loginMobile(phone: string, userType: "customer" | "driver", forceRefresh = false): Promise<MobileSession> {
@@ -256,15 +342,27 @@ export class LiveClient {
       }),
       { retries: 2, backoffMs: 4_000, retryStatuses: [429] },
     );
-    expect(response.ok()).toBeTruthy();
-    const session = await response.json() as MobileSession;
+    if (!response.ok()) {
+      const body = await readResponseBody(response);
+      throw new Error(`loginMobile failed for ${userType}:${phone || "<empty>"} status=${response.status()} body=${JSON.stringify(body)}`);
+    }
+    const body = await response.json() as any;
+    const session = normalizeMobileSession(body, { phone, userType });
     this.mobileSessionCache.set(cacheKey, session);
     return session;
   }
 
   async refreshMobileSession(session: MobileSession) {
-    const refreshed = await this.loginMobile(session.user.phone, session.user.userType as "customer" | "driver", true);
+    const fallbackPhone = String(session.user?.phone || (session as any).phone || "").trim();
+    const fallbackUserType = String(session.user?.userType || (session as any).userType || "").trim() as "customer" | "driver";
+    if (!fallbackPhone) {
+      throw new Error(`refreshMobileSession missing fallback phone for session token=${String(session.token || "").slice(0, 16)}`);
+    }
+    const refreshed = await this.refreshMobileAccessToken(session)
+      ?? await this.loginMobile(fallbackPhone, fallbackUserType || "customer", true);
     session.token = refreshed.token;
+    session.refreshToken = refreshed.refreshToken;
+    session.expiresAt = refreshed.expiresAt;
     session.user = refreshed.user;
     this.mobileSessionCache.set(this.getMobileCacheKey(session.user.phone, session.user.userType as "customer" | "driver"), session);
     await updateLiveActorSession(session.user.phone, session.user.userType, session);
@@ -288,7 +386,8 @@ export class LiveClient {
     if (response.status() === 409) {
       return this.loginMobile(params.phone, params.userType);
     }
-    const session = await response.json() as MobileSession;
+    const body = await response.json() as any;
+    const session = normalizeMobileSession(body, { phone: params.phone, userType: params.userType, fullName: params.fullName });
     this.mobileSessionCache.set(this.getMobileCacheKey(params.phone, params.userType), session);
     return session;
   }
@@ -319,11 +418,20 @@ export class LiveClient {
   }
 
   async getVehicleCategories() {
-    const response = await this.api.get("/api/vehicle-categories");
+    let response = await this.api.get("/api/app/vehicle-categories");
+    if (!response.ok()) {
+      response = await this.api.get("/api/vehicle-categories");
+    }
     expect(response.ok()).toBeTruthy();
     const body = await response.json();
     const list = Array.isArray(body) ? body : Array.isArray(body?.data) ? body.data : [];
     return list as VehicleCategory[];
+  }
+
+  async getDriverEligibleServices(session: MobileSession) {
+    const response = await this.mobileGet(session, "/api/app/driver/eligible-services");
+    expect(response.ok()).toBeTruthy();
+    return response.json() as Promise<DriverEligibleServicesResponse>;
   }
 
   async getCategoryByLabel(label: "bike" | "auto" | "cab" | "pool") {
@@ -404,6 +512,15 @@ export class LiveClient {
 
   async getDriverActiveTrip(session: MobileSession) {
     const response = await this.mobileGet(session, "/api/app/driver/active-trip");
+    expect(response.ok()).toBeTruthy();
+    return response.json();
+  }
+
+  async setDriverOnlineStatus(
+    session: MobileSession,
+    payload: { isOnline: boolean; lat?: number; lng?: number },
+  ) {
+    const response = await this.mobilePatch(session, "/api/app/driver/online-status", payload);
     expect(response.ok()).toBeTruthy();
     return response.json();
   }
@@ -508,6 +625,15 @@ export class LiveClient {
     const response = await this.mobilePost(session, "/api/app/driver/outstation-pool/rides", payload);
     expect(response.ok()).toBeTruthy();
     return response.json();
+  }
+
+  async createOutstationRideExpectFailure(session: MobileSession, payload: Record<string, unknown>) {
+    const response = await this.mobilePost(session, "/api/app/driver/outstation-pool/rides", payload);
+    expect(response.ok()).toBeFalsy();
+    return {
+      status: response.status(),
+      body: await readResponseBody(response),
+    };
   }
 
   async searchOutstationRides(session: MobileSession, fromCity: string, toCity: string, date?: string) {
@@ -629,6 +755,41 @@ export class LiveClient {
 
     await this.refreshMobileSession(session);
     return factory(session.token);
+  }
+
+  private async refreshMobileAccessToken(session: MobileSession): Promise<MobileSession | null> {
+    const refreshToken = String(session.refreshToken || "").trim();
+    const payload = decodeAccessToken(session.token);
+    const deviceId = String(payload?.deviceId || "").trim();
+    if (!refreshToken || !deviceId) {
+      return null;
+    }
+
+    const response = await this.api.post("/api/app/auth/refresh", {
+      data: {
+        refreshToken,
+        deviceId,
+      },
+      headers: {
+        "content-type": "application/json",
+        "x-device-id": deviceId,
+      },
+    });
+
+    if (!response.ok()) {
+      return null;
+    }
+
+    const body = await response.json() as { token?: string; refreshToken?: string };
+    if (!body?.token) {
+      return null;
+    }
+
+    return {
+      ...session,
+      token: body.token,
+      refreshToken: body.refreshToken || refreshToken,
+    };
   }
 
   private async bootstrapQaAccounts() {
@@ -816,4 +977,34 @@ export class LiveClient {
     if (Number.isNaN(dateMs)) return null;
     return Math.max(1_000, dateMs - Date.now());
   }
+}
+
+function decodeAccessToken(token: string | undefined): AccessTokenPayload | null {
+  if (!token) return null;
+  const parts = token.split(".");
+  if (parts.length < 2) return null;
+  try {
+    return JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as AccessTokenPayload;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeMobileSession(
+  body: any,
+  fallback: { phone: string; userType: "customer" | "driver"; fullName?: string },
+): MobileSession {
+  const candidateUser = body?.user || body?.customer || body?.driver || body?.data?.user || null;
+  return {
+    token: String(body?.token || body?.accessToken || body?.data?.token || ""),
+    refreshToken: String(body?.refreshToken || body?.data?.refreshToken || ""),
+    expiresAt: body?.expiresAt || body?.data?.expiresAt,
+    user: {
+      id: String(candidateUser?.id || body?.userId || body?.id || ""),
+      fullName: String(candidateUser?.fullName || candidateUser?.name || fallback.fullName || fallback.phone),
+      phone: String(candidateUser?.phone || candidateUser?.mobile || body?.phone || fallback.phone),
+      userType: String(candidateUser?.userType || body?.userType || fallback.userType),
+      walletBalance: candidateUser?.walletBalance ?? body?.walletBalance,
+    },
+  };
 }

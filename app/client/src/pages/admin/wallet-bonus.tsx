@@ -13,6 +13,12 @@ export default function WalletBonusPage() {
   const { data, isLoading } = useQuery<any[]>({ queryKey: ["/api/wallet-bonus"] });
   const bonuses = Array.isArray(data) ? data : [];
 
+  const toggleMutation = useMutation({
+    mutationFn: ({ id, isActive }: { id: string; isActive: boolean }) => apiRequest("PATCH", `/api/wallet-bonus/${id}`, { isActive }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/wallet-bonus"] }),
+    onError: (e: any) => { queryClient.invalidateQueries({ queryKey: ["/api/wallet-bonus"] }); toast({ title: "Toggle failed", description: e.message, variant: "destructive" }); },
+  });
+
   const saveMutation = useMutation({
     mutationFn: (payload: any) =>
       editing ? apiRequest("PUT", `/api/wallet-bonus/${editing.id}`, payload) : apiRequest("POST", "/api/wallet-bonus", payload),
@@ -22,12 +28,13 @@ export default function WalletBonusPage() {
       toast({ title: editing ? "Updated" : "Created" });
       setEditing(null);
     },
-    onError: () => toast({ title: "Failed to save", variant: "destructive" }),
+    onError: (e: any) => toast({ title: "Failed to save", description: e.message, variant: "destructive" }),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => apiRequest("DELETE", `/api/wallet-bonus/${id}`),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/wallet-bonus"] }); toast({ title: "Deleted" }); },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/wallet-bonus"] }); toast({ title: "Bonus deleted" }); },
+    onError: (e: any) => toast({ title: "Delete failed", description: e.message, variant: "destructive" }),
   });
 
   const openAdd = () => { setEditing(null); setForm({ name: "", bonusAmount: "", minimumAddAmount: "", bonusType: "percentage", maxBonusAmount: "", isActive: true }); setShowModal(true); };
@@ -79,7 +86,12 @@ export default function WalletBonusPage() {
                       <td>{b.bonusAmount}{b.bonusType === "percentage" ? "%" : " ₹"}</td>
                       <td className="text-capitalize">{b.bonusType}</td>
                       <td>{b.minimumAddAmount ? `₹${b.minimumAddAmount}` : "—"}</td>
-                      <td><span className={`badge ${b.isActive ? "bg-success" : "bg-secondary"}`}>{b.isActive ? "Active" : "Inactive"}</span></td>
+                      <td>
+                        <label className="switcher">
+                          <input className="switcher_input" type="checkbox" checked={!!b.isActive} onChange={e => toggleMutation.mutate({ id: b.id, isActive: e.target.checked })} />
+                          <span className="switcher_control"></span>
+                        </label>
+                      </td>
                       <td>
                         <button className="btn btn-sm btn-outline-primary me-1" onClick={() => openEdit(b)}><i className="bi bi-pencil-fill"></i></button>
                         <button className="btn btn-sm btn-outline-danger" onClick={async () => { if (await adminConfirm("Delete this wallet bonus?")) deleteMutation.mutate(b.id); }}><i className="bi bi-trash-fill"></i></button>

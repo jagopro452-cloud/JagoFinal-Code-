@@ -23,128 +23,110 @@ interface ParcelOrder {
   created_at: string;
 }
 
-const STATUS_CONFIG: Record<string, { label: string; bg: string; color: string }> = {
-  pending:         { label: "Pending",         bg: "rgba(243,156,18,0.15)",  color: "#F39C12" },
-  searching:       { label: "Searching",       bg: "rgba(47,123,255,0.15)",  color: "#2F7BFF" },
-  driver_assigned: { label: "Driver Assigned", bg: "rgba(74,144,226,0.15)",  color: "#4A90E2" },
-  in_transit:      { label: "In Transit",      bg: "rgba(16,185,129,0.15)",  color: "#10B981" },
-  completed:       { label: "Completed",       bg: "rgba(46,204,113,0.15)",  color: "#2ECC71" },
-  cancelled:       { label: "Cancelled",       bg: "rgba(231,76,60,0.15)",   color: "#E74C3C" },
+const STATUS_CONFIG: Record<string, { label: string; cls: string }> = {
+  pending:         { label: "Pending",         cls: "bg-warning text-dark" },
+  searching:       { label: "Searching",       cls: "bg-primary" },
+  driver_assigned: { label: "Driver Assigned", cls: "bg-primary" },
+  accepted:        { label: "Accepted",        cls: "bg-info" },
+  picked_up:       { label: "Picked Up",       cls: "bg-info" },
+  in_transit:      { label: "In Transit",      cls: "bg-info" },
+  completed:       { label: "Completed",       cls: "bg-success" },
+  cancelled:       { label: "Cancelled",       cls: "bg-danger" },
 };
 
 const VEHICLE_LABELS: Record<string, string> = {
   bike_parcel:  "Bike Parcel",
-  auto_parcel:  "Auto Parcel",
-  tata_ace:     "Tata Ace",
-  bolero_cargo: "Bolero Cargo",
+  auto_parcel:  "Mini Auto Parcel",
+  tata_ace:     "Pickup Truck",
+  bolero_cargo: "Bolero Pickup",
   pickup_truck: "Pickup Truck",
-  tempo_407:    "Tempo 407",
+  tempo_407:    "Goods Vehicle",
 };
 
-interface DetailModalProps { order: ParcelOrder; onClose: () => void }
+const STATUSES = ["all", "searching", "driver_assigned", "in_transit", "completed", "cancelled"];
+const PAGE_SIZE = 15;
 
-function DetailModal({ order, onClose }: DetailModalProps) {
-  const drops: any[] = Array.isArray(order.drop_locations)
-    ? order.drop_locations
-    : (typeof order.drop_locations === "string" ? (() => { try { return JSON.parse(order.drop_locations); } catch { return []; } })() : []);
-  const sc = STATUS_CONFIG[order.current_status] ?? { label: order.current_status, bg: "#F3F4F6", color: "#6B7280" };
+function parseDrops(order: ParcelOrder): any[] {
+  if (Array.isArray(order.drop_locations)) return order.drop_locations;
+  if (typeof order.drop_locations === "string") {
+    try { return JSON.parse(order.drop_locations); } catch { return []; }
+  }
+  return [];
+}
+
+function formatPaymentMethod(method: string | undefined) {
+  const m = String(method || "cash").toLowerCase();
+  if (m === "upi") return "UPI";
+  if (m === "cash") return "Cash";
+  return m.charAt(0).toUpperCase() + m.slice(1);
+}
+
+function DetailModal({ order, onClose }: { order: ParcelOrder; onClose: () => void }) {
+  const drops = parseDrops(order);
+  const sc = STATUS_CONFIG[order.current_status] ?? { label: order.current_status, cls: "bg-secondary" };
 
   return (
     <div className="modal-backdrop-jago" onClick={onClose}>
-      <div className="modal-jago" style={{ maxWidth: 620 }} onClick={e => e.stopPropagation()}>
+      <div className="modal-jago" style={{ maxWidth: 640 }} onClick={(e) => e.stopPropagation()}>
         <div className="modal-jago-header">
           <h5 className="modal-jago-title">
             <i className="bi bi-box-seam-fill me-2 text-primary" />
             Parcel Order Detail
           </h5>
-          <button className="modal-jago-close" onClick={onClose}><i className="bi bi-x-lg" /></button>
+          <button type="button" className="modal-jago-close" onClick={onClose}><i className="bi bi-x-lg" /></button>
         </div>
-
         <div className="row g-3">
-          <div className="col-12">
-            <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", marginBottom: 4 }}>
-              <span style={{ fontFamily: "monospace", fontSize: 12, color: "#6B7280" }}>#{order.id.slice(0, 8).toUpperCase()}</span>
-              <span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: sc.bg, color: sc.color }}>{sc.label}</span>
-              {order.is_b2b && <span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: "rgba(139,92,246,0.15)", color: "#8B5CF6" }}>B2B</span>}
-            </div>
+          <div className="col-12 d-flex flex-wrap gap-2">
+            <span className="trip-ref">#{order.id.slice(0, 8).toUpperCase()}</span>
+            <span className={`badge ${sc.cls}`}>{sc.label}</span>
+            {order.is_b2b && <span className="badge bg-purple-subtle text-primary border">B2B</span>}
           </div>
-
-          <div className="col-6">
+          <div className="col-md-6">
             <div className="jago-detail-label">Customer</div>
             <div className="jago-detail-value">{order.customer_name || "—"}</div>
-            <div style={{ fontSize: 12, color: "#6B7280" }}>{order.customer_phone || "—"}</div>
+            <div className="text-muted small">{order.customer_phone || "—"}</div>
           </div>
-          <div className="col-6">
+          <div className="col-md-6">
             <div className="jago-detail-label">Driver</div>
             <div className="jago-detail-value">{order.driver_name || "Not assigned"}</div>
-            {order.driver_phone && <div style={{ fontSize: 12, color: "#6B7280" }}>{order.driver_phone}</div>}
+            <div className="text-muted small">{order.driver_phone || "—"}</div>
           </div>
-
-          <div className="col-12">
+          <div className="col-md-4">
             <div className="jago-detail-label">Vehicle</div>
             <div className="jago-detail-value">{VEHICLE_LABELS[order.vehicle_category] || order.vehicle_category}</div>
           </div>
-
-          <div className="col-12">
-            <div className="jago-detail-label">Pickup Location</div>
-            <div style={{ background: "#F0FDF4", borderRadius: 10, padding: "10px 14px", borderLeft: "3px solid #2ECC71" }}>
-              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>
-                <i className="bi bi-geo-alt-fill me-2 text-success" />Pickup
-              </div>
-              <div style={{ fontSize: 13, color: "#374151" }}>{order.pickup_address}</div>
-            </div>
-          </div>
-
-          <div className="col-12">
-            <div className="jago-detail-label">Drop Locations ({drops.length} stop{drops.length !== 1 ? "s" : ""})</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {drops.map((d: any, i: number) => (
-                <div key={i} style={{
-                  background: d.delivered_at ? "rgba(46,204,113,0.08)" : i === order.current_drop_index && order.current_status === "in_transit" ? "rgba(47,123,255,0.08)" : "#F9FAFB",
-                  borderRadius: 10, padding: "10px 14px",
-                  borderLeft: `3px solid ${d.delivered_at ? "#2ECC71" : i === order.current_drop_index ? "#2F7BFF" : "#E5E7EB"}`,
-                }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: "#374151" }}>
-                      Stop {i + 1} {d.receiverName ? `— ${d.receiverName}` : ""}
-                    </div>
-                    {d.delivered_at
-                      ? <span style={{ fontSize: 10, fontWeight: 700, color: "#2ECC71" }}>✓ Delivered</span>
-                      : i === order.current_drop_index && order.current_status === "in_transit"
-                        ? <span style={{ fontSize: 10, fontWeight: 700, color: "#2F7BFF" }}>● Current</span>
-                        : <span style={{ fontSize: 10, color: "#9CA3AF" }}>Pending</span>
-                    }
-                  </div>
-                  <div style={{ fontSize: 12, color: "#6B7280" }}>{d.address}</div>
-                  {d.receiverPhone && <div style={{ fontSize: 11, color: "#9CA3AF" }}>{d.receiverPhone}</div>}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="col-4">
-            <div className="jago-detail-label">Distance</div>
-            <div className="jago-detail-value">{order.total_distance_km} km</div>
-          </div>
-          <div className="col-4">
-            <div className="jago-detail-label">Weight</div>
-            <div className="jago-detail-value">{order.weight_kg} kg</div>
-          </div>
-          <div className="col-4">
+          <div className="col-md-4">
             <div className="jago-detail-label">Payment</div>
-            <div className="jago-detail-value" style={{ textTransform: "capitalize" }}>{order.payment_method}</div>
+            <div className="jago-detail-value">{formatPaymentMethod(order.payment_method)}</div>
+            <div className="text-muted small text-capitalize">{order.payment_status || "unpaid"}</div>
           </div>
-
+          <div className="col-md-4">
+            <div className="jago-detail-label">Weight / Distance</div>
+            <div className="jago-detail-value">{order.weight_kg} kg · {order.total_distance_km} km</div>
+          </div>
           <div className="col-12">
-            <div style={{ background: "linear-gradient(135deg,#2F7BFF,#4A90E2)", borderRadius: 14, padding: "14px 18px", color: "#fff" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div className="jago-detail-label">Pickup</div>
+            <div className="p-2 rounded bg-light border-start border-3 border-success small">{order.pickup_address}</div>
+          </div>
+          <div className="col-12">
+            <div className="jago-detail-label">Drop Stops ({drops.length})</div>
+            {drops.map((d: any, i: number) => (
+              <div key={i} className="p-2 mb-2 rounded bg-light border-start border-3 border-primary small">
+                <strong>Stop {i + 1}</strong> {d.receiverName ? `— ${d.receiverName}` : ""}
+                <div className="text-muted">{d.address}</div>
+              </div>
+            ))}
+          </div>
+          <div className="col-12">
+            <div className="p-3 rounded text-white" style={{ background: "linear-gradient(135deg,#FF6B35,#F59E0B)" }}>
+              <div className="d-flex justify-content-between">
                 <div>
-                  <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 2 }}>Total Fare</div>
-                  <div style={{ fontSize: 24, fontWeight: 800 }}>&#8377;{order.total_fare}</div>
+                  <div className="small opacity-75">Total Fare</div>
+                  <div className="fs-4 fw-bold">₹{order.total_fare}</div>
                 </div>
-                <div style={{ textAlign: "right" }}>
-                  <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 2 }}>Commission Earned</div>
-                  <div style={{ fontSize: 18, fontWeight: 700 }}>&#8377;{order.commission_amt}</div>
+                <div className="text-end">
+                  <div className="small opacity-75">Commission</div>
+                  <div className="fs-5 fw-semibold">₹{order.commission_amt}</div>
                 </div>
               </div>
             </div>
@@ -155,169 +137,266 @@ function DetailModal({ order, onClose }: DetailModalProps) {
   );
 }
 
+function exportParcelCsv(orders: ParcelOrder[]) {
+  const header = ["Order ID", "Customer", "Driver", "Vehicle", "Pickup", "Stops", "Fare", "Commission", "Payment", "Status", "Date"];
+  const lines = orders.map((o) => {
+    const drops = parseDrops(o);
+    return [
+      o.id.slice(0, 8),
+      o.customer_name || "",
+      o.driver_name || "",
+      VEHICLE_LABELS[o.vehicle_category] || o.vehicle_category,
+      `"${String(o.pickup_address || "").replace(/"/g, '""')}"`,
+      drops.length,
+      o.total_fare,
+      o.commission_amt,
+      formatPaymentMethod(o.payment_method),
+      o.current_status,
+      new Date(o.created_at).toLocaleDateString("en-IN"),
+    ].join(",");
+  });
+  const blob = new Blob([[header.join(","), ...lines].join("\n")], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `jago-parcel-orders-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function ParcelOrdersPage() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [b2bOnly, setB2bOnly] = useState(false);
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
   const [selectedOrder, setSelectedOrder] = useState<ParcelOrder | null>(null);
 
-  const { data, isLoading } = useQuery<{ orders: ParcelOrder[] }>({
-    queryKey: ["/api/admin/parcel-orders", statusFilter, b2bOnly],
+  const { data: globalStats } = useQuery<{
+    total: number;
+    searching: number;
+    inTransit: number;
+    completed: number;
+    commissionRevenue: number;
+  }>({
+    queryKey: ["/api/admin/parcel-orders/stats"],
     queryFn: async () => {
-      const params = new URLSearchParams();
+      const r = await adminFetch("/api/admin/parcel-orders/stats");
+      if (!r.ok) throw new Error("Failed to load parcel stats");
+      return r.json();
+    },
+  });
+
+  const { data, isLoading } = useQuery<{ orders: ParcelOrder[]; total: number }>({
+    queryKey: ["/api/admin/parcel-orders", statusFilter, b2bOnly, search, page],
+    queryFn: async () => {
+      const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) });
       if (statusFilter !== "all") params.set("status", statusFilter);
       if (b2bOnly) params.set("b2b", "true");
+      if (search.trim()) params.set("search", search.trim());
       const r = await adminFetch(`/api/admin/parcel-orders?${params}`);
-      if (!r.ok) throw new Error("Failed");
+      if (!r.ok) throw new Error("Failed to load parcel orders");
       return r.json();
     },
   });
 
   const orders = data?.orders ?? [];
+  const total = data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   const stats = {
-    total:     orders.length,
-    searching: orders.filter(o => o.current_status === "searching").length,
-    inTransit: orders.filter(o => o.current_status === "in_transit").length,
-    completed: orders.filter(o => o.current_status === "completed").length,
-    revenue:   orders.filter(o => o.current_status === "completed").reduce((s, o) => s + Number(o.commission_amt), 0),
+    total: globalStats?.total ?? total,
+    searching: globalStats?.searching ?? 0,
+    inTransit: globalStats?.inTransit ?? 0,
+    completed: globalStats?.completed ?? 0,
+    revenue: globalStats?.commissionRevenue ?? 0,
   };
 
   return (
-      <div style={{ padding: "28px 32px", maxWidth: 1200 }}>
+    <div className="container-fluid">
+      <style>{`
+        .jago-parcel-table { table-layout: fixed; min-width: 1280px; }
+        .jago-parcel-table .trip-ref {
+          font-family: ui-monospace, monospace; font-size: 12px; font-weight: 700; color: #2563eb;
+        }
+        .jago-parcel-kpi { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+        .jago-parcel-kpi .card { border-radius: 10px; border: 1px solid #e2e8f0; }
+      `}</style>
 
-        {/* Header */}
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 28 }}>
-          <div style={{ width: 48, height: 48, borderRadius: 14, background: "linear-gradient(135deg,#FF6B35,#F59E0B)", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 14px rgba(255,107,53,0.35)" }}>
-            <i className="bi bi-box-seam-fill" style={{ color: "#fff", fontSize: 22 }} />
-          </div>
+      <div className="d-flex flex-column gap-3">
+        <div className="d-flex align-items-center justify-content-between flex-wrap gap-2">
           <div>
-            <h4 style={{ fontWeight: 800, margin: 0, letterSpacing: -0.3, fontSize: 20 }}>Parcel Orders</h4>
-            <p style={{ margin: 0, fontSize: 13, color: "#6B7280" }}>Multi-drop Porter-style deliveries · B2B bulk orders · real-time tracking</p>
+            <h2 className="fs-22 mb-1 fw-bold">Parcel Orders</h2>
+            <div className="fs-14 text-muted">Monitor parcel deliveries — driver, pickup, fare and commission</div>
+          </div>
+          <div className="d-flex align-items-center gap-2">
+            <button
+              type="button"
+              className="btn btn-outline-secondary btn-sm"
+              disabled={!orders.length}
+              onClick={() => exportParcelCsv(orders)}
+              data-testid="btn-export-parcels"
+            >
+              <i className="bi bi-download me-1" />Export CSV
+            </button>
+            <span className="text-muted small">Total:</span>
+            <span className="fw-bold text-primary fs-5">{total}</span>
           </div>
         </div>
 
-        {/* KPI row */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 14, marginBottom: 24 }}>
+        <div className="jago-parcel-kpi">
           {[
-            { label: "Total Orders", value: stats.total,     icon: "bi-box-seam",       color: "#2F7BFF" },
-            { label: "Searching",    value: stats.searching, icon: "bi-search",          color: "#F39C12" },
-            { label: "In Transit",   value: stats.inTransit, icon: "bi-truck",           color: "#10B981" },
-            { label: "Completed",    value: stats.completed, icon: "bi-check-circle",    color: "#2ECC71" },
-            { label: "Commission",   value: `\u20b9${stats.revenue}`, icon: "bi-coin", color: "#8B5CF6" },
-          ].map(s => (
-            <div key={s.label} className="jago-stat-card" style={{ "--stat-accent": s.color } as any}>
-              <div className="stat-icon" style={{ background: `${s.color}18`, color: s.color }}>
-                <i className={`bi ${s.icon}`} />
-              </div>
-              <div>
-                <div className="stat-value">{s.value}</div>
-                <div className="stat-label">{s.label}</div>
+            { label: "Total Orders", value: stats.total, icon: "bi-box-seam", color: "#2F7BFF" },
+            { label: "Searching", value: stats.searching, icon: "bi-search", color: "#F39C12" },
+            { label: "In Transit", value: stats.inTransit, icon: "bi-truck", color: "#10B981" },
+            { label: "Completed", value: stats.completed, icon: "bi-check-circle", color: "#2ECC71" },
+            { label: "Commission", value: `₹${stats.revenue.toFixed(0)}`, icon: "bi-coin", color: "#8B5CF6" },
+          ].map((s) => (
+            <div key={s.label} className="card shadow-sm">
+              <div className="card-body py-2 px-3 d-flex align-items-center gap-2">
+                <div className="rounded-circle d-flex align-items-center justify-content-center" style={{ width: 36, height: 36, background: `${s.color}18`, color: s.color }}>
+                  <i className={`bi ${s.icon}`} />
+                </div>
+                <div>
+                  <div className="fw-bold">{s.value}</div>
+                  <div className="text-muted" style={{ fontSize: 11 }}>{s.label}</div>
+                </div>
               </div>
             </div>
           ))}
         </div>
 
-        {/* Filters */}
-        <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap", alignItems: "center" }}>
-          <div style={{ display: "flex", gap: 6 }}>
-            {["all", "searching", "driver_assigned", "in_transit", "completed", "cancelled"].map(s => (
-              <button key={s} onClick={() => setStatusFilter(s)} style={{
-                padding: "6px 14px", borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: "pointer",
-                background: statusFilter === s ? "linear-gradient(135deg,#2F7BFF,#4A90E2)" : "#F3F4F6",
-                color: statusFilter === s ? "#fff" : "#6B7280",
-                border: "none",
-              }}>
-                {s === "all" ? "All" : STATUS_CONFIG[s]?.label ?? s}
-              </button>
-            ))}
+        <div className="card border-0 shadow-sm" style={{ borderRadius: 12 }}>
+          <div className="card-header bg-white py-3 px-4 border-bottom">
+            <div className="d-flex flex-wrap align-items-center gap-2 justify-content-between">
+              <ul className="nav nav--tabs p-1 rounded bg-light mb-0">
+                {STATUSES.map((s) => (
+                  <li key={s} className="nav-item">
+                    <button
+                      type="button"
+                      className={`nav-link${statusFilter === s ? " active" : ""}`}
+                      onClick={() => { setStatusFilter(s); setPage(1); }}
+                    >
+                      {s === "all" ? "All" : STATUS_CONFIG[s]?.label ?? s}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <form className="d-flex gap-2 flex-wrap align-items-center" onSubmit={(e) => { e.preventDefault(); setPage(1); }}>
+                <div className="input-group search-form__input_group" style={{ minWidth: 240 }}>
+                  <span className="search-form__icon"><i className="bi bi-search" /></span>
+                  <input
+                    type="search"
+                    className="theme-input-style search-form__input"
+                    placeholder="Search order, customer, driver..."
+                    value={search}
+                    onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                    data-testid="input-parcel-search"
+                  />
+                </div>
+                <label className="d-flex align-items-center gap-1 small mb-0">
+                  <input type="checkbox" checked={b2bOnly} onChange={(e) => { setB2bOnly(e.target.checked); setPage(1); }} />
+                  B2B only
+                </label>
+                <button type="submit" className="btn btn-primary btn-sm">Search</button>
+              </form>
+            </div>
           </div>
-          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer", marginLeft: "auto" }}>
-            <input type="checkbox" checked={b2bOnly} onChange={e => setB2bOnly(e.target.checked)} />
-            B2B only
-          </label>
-        </div>
 
-        {/* Table */}
-        {isLoading ? (
-          <div style={{ textAlign: "center", padding: 60 }}><div className="spinner-border" style={{ color: "#FF6B35" }} /></div>
-        ) : orders.length === 0 ? (
-          <div style={{ textAlign: "center", padding: "60px 0", color: "#9CA3AF" }}>
-            <i className="bi bi-inbox" style={{ fontSize: 48, display: "block", marginBottom: 12 }} />
-            No parcel orders found
-          </div>
-        ) : (
-          <div className="admin-table-wrapper">
-            <table className="jago-table">
-              <thead>
-                <tr>
-                  <th>Order ID</th>
-                  <th>Customer</th>
-                  <th>Vehicle</th>
-                  <th>Stops</th>
-                  <th>Distance</th>
-                  <th>Fare</th>
-                  <th>Status</th>
-                  <th>Type</th>
-                  <th>Date</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {orders.map(order => {
-                  const sc = STATUS_CONFIG[order.current_status] ?? { label: order.current_status, bg: "#F3F4F6", color: "#6B7280" };
-                  const drops: any[] = Array.isArray(order.drop_locations)
-                    ? order.drop_locations
-                    : (typeof order.drop_locations === "string" ? JSON.parse(order.drop_locations || "[]") : []);
-                  const delivered = drops.filter(d => d.delivered_at).length;
-                  return (
-                    <tr key={order.id}>
-                      <td>
-                        <span style={{ fontFamily: "monospace", fontSize: 12, color: "#6B7280" }}>
-                          #{order.id.slice(0, 8).toUpperCase()}
-                        </span>
-                      </td>
-                      <td>
-                        <div style={{ fontWeight: 600, fontSize: 13 }}>{order.customer_name || "—"}</div>
-                        <div style={{ fontSize: 11, color: "#9CA3AF" }}>{order.customer_phone}</div>
-                      </td>
-                      <td style={{ fontSize: 13 }}>{VEHICLE_LABELS[order.vehicle_category] || order.vehicle_category}</td>
-                      <td>
-                        <span style={{ fontSize: 12, fontWeight: 700, color: "#374151" }}>
-                          {drops.length > 0 ? `${delivered}/${drops.length} done` : "—"}
-                        </span>
-                      </td>
-                      <td style={{ fontSize: 13 }}>{order.total_distance_km} km</td>
-                      <td>
-                        <div style={{ fontWeight: 700, fontSize: 14 }}>&#8377;{order.total_fare}</div>
-                        <div style={{ fontSize: 11, color: "#9CA3AF" }}>Comm: &#8377;{order.commission_amt}</div>
-                      </td>
-                      <td>
-                        <span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: sc.bg, color: sc.color }}>
-                          {sc.label}
-                        </span>
-                      </td>
-                      <td>
-                        {order.is_b2b
-                          ? <span style={{ padding: "3px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: "rgba(139,92,246,0.15)", color: "#8B5CF6" }}>B2B</span>
-                          : <span style={{ fontSize: 11, color: "#9CA3AF" }}>Direct</span>}
-                      </td>
-                      <td style={{ fontSize: 12, color: "#9CA3AF" }}>
-                        {new Date(order.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}
-                      </td>
-                      <td>
-                        <button onClick={() => setSelectedOrder(order)} className="btn btn-sm btn-outline-primary" style={{ fontSize: 11 }}>
-                          View
-                        </button>
+          <div className="card-body p-0">
+            <div className="table-responsive">
+              <table className="table table-borderless align-middle table-hover mb-0 jago-parcel-table">
+                <thead className="table-light text-capitalize" style={{ fontSize: "0.78rem" }}>
+                  <tr>
+                    {["SL", "Order ID", "Customer", "Driver", "Pickup", "Vehicle", "Stops", "Distance", "Fare", "Payment", "Status", "Type", "Date", "Action"].map((h, i) => (
+                      <th key={h} className={i === 0 ? "ps-4" : i === 13 ? "text-center pe-4" : ""}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {isLoading ? (
+                    Array.from({ length: 6 }).map((_, i) => (
+                      <tr key={i}>{Array.from({ length: 14 }).map((__, j) => (
+                        <td key={j}><div style={{ height: 14, background: "#f1f5f9", borderRadius: 4 }} /></td>
+                      ))}</tr>
+                    ))
+                  ) : orders.length === 0 ? (
+                    <tr>
+                      <td colSpan={14} className="text-center py-5 text-muted">
+                        <i className="bi bi-inbox fs-1 d-block mb-2 opacity-25" />
+                        No parcel orders found
                       </td>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                  ) : orders.map((order, idx) => {
+                    const sc = STATUS_CONFIG[order.current_status] ?? { label: order.current_status, cls: "bg-secondary" };
+                    const drops = parseDrops(order);
+                    const delivered = drops.filter((d) => d.delivered_at).length;
+                    return (
+                      <tr key={order.id}>
+                        <td className="ps-4 text-muted small">{(page - 1) * PAGE_SIZE + idx + 1}</td>
+                        <td><span className="trip-ref">#{order.id.slice(0, 8).toUpperCase()}</span></td>
+                        <td>
+                          <div className="fw-semibold small">{order.customer_name || "—"}</div>
+                          <div className="text-muted" style={{ fontSize: 10 }}>{order.customer_phone}</div>
+                        </td>
+                        <td>
+                          <div className="fw-semibold small">{order.driver_name || "—"}</div>
+                          <div className="text-muted" style={{ fontSize: 10 }}>{order.driver_phone || ""}</div>
+                        </td>
+                        <td className="small text-muted" style={{ maxWidth: 140, whiteSpace: "normal" }}>
+                          {order.pickup_address ? `${order.pickup_address.slice(0, 40)}${order.pickup_address.length > 40 ? "…" : ""}` : "—"}
+                        </td>
+                        <td className="small fw-semibold">{VEHICLE_LABELS[order.vehicle_category] || order.vehicle_category}</td>
+                        <td className="small">{drops.length ? `${delivered}/${drops.length}` : "—"}</td>
+                        <td className="small">{order.total_distance_km} km</td>
+                        <td>
+                          <div className="fw-bold small">₹{order.total_fare}</div>
+                          <div className="text-muted" style={{ fontSize: 10 }}>Comm ₹{order.commission_amt}</div>
+                        </td>
+                        <td>
+                          <div className="small fw-semibold">{formatPaymentMethod(order.payment_method)}</div>
+                          <span className={`badge ${order.payment_status === "paid" ? "bg-success" : "bg-warning text-dark"}`} style={{ fontSize: 9 }}>
+                            {order.payment_status || "unpaid"}
+                          </span>
+                        </td>
+                        <td><span className={`badge ${sc.cls}`} style={{ fontSize: 10 }}>{sc.label}</span></td>
+                        <td>
+                          {order.is_b2b
+                            ? <span className="badge bg-primary bg-opacity-10 text-primary" style={{ fontSize: 10 }}>B2B</span>
+                            : <span className="text-muted small">Direct</span>}
+                        </td>
+                        <td className="text-muted small">
+                          {new Date(order.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}
+                        </td>
+                        <td className="text-center pe-4">
+                          <button type="button" className="btn btn-sm btn-outline-primary" onClick={() => setSelectedOrder(order)} title="View">
+                            <i className="bi bi-eye-fill" />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
-        )}
 
-        {selectedOrder && <DetailModal order={selectedOrder} onClose={() => setSelectedOrder(null)} />}
+          {totalPages > 1 && (
+            <div className="card-footer bg-white border-top py-3 px-4 d-flex align-items-center justify-content-between">
+              <div className="text-muted small">Page {page} of {totalPages}</div>
+              <div className="d-flex gap-1">
+                <button type="button" className="btn btn-sm btn-outline-secondary" disabled={page === 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+                  <i className="bi bi-chevron-left" />
+                </button>
+                <button type="button" className="btn btn-sm btn-outline-secondary" disabled={page === totalPages} onClick={() => setPage((p) => Math.min(totalPages, p + 1))}>
+                  <i className="bi bi-chevron-right" />
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
+
+      {selectedOrder && <DetailModal order={selectedOrder} onClose={() => setSelectedOrder(null)} />}
+    </div>
   );
 }

@@ -4,7 +4,6 @@ import { adminFetch, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { adminConfirm } from "./components/AdminPrimitives";
 import L from "leaflet";
-import "leaflet/dist/leaflet.css";
 
 const SERVICE_TYPES = [
   { value: "both", label: "Ride & Parcel", icon: "bi-grid-fill", color: "#7c3aed" },
@@ -86,9 +85,16 @@ function ZoneMapModal({ open, onClose, editing, initialForm, onSave, saving }: {
     setClosed(false);
   }, [open, initialForm.coordinates]);
 
-  // Init Leaflet
+  // Init Leaflet — inject CSS on demand
   useEffect(() => {
     if (!open) return;
+    if (!document.getElementById("leaflet-css")) {
+      const link = document.createElement("link");
+      link.id = "leaflet-css";
+      link.rel = "stylesheet";
+      link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+      document.head.appendChild(link);
+    }
     setMapReady(true);
     return () => {
       if (mapInst.current) { mapInst.current.remove(); mapInst.current = null; }

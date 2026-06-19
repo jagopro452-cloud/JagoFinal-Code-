@@ -59,7 +59,8 @@ export const pool = new Pool({
   ssl: sslConfig,
   max: maxConnections,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
+  connectionTimeoutMillis: 8000,
+  statement_timeout: 10000,
   allowExitOnIdle: false,
   application_name: 'jago-api',   // For debugging in pg_stat_statements
 });

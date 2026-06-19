@@ -69,6 +69,7 @@ const loadVoiceCommandsPage = () => import("@/pages/admin/voice-commands");
 const loadCityServices = () => import("@/pages/admin/city-services");
 const loadParcelVehiclesAdmin = () => import("@/pages/admin/parcel-vehicles");
 const loadAIBrainDashboard = () => import("@/pages/admin/ai-brain-dashboard");
+const loadFranchisees = () => import("@/pages/admin/franchisees");
 
 const Dashboard = lazy(loadDashboard);
 const Trips = lazy(loadTrips);
@@ -134,19 +135,16 @@ const VoiceCommandsPage = lazy(loadVoiceCommandsPage);
 const CityServices = lazy(loadCityServices);
 const ParcelVehiclesAdmin = lazy(loadParcelVehiclesAdmin);
 const AIBrainDashboard = lazy(loadAIBrainDashboard);
+const Franchisees = lazy(loadFranchisees);
 
+// Map-heavy pages (zones, heat-map, fleet-view) are intentionally excluded from
+// preload — Leaflet (149KB) should only load when the user navigates to those pages.
 const preloadAdminModules = [
   loadDashboard,
   loadTrips,
   loadCustomers,
   loadDrivers,
-  loadZones,
-  loadHeatMap,
-  loadFleetView,
   loadRealtimeOps,
-  loadSystemHealth,
-  loadLocalPool,
-  loadIntercityPool,
   loadServiceManagement,
   loadDiscounts,
   loadCoupons,
@@ -303,6 +301,7 @@ export default function AdminRoutes() {
           <GuardedRoute path="/admin/city-services" component={CityServices} />
           <GuardedRoute path="/admin/parcel-vehicle-types" component={ParcelVehiclesAdmin} />
           <GuardedRoute path="/admin/ai-brain" component={AIBrainDashboard} />
+          <GuardedRoute path="/admin/franchisees" component={Franchisees} />
           <Route component={AdminRouteMissing} />
         </Switch>
       </Suspense>

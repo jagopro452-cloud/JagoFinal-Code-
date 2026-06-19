@@ -13,10 +13,12 @@ test.describe("Live Parcel, Pool, and Payment", () => {
 
     try {
       const sharedState = await requireLiveSuiteState();
+      const bootstrap = await client.seedTestAccounts();
       const admin = sharedState.admin.session;
       const managedCustomers = await getManagedCustomers(client);
       const customer = managedCustomers[1]?.session || managedCustomers[0].session;
-      const driver = sharedState.actors.driverCabPrimary.session;
+      const outstationDriver = bootstrap.sessions?.drivers?.find((entry) => entry.phone === "9100000009")?.session;
+      expect(outstationDriver, "Seeded outstation driver session is required").toBeTruthy();
 
       await cleanupActiveParcelOrder(client, customer);
 
@@ -58,7 +60,7 @@ test.describe("Live Parcel, Pool, and Payment", () => {
       expect(parcelCancel?.success).toBeTruthy();
 
       const today = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
-      const outstation = await client.createOutstationRide(driver, {
+      const outstation = await client.createOutstationRide(outstationDriver!, {
         fromCity: createQaTag("Hyderabad"),
         toCity: createQaTag("Bengaluru"),
         routeKm: 570,
@@ -91,7 +93,7 @@ test.describe("Live Parcel, Pool, and Payment", () => {
       const adminRide = (adminOutstation?.data || []).find((item: any) => item.id === outstationRideId);
       expect(adminRide).toBeTruthy();
 
-      await client.deactivateOutstationRide(driver, String(outstationRideId), qaNote("outstation cleanup inactive"));
+      await client.deactivateOutstationRide(outstationDriver!, String(outstationRideId), qaNote("outstation cleanup inactive"));
 
       const diag = await client.getRazorpayDiag(admin.token);
       expect(diag?.status).toBe("ok");

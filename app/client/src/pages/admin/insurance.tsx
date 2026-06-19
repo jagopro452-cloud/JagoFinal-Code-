@@ -122,17 +122,19 @@ export default function InsurancePage() {
       setShowModal(false); setEditing(null);
       toast({ title: editing ? "Plan updated" : "Plan created" });
     },
-    onError: () => toast({ title: "Failed to save", variant: "destructive" }),
+    onError: (e: any) => toast({ title: "Failed to save", description: e.message, variant: "destructive" }),
   });
 
   const toggle = useMutation({
     mutationFn: ({ id, isActive }: any) => apiRequest("PATCH", `/api/insurance-plans/${id}`, { isActive }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/insurance-plans"] }),
+    onError: (e: any) => { queryClient.invalidateQueries({ queryKey: ["/api/insurance-plans"] }); toast({ title: "Toggle failed", description: e.message, variant: "destructive" }); },
   });
 
   const remove = useMutation({
     mutationFn: (id: string) => apiRequest("DELETE", `/api/insurance-plans/${id}`),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/insurance-plans"] }); toast({ title: "Deleted" }); },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/insurance-plans"] }); toast({ title: "Insurance plan deleted" }); },
+    onError: (e: any) => toast({ title: "Delete failed", description: e.message, variant: "destructive" }),
   });
 
   const f = (k: string, v: any) => setForm(p => ({ ...p, [k]: v }));

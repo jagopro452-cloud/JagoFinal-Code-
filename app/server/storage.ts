@@ -9,6 +9,9 @@ import {
   type InsertUser, type InsertTripRequest
 } from "@shared/schema";
 import { eq, desc, count, sum, gte, and, ilike, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
+
+const driverUser = alias(users, "driver_user");
 
 export interface IStorage {
   // Auth
@@ -26,7 +29,7 @@ export interface IStorage {
   updateUserStatus(id: string, isActive: boolean): Promise<User>;
   updateUser(id: string, data: Partial<User>): Promise<User>;
   // Trips
-  getTrips(status?: string, search?: string, page?: number, limit?: number): Promise<{ data: any[]; total: number }>;
+  getTrips(status?: string, search?: string, page?: number, limit?: number, type?: string): Promise<{ data: any[]; total: number }>;
   getTripById(id: string): Promise<TripRequest | undefined>;
   updateTripStatus(id: string, status: string): Promise<TripRequest>;
   // Vehicle Categories
@@ -119,28 +122,53 @@ export class DatabaseStorage implements IStorage {
     return updated;
   }
 
-  async getTrips(status?: string, search?: string, page = 1, limit = 15): Promise<{ data: any[]; total: number }> {
+  async getTrips(status?: string, search?: string, page = 1, limit = 15, type?: string): Promise<{ data: any[]; total: number }> {
     const offset = (page - 1) * limit;
     const conditions: any[] = [];
-    if (status && status !== 'all') conditions.push(eq(tripRequests.currentStatus, status));
-    if (search) conditions.push(ilike(tripRequests.refId, `%${search}%`));
+    if (status && status !== "all") conditions.push(eq(tripRequests.currentStatus, status));
+    if (type && type !== "all") {
+      if (type === "parcel") {
+        conditions.push(or(eq(tripRequests.type, "parcel"), ilike(tripRequests.tripType, "%parcel%")));
+      } else {
+        conditions.push(or(eq(tripRequests.type, "ride"), eq(tripRequests.tripType, "ride"), eq(tripRequests.tripType, "normal")));
+      }
+    }
+    if (search) {
+      const term = `%${search}%`;
+      conditions.push(or(
+        ilike(tripRequests.refId, term),
+        ilike(users.fullName, term),
+        ilike(users.phone, term),
+        ilike(driverUser.fullName, term),
+        ilike(driverUser.phone, term),
+      ));
+    }
+
+    const whereClause = conditions.length ? and(...conditions) : undefined;
 
     const data = await db.select({
       trip: tripRequests,
       customer: { fullName: users.fullName, phone: users.phone, email: users.email },
+      driver: { fullName: driverUser.fullName, phone: driverUser.phone },
       vehicleCategory: { name: vehicleCategories.name },
       zone: { name: zones.name },
     })
       .from(tripRequests)
       .leftJoin(users, eq(tripRequests.customerId, users.id))
+      .leftJoin(driverUser, eq(tripRequests.driverId, driverUser.id))
       .leftJoin(vehicleCategories, eq(tripRequests.vehicleCategoryId, vehicleCategories.id))
       .leftJoin(zones, eq(tripRequests.zoneId, zones.id))
-      .where(conditions.length ? and(...conditions) : undefined as any)
+      .where(whereClause as any)
       .orderBy(desc(tripRequests.createdAt))
       .limit(limit).offset(offset);
 
-    const [{ total }] = await db.select({ total: count() }).from(tripRequests)
-      .where(conditions.length ? and(...conditions) : undefined as any);
+    const countQuery = db.select({ total: count() })
+      .from(tripRequests)
+      .leftJoin(users, eq(tripRequests.customerId, users.id))
+      .leftJoin(driverUser, eq(tripRequests.driverId, driverUser.id));
+    const [{ total }] = await (whereClause
+      ? countQuery.where(whereClause as any)
+      : countQuery);
     return { data, total: Number(total) };
   }
 

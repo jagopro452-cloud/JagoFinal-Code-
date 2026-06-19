@@ -9,6 +9,9 @@ process.on("unhandledRejection", (reason: any) => {
 
 console.log("BOOT START");
 
+import "./env-bootstrap";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
@@ -22,14 +25,11 @@ import { db as drizzleDb, pool as dbPool } from "./db";
 import { settleCustomerRidePaymentByOrder, settleDriverPaymentByOrder } from "./payment-settlement";
 import { startRefundReconciliationJob, reconcilePendingRefunds } from "./refund-reconciliation";
 import { verifyCriticalSchemaOrThrow } from "./schema-health";
-import path from "path";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
-import { fileURLToPath } from "node:url";
 
 try {
-  const env = parseEnv();
-  validateProductionReadiness(env);
+  parseEnv();
 } catch (startupErr: any) {
   console.error("[startup] Invalid production configuration:", startupErr.message);
   if (process.env.NODE_ENV === "production") {
@@ -201,6 +201,10 @@ async function loadRuntimeConfigFromDb() {
       "razorpay_key_secret",
       "razorpay_webhook_secret",
       "google_maps_key",
+      "google_maps_api_key",
+      "firebase_service_account",
+      "firebase_web_api_key",
+      "app_base_url",
     ]]
   );
 
@@ -209,6 +213,10 @@ async function loadRuntimeConfigFromDb() {
     razorpay_key_secret: "RAZORPAY_KEY_SECRET",
     razorpay_webhook_secret: "RAZORPAY_WEBHOOK_SECRET",
     google_maps_key: "GOOGLE_MAPS_API_KEY",
+    google_maps_api_key: "GOOGLE_MAPS_API_KEY",
+    firebase_service_account: "FIREBASE_SERVICE_ACCOUNT_KEY",
+    firebase_web_api_key: "FIREBASE_WEB_API_KEY",
+    app_base_url: "APP_BASE_URL",
   };
 
   for (const row of settingsRes.rows as any[]) {
@@ -220,6 +228,18 @@ async function loadRuntimeConfigFromDb() {
   }
 
   log("[config] DB settings loaded into runtime config");
+}
+
+function validateResolvedProductionConfig() {
+  try {
+    const env = parseEnv();
+    validateProductionReadiness(env);
+  } catch (startupErr: any) {
+    console.error("[startup] Invalid resolved production configuration:", startupErr.message);
+    if (process.env.NODE_ENV === "production") {
+      throw startupErr;
+    }
+  }
 }
 
 async function setupSocketRedisAdapter() {
@@ -342,7 +362,7 @@ app.use((req, res, next) => {
   const forwardedProto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
   const requestProto = forwardedProto || req.protocol || "https";
   const requestOrigin = `${requestProto}://${req.headers.host}`;
-  const defaultOrigins = "https://jagopro.org,https://www.jagopro.org,https://sea-lion-app-h5luj.ondigitalocean.app,http://localhost:5173,http://localhost:5000,http://127.0.0.1:5173,http://127.0.0.1:5000";
+  const defaultOrigins = "https://jagopro.org,https://www.jagopro.org,https://sea-lion-app-h5luj.ondigitalocean.app,http://localhost:5173,http://localhost:5000,http://127.0.0.1:5173,http://127.0.0.1:5000,http://192.168.1.9:5000";
   const allowedOrigins = ((process.env.ALLOWED_ORIGINS || defaultOrigins))
     .split(",")
     .map((s) => s.trim())
@@ -456,6 +476,21 @@ const port = parseInt(process.env.PORT || "5000", 10);
     return;
   }
 
+  try {
+    await loadRuntimeConfigFromDb();
+    validateResolvedProductionConfig();
+  } catch (e: any) {
+    bootstrapError = `runtime_config_failed:${e.message}`;
+    console.error("[config] Runtime configuration bootstrap failed:", e.message);
+    sendAlert({
+      level: "critical",
+      source: "startup-config",
+      message: "Runtime configuration bootstrap failed",
+      details: String(e.message || e),
+    }).catch(() => {});
+    return;
+  }
+
   // ─── STEP 2: Register routes (non-fatal if fails) ───
   try {
     log("[server] Registering API routes...");
@@ -503,8 +538,9 @@ const port = parseInt(process.env.PORT || "5000", 10);
     return;
   }
 
-  // ─── STEP 5: Apply custom hardening migration ───
+  // ─── STEP 5: Apply custom SQL migrations (root + server dirs) ───
   try {
+    await applySqlMigrationsFromDir(path.join(currentDir, "..", "migrations"));
     await applySqlMigrationsFromDir(path.join(currentDir, "migrations"));
   } catch (e: any) {
     bootstrapError = `sql_migration_failed:${e.message}`;
@@ -556,15 +592,6 @@ const port = parseInt(process.env.PORT || "5000", 10);
       }
     })();
   }, 3000);
-
-  // ─── BACKGROUND INITIALIZATION (non-blocking) ───
-  (async () => {
-    try {
-      await loadRuntimeConfigFromDb();
-    } catch (e: any) {
-      log(`[config] Could not load DB settings (non-fatal): ${e.message}`);
-    }
-  })();
 
   reconcilePendingRefunds().catch((e: any) => {
     console.error("[refund-reconcile] initial run failed:", e.message);
@@ -687,6 +714,19 @@ const port = parseInt(process.env.PORT || "5000", 10);
       log(`[PaymentRetry] Error: ${e.message}`);
     }
   }, 5 * 60 * 1000); // every 5 minutes
+
+  // Orphan payment recovery: every 5 minutes, recover paid rides with no linked trip
+  setInterval(async () => {
+    try {
+      const { runOrphanRecoveryWorker } = await import("./payment-orphan-recovery");
+      const stats = await runOrphanRecoveryWorker();
+      if (stats.detected > 0) {
+        log(`[OrphanRecovery] detected=${stats.detected} recovered=${stats.recovered} failed=${stats.failed} skipped=${stats.skipped}`);
+      }
+    } catch (e: any) {
+      log(`[OrphanRecovery] Error: ${e.message}`);
+    }
+  }, 5 * 60 * 1000);
 
   // Ghost driver auto-offline: every 60 seconds, mark drivers with no location ping > 5min as offline
   setInterval(async () => {

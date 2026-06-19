@@ -13,6 +13,12 @@ export default function CustomerLevelsPage() {
   const { data, isLoading } = useQuery<any[]>({ queryKey: ["/api/customer-levels"] });
   const levels = Array.isArray(data) ? data : [];
 
+  const toggleMutation = useMutation({
+    mutationFn: ({ id, isActive }: { id: string; isActive: boolean }) => apiRequest("PATCH", `/api/customer-levels/${id}`, { isActive }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/customer-levels"] }),
+    onError: (e: any) => { queryClient.invalidateQueries({ queryKey: ["/api/customer-levels"] }); toast({ title: "Toggle failed", description: e.message, variant: "destructive" }); },
+  });
+
   const saveMutation = useMutation({
     mutationFn: (payload: any) =>
       editing ? apiRequest("PUT", `/api/customer-levels/${editing.id}`, payload) : apiRequest("POST", "/api/customer-levels", payload),
@@ -22,12 +28,13 @@ export default function CustomerLevelsPage() {
       toast({ title: editing ? "Level updated" : "Level created" });
       setEditing(null);
     },
-    onError: () => toast({ title: "Failed to save", variant: "destructive" }),
+    onError: (e: any) => toast({ title: "Failed to save", description: e.message, variant: "destructive" }),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => apiRequest("DELETE", `/api/customer-levels/${id}`),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/customer-levels"] }); toast({ title: "Deleted" }); },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/customer-levels"] }); toast({ title: "Level deleted" }); },
+    onError: (e: any) => toast({ title: "Delete failed", description: e.message, variant: "destructive" }),
   });
 
   const openAdd = () => { setEditing(null); setForm({ name: "", minPoints: "", maxPoints: "", reward: "", rewardType: "cashback", isActive: true }); setShowModal(true); };
@@ -79,7 +86,12 @@ export default function CustomerLevelsPage() {
                       <td>{l.minPoints}</td>
                       <td>{l.maxPoints}</td>
                       <td>{l.reward ? `${l.reward} (${l.rewardType})` : "—"}</td>
-                      <td><span className={`badge ${l.isActive ? "bg-success" : "bg-secondary"}`}>{l.isActive ? "Active" : "Inactive"}</span></td>
+                      <td>
+                        <label className="switcher">
+                          <input className="switcher_input" type="checkbox" checked={!!l.isActive} onChange={e => toggleMutation.mutate({ id: l.id, isActive: e.target.checked })} />
+                          <span className="switcher_control"></span>
+                        </label>
+                      </td>
                       <td>
                         <button className="btn btn-sm btn-outline-primary me-1" onClick={() => openEdit(l)}><i className="bi bi-pencil-fill"></i></button>
                         <button className="btn btn-sm btn-outline-danger" onClick={async () => { if (await adminConfirm("Delete this customer level?")) deleteMutation.mutate(l.id); }}><i className="bi bi-trash-fill"></i></button>

@@ -28,6 +28,25 @@
       "client_info": {
         "mobilesdk_app_id": "1:918055085885:android:13beaf074f82590bc88754",
         "android_client_info": {
+          "package_name": "com.mindwhile.jago_pilot.debug"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAiMVYA_ppxeT344tkcoSsjeGGMaPU26eI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:918055085885:android:13beaf074f82590bc88754",
+        "android_client_info": {
           "package_name": "com.mindwhile.jago_pilot"
         }
       },

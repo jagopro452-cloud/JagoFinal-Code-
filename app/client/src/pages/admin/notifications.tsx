@@ -26,7 +26,7 @@ const STATUS_BADGES: Record<string, { label: string; cls: string }> = {
 
 export default function NotificationsPage() {
   const { toast } = useToast();
-  const [form, setForm] = useState({ title: "", message: "", target: "all", userType: "all" });
+  const [form, setForm] = useState({ title: "", message: "", userType: "all" });
 
   const { data: historyData, isLoading: histLoading } = useQuery<any>({
     queryKey: ["/api/notifications"],
@@ -41,7 +41,7 @@ export default function NotificationsPage() {
       if (data.pushWarning) {
         toast({ title: `Delivery warning: ${data.failedCount || 0} device token(s) need refresh`, variant: "default" });
       }
-      setForm({ title: "", message: "", target: "all", userType: "all" });
+      setForm({ title: "", message: "", userType: "all" });
       queryClient.invalidateQueries({ queryKey: ["/api/notifications"] });
     },
     onError: (error: any) => toast({

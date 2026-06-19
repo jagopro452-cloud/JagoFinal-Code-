@@ -17,7 +17,7 @@ export default function VehicleRequestsPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/vehicle-requests"] });
       toast({ title: "Status updated" });
     },
-    onError: () => toast({ title: "Failed to update", variant: "destructive" }),
+    onError: (e: any) => toast({ title: "Failed to update", description: e.message, variant: "destructive" }),
   });
 
   const tabs = ["pending", "approved", "denied"];

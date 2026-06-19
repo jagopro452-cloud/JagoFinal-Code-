@@ -522,19 +522,23 @@ export async function calculateRevenueBreakdown(
       driverEarnings: (farePaise - deductPaise) / 100,
     };
   } else if (activeModel === "subscription") {
-    // Subscription mode: no per-ride deduction.
-    deductPaise = 0;
+    // Subscription mode: flat platform fee + GST + insurance per ride (no % commission).
+    const platPaise = Math.round(parseFloat(s.sub_platform_fee_per_ride || "5") * 100);
+    const gstOnCommPct = modCfg?.commissionGstPct ?? revenueCfg.gstPercent ?? parseFloat(s.commission_gst_on_comm || "18");
+    const gstPaise = Math.round(platPaise * Math.round(gstOnCommPct * 100) / 10000);
+    deductPaise = platPaise + gstPaise + insPaise;
+
     breakdown = {
       model: "subscription",
       commission: 0,
-      platformFee: 0,
-      gst: 0,
-      insurance: 0,
-      total: 0,
+      platformFee: platPaise / 100,
+      gst: gstPaise / 100,
+      insurance: insPaise / 100,
+      total: deductPaise / 100,
       commissionPct: 0,
-      gstPct: 0,
+      gstPct: gstOnCommPct,
       fareBeforeDeduction: fare,
-      driverEarnings: farePaise / 100,
+      driverEarnings: (farePaise - deductPaise) / 100,
     };
   } else if (activeModel === "hybrid") {
     // HYBRID: commission% + platform_fee + GST + insurance → admin
@@ -1245,7 +1249,7 @@ export async function initRevenueEngineTables() {
       },
       {
         table: "parcel_orders",
-        columns: ["gst_amount", "insurance_amount", "driver_earnings", "revenue_model", "revenue_breakdown"],
+        columns: ["gst_amount", "insurance_amount", "driver_earnings", "revenue_model", "revenue_breakdown", "payment_status"],
       },
       {
         table: "driver_payments",

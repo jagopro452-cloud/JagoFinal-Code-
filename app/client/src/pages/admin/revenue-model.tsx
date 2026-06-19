@@ -34,7 +34,7 @@ function ModuleRow({ mod, onSaved }: { mod: ModuleConfig; onSaved: () => void })
       setEditing(false);
       onSaved();
     },
-    onError: () => toast({ title: "Save failed", variant: "destructive" }),
+    onError: (e: any) => toast({ title: "Save failed", description: e.message, variant: "destructive" }),
   });
 
   const set = (key: keyof ModuleConfig, val: any) => setForm(f => ({ ...f, [key]: val }));

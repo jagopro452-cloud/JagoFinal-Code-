@@ -685,6 +685,8 @@ class _TripScreenState extends State<TripScreen>
     final dLng = double.tryParse(_trip!['destinationLng']?.toString() ??
         _trip!['destination_lng']?.toString() ??
         '');
+    final canRevealDestination =
+        _status == 'in_progress' || _status == 'on_the_way';
     setState(() {
       _markers.clear();
       if (pLat != null && pLat != 0 && pLng != null) {
@@ -701,7 +703,10 @@ class _TripScreenState extends State<TripScreen>
           ),
         ));
       }
-      if (dLat != null && dLat != 0 && dLng != null) {
+      if (canRevealDestination &&
+          dLat != null &&
+          dLat != 0 &&
+          dLng != null) {
         _markers.add(Marker(
           markerId: const MarkerId('destination'),
           position: LatLng(dLat, dLng),
@@ -819,7 +824,9 @@ class _TripScreenState extends State<TripScreen>
     final myLat = origin?.latitude ?? _center.latitude;
     final myLng = origin?.longitude ?? _center.longitude;
 
-    final toPickup = _status == 'accepted' || _status == 'driver_assigned';
+    final toPickup = _status == 'accepted' ||
+        _status == 'driver_assigned' ||
+        _status == 'arrived';
 
     double destLat, destLng;
     if (toPickup) {
@@ -963,7 +970,9 @@ class _TripScreenState extends State<TripScreen>
 
   void _computeDistanceAndEta(double lat, double lng) {
     if (_trip == null) return;
-    final toPickup = _status == 'accepted' || _status == 'driver_assigned';
+    final toPickup = _status == 'accepted' ||
+        _status == 'driver_assigned' ||
+        _status == 'arrived';
     if (lat == 0 && lng == 0) return; // Ignore invalid coordinates
     final tLat = toPickup
         ? double.tryParse(_trip!['pickupLat']?.toString() ?? '') ?? 0.0
@@ -1055,21 +1064,7 @@ class _TripScreenState extends State<TripScreen>
           });
           _tripDebugLog('[TRIP] ✅ Arrived at pickup — tripId=$tripId');
           _showSnack('Arrived! Ask customer for OTP 📍');
-          // Pre-fetch route to destination while driver waits for OTP
-          // (polylines will be ready the moment trip starts)
           await _refreshTripFromServer();
-          // Actually we want destination route pre-loaded, fetch it explicitly
-          final t = _trip;
-          if (t != null) {
-            final dLat = double.tryParse(t['destinationLat']?.toString() ?? t['destination_lat']?.toString() ?? '') ?? 0.0;
-            final dLng = double.tryParse(t['destinationLng']?.toString() ?? t['destination_lng']?.toString() ?? '') ?? 0.0;
-            final origin = _lastTripPosition;
-            final fromLat = origin?.latitude ?? _center.latitude;
-            final fromLng = origin?.longitude ?? _center.longitude;
-            if (dLat != 0 && dLng != 0) {
-              await _fetchRoute(fromLat, fromLng, dLat, dLng);
-            }
-          }
         } else {
           await _refreshTripFromServer(openOtpIfArrived: true);
           if (_status == 'arrived') {
@@ -1087,7 +1082,8 @@ class _TripScreenState extends State<TripScreen>
           setState(() => _loading = false);
         }
       } else if (_status == 'in_progress' || _status == 'on_the_way') {
-        await _completeTrip(h);
+        setState(() => _loading = false);
+        await _showPreCompletionPaymentSheet(h);
         return;
       }
     } on TimeoutException {
@@ -1131,6 +1127,164 @@ class _TripScreenState extends State<TripScreen>
             ? fallback!
             : 'Unable to update trip status. Checking latest trip state...';
     }
+  }
+
+  Future<void> _showPreCompletionPaymentSheet(
+      Map<String, String> authHeaders) async {
+    final fare = double.tryParse(
+            (_trip?['actualFare'] ??
+                    _trip?['actual_fare'] ??
+                    _trip?['estimatedFare'] ??
+                    _trip?['estimated_fare'] ??
+                    0)
+                .toString()) ??
+        0;
+    final paymentMethod =
+        (_trip?['paymentMethod'] ?? _trip?['payment_method'] ?? 'cash')
+            .toString()
+            .trim()
+            .toLowerCase();
+    final isCash = paymentMethod == 'cash';
+    bool paymentConfirmed = !isCash;
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setS) => Container(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          padding: const EdgeInsets.fromLTRB(24, 12, 24, 32),
+          child: SafeArea(
+            top: false,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 44,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: JT.border,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  'Confirm payment before trip completion',
+                  style: GoogleFonts.poppins(
+                    color: JT.textPrimary,
+                    fontSize: 20,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  isCash
+                      ? 'Collect the fare first, then close the ride.'
+                      : 'Payment is already settled. You can complete the ride now.',
+                  style: GoogleFonts.poppins(
+                    color: JT.textSecondary,
+                    fontSize: 13,
+                    height: 1.5,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(18),
+                  decoration: BoxDecoration(
+                    color: JT.bgSoft,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: JT.border),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: _completionSummaryTile(
+                          'Payment',
+                          isCash ? 'Cash Payment' : 'Online Payment',
+                          isCash ? JT.success : JT.primary,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _completionSummaryTile(
+                          'Fare',
+                          fare > 0 ? '₹${fare.toStringAsFixed(0)}' : '₹--',
+                          JT.textPrimary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (isCash) ...[
+                  const SizedBox(height: 16),
+                  OutlinedButton.icon(
+                    onPressed: paymentConfirmed
+                        ? null
+                        : () => setS(() => paymentConfirmed = true),
+                    icon: Icon(
+                      paymentConfirmed
+                          ? Icons.check_circle_rounded
+                          : Icons.payments_rounded,
+                    ),
+                    label: Text(
+                      paymentConfirmed
+                          ? 'Cash collection confirmed'
+                          : 'Mark cash collected',
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size.fromHeight(52),
+                      foregroundColor: JT.success,
+                      side: BorderSide(
+                        color: JT.success.withValues(alpha: 0.35),
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: !paymentConfirmed
+                        ? null
+                        : () async {
+                            Navigator.of(ctx).pop();
+                            setState(() => _loading = true);
+                            await _completeTrip(authHeaders);
+                          },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: JT.primary,
+                      foregroundColor: Colors.white,
+                      minimumSize: const Size.fromHeight(56),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                    ),
+                    child: Text(
+                      'Complete ride',
+                      style: GoogleFonts.poppins(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _completeTrip(Map<String, String> authHeaders) async {
@@ -1222,7 +1376,7 @@ class _TripScreenState extends State<TripScreen>
                 width: 44,
                 height: 4,
                 decoration: BoxDecoration(
-                    color: JT.border, borderRadius: BorderRadius.circular(2))),
+                    color: JT.border, borderRadius: BorderRadius.circular(4))),
             const SizedBox(height: 20),
             Row(children: [
               Container(
@@ -1385,10 +1539,10 @@ class _TripScreenState extends State<TripScreen>
         padding: const EdgeInsets.fromLTRB(24, 20, 24, 32),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           Container(
-              width: 40,
+              width: 44,
               height: 4,
               decoration: BoxDecoration(
-                  color: JT.border, borderRadius: BorderRadius.circular(2))),
+                  color: JT.border, borderRadius: BorderRadius.circular(4))),
           const SizedBox(height: 20),
           Container(
             padding: const EdgeInsets.all(14),
@@ -1515,7 +1669,7 @@ class _TripScreenState extends State<TripScreen>
                 width: 44,
                 height: 4,
                 decoration: BoxDecoration(
-                    color: JT.border, borderRadius: BorderRadius.circular(2))),
+                    color: JT.border, borderRadius: BorderRadius.circular(4))),
             const SizedBox(height: 20),
             // Success icon
             Container(
@@ -1619,7 +1773,7 @@ class _TripScreenState extends State<TripScreen>
                       Expanded(
                         child: _completionSummaryTile(
                           'Payment',
-                          isCash ? 'Cash' : 'Online',
+                          isCash ? 'Cash Payment' : 'Online Payment',
                           isCash ? JT.success : JT.primary,
                         ),
                       ),
@@ -1893,10 +2047,10 @@ class _TripScreenState extends State<TripScreen>
         padding: const EdgeInsets.all(24),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           Container(
-              width: 40,
+              width: 44,
               height: 4,
               decoration: BoxDecoration(
-                  color: JT.border, borderRadius: BorderRadius.circular(2))),
+                  color: JT.border, borderRadius: BorderRadius.circular(4))),
           const SizedBox(height: 16),
           Row(children: [
             Container(
@@ -2309,7 +2463,7 @@ class _TripScreenState extends State<TripScreen>
                     margin: const EdgeInsets.only(top: 10, bottom: 4),
                     decoration: BoxDecoration(
                         color: JT.border,
-                        borderRadius: BorderRadius.circular(2))),
+                        borderRadius: BorderRadius.circular(4))),
                 Flexible(
                   child: SingleChildScrollView(
                     physics: const ClampingScrollPhysics(),
@@ -2767,8 +2921,8 @@ class _TripScreenState extends State<TripScreen>
     final pmLabel = pm == 'wallet'
         ? 'Wallet'
         : (pm == 'upi' || pm == 'online' || pm == 'razorpay')
-            ? 'UPI'
-            : 'Cash';
+            ? 'Online Payment'
+            : 'Cash Payment';
     final pmColor = pm == 'wallet'
         ? JT.primary
         : (pm == 'upi' || pm == 'online' || pm == 'razorpay')
@@ -3042,8 +3196,8 @@ class _TripScreenState extends State<TripScreen>
           const SizedBox(width: 7),
           Text(
               pm == 'wallet'
-                  ? 'Wallet — Auto deducted'
-                  : 'Online — Already paid',
+                  ? 'Wallet'
+                  : 'Online Payment — Already paid',
               style: GoogleFonts.poppins(
                   color: JT.primary,
                   fontSize: 11,
@@ -3081,7 +3235,12 @@ class _TripScreenState extends State<TripScreen>
         _nearPickup && (_status == 'accepted' || _status == 'driver_assigned');
 
     return GestureDetector(
-      onTap: _loading ? null : _nextStep,
+      onTap: _loading
+          ? null
+          : () {
+              HapticFeedback.mediumImpact();
+              _nextStep();
+            },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 300),
         width: double.infinity,
@@ -3105,8 +3264,11 @@ class _TripScreenState extends State<TripScreen>
           border: showGlow ? Border.all(color: JT.success, width: 2) : null,
         ),
         child: Center(
-          child: _loading
+          child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 220),
+              child: _loading
               ? const Row(
+                  key: ValueKey('trip_loading'),
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                       SizedBox(
@@ -3121,7 +3283,9 @@ class _TripScreenState extends State<TripScreen>
                               fontWeight: FontWeight.w500,
                               fontSize: 14)),
                     ])
-              : Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+              : Row(
+                  key: ValueKey('trip_action'),
+                  mainAxisAlignment: MainAxisAlignment.center, children: [
                   Container(
                       width: 36,
                       height: 36,
@@ -3137,7 +3301,7 @@ class _TripScreenState extends State<TripScreen>
                           fontSize: 16,
                           fontWeight: FontWeight.w500,
                           letterSpacing: -0.2)),
-                ]),
+                ])),
         ),
       ),
     );

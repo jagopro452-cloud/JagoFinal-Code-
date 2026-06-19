@@ -37,7 +37,7 @@ export default function EmployeesPage() {
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState<any>(null);
   const [zoneFilter, setZoneFilter] = useState("");
-  const [form, setForm] = useState({ name: "", email: "", phone: "", role: "support_agent", zoneId: "", isActive: true });
+  const [form, setForm] = useState({ name: "", email: "", phone: "", role: "support_agent", zoneId: "", isActive: true, password: "" });
 
   const { data, isLoading } = useQuery<any[]>({
     queryKey: ["/api/employees", zoneFilter],
@@ -56,35 +56,42 @@ export default function EmployeesPage() {
   const zonesArr = Array.isArray(zones) ? zones : (Array.isArray((zones as any)?.data) ? (zones as any).data : []);
 
   const saveMutation = useMutation({
-    mutationFn: (payload: any) =>
-      editing ? apiRequest("PUT", `/api/employees/${editing.id}`, payload) : apiRequest("POST", "/api/employees", payload),
+    mutationFn: (payload: any) => {
+      const body = { ...payload };
+      if (editing && !body.password) delete body.password;
+      return editing
+        ? apiRequest("PUT", `/api/employees/${editing.id}`, body)
+        : apiRequest("POST", "/api/employees", body);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/employees"] });
       setShowModal(false);
       toast({ title: editing ? "Employee updated" : "Employee created" });
       setEditing(null);
     },
-    onError: () => toast({ title: "Failed to save", variant: "destructive" }),
+    onError: (e: any) => toast({ title: "Failed to save", description: e.message, variant: "destructive" }),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => apiRequest("DELETE", `/api/employees/${id}`),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/employees"] }); toast({ title: "Deleted" }); },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/employees"] }); toast({ title: "Employee deleted" }); },
+    onError: (e: any) => toast({ title: "Delete failed", description: e.message, variant: "destructive" }),
   });
 
   const toggleMutation = useMutation({
     mutationFn: ({ id, isActive }: any) => apiRequest("PATCH", `/api/employees/${id}`, { isActive }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/employees"] }),
+    onError: (e: any) => { queryClient.invalidateQueries({ queryKey: ["/api/employees"] }); toast({ title: "Toggle failed", description: e.message, variant: "destructive" }); },
   });
 
   const openAdd = () => {
     setEditing(null);
-    setForm({ name: "", email: "", phone: "", role: "support_agent", zoneId: "", isActive: true });
+    setForm({ name: "", email: "", phone: "", role: "support_agent", zoneId: "", isActive: true, password: "" });
     setShowModal(true);
   };
   const openEdit = (e: any) => {
     setEditing(e);
-    setForm({ name: e.name, email: e.email, phone: e.phone || "", role: e.role, zoneId: e.zoneId || "", isActive: e.isActive });
+    setForm({ name: e.name, email: e.email, phone: e.phone || "", role: e.role, zoneId: e.zoneId || "", isActive: e.isActive, password: "" });
     setShowModal(true);
   };
 
@@ -278,6 +285,15 @@ export default function EmployeesPage() {
                   </select>
                 </div>
               </div>
+              <div>
+                <label className="form-label-jago">
+                  {editing ? "New Password" : "Password"} {!editing && <span className="text-danger">*</span>}
+                </label>
+                <input type="password" className="admin-form-control" value={form.password}
+                  onChange={e => setForm({ ...form, password: e.target.value })}
+                  placeholder={editing ? "Leave blank to keep current password" : "Set login password"}
+                  data-testid="input-employee-password" />
+              </div>
               <div className="d-flex align-items-center gap-3">
                 <span className="form-label-jago mb-0">Active</span>
                 <label className="switcher">
@@ -289,7 +305,7 @@ export default function EmployeesPage() {
               <div className="d-flex gap-2 justify-content-end pt-2 border-top">
                 <button className="btn btn-outline-secondary" onClick={() => setShowModal(false)}>Cancel</button>
                 <button className="btn btn-primary"
-                  disabled={!form.name || !form.email || saveMutation.isPending}
+                  disabled={!form.name || !form.email || (!editing && !form.password) || saveMutation.isPending}
                   onClick={() => saveMutation.mutate(form)} data-testid="btn-save-employee">
                   {saveMutation.isPending ? <><span className="spinner-border spinner-border-sm me-2"></span>Saving…</> : editing ? "Update" : "Create"}
                 </button>

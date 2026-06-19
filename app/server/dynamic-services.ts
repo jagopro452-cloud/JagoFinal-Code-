@@ -284,20 +284,26 @@ export async function getDriverEligibleServices(
   const eligibleParcelKeys: string[] = [];
 
   for (const svc of allServices) {
+    const isParcelVehicle = vehicleName.includes('parcel') || vehicleName.includes('cargo')
+      || vehicleName.includes('truck') || vehicleName.includes('delivery')
+      || vehicleCode.includes('parcel') || vehicleCode.includes('cargo');
     if (svc.category === 'rides') {
-      // Match ride service to vehicle type
-      if (svc.key === 'bike_ride' && (vehicleName.includes('bike') || vehicleCode === 'bike')) {
+      // Match ride service to vehicle type — never treat parcel vehicles as ride drivers.
+      if (svc.key === 'bike_ride' && !isParcelVehicle && (vehicleName.includes('bike') || vehicleCode === 'bike')) {
         eligibleServices.push(svc);
-      } else if (svc.key === 'auto_ride' && (vehicleName.includes('auto') || vehicleCode === 'auto')) {
+      } else if (svc.key === 'auto_ride' && !isParcelVehicle && (vehicleName.includes('auto') || vehicleCode === 'auto')) {
         eligibleServices.push(svc);
       } else if (['mini_car', 'sedan', 'suv'].includes(svc.key) &&
+        !isParcelVehicle &&
         (vehicleName.includes('car') || vehicleName.includes('sedan') || vehicleName.includes('suv') ||
          vehicleCode === 'car' || vehicleCode === 'sedan' || vehicleCode === 'suv')) {
         eligibleServices.push(svc);
       }
     } else if (svc.category === 'parcel') {
-      // All drivers can do parcel based on their vehicle capacity
-      eligibleServices.push(svc);
+      // Parcel services only for matching parcel-capable vehicles.
+      if (isParcelVehicle || vehicleName.includes('truck') || vehicleName.includes('ace') || vehicleName.includes('bolero') || vehicleName.includes('tempo')) {
+        eligibleServices.push(svc);
+      }
       if (vehicleName.includes('bike') || vehicleCode === 'bike') {
         eligibleParcelKeys.push('bike_parcel');
       }

@@ -514,6 +514,155 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
     if (mounted) setState(() => _loading = false);
   }
 
+  Future<void> _showParcelCompletionReviewSheet() async {
+    final fare = double.tryParse(_order['total_fare']?.toString() ?? '0') ?? 0;
+    final paymentMethod =
+        (_order['payment_method'] ?? _order['paymentMethod'] ?? 'online')
+            .toString()
+            .trim()
+            .toLowerCase();
+    final isCash = paymentMethod == 'cash';
+    bool paymentConfirmed = !isCash;
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setS) => Container(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          padding: const EdgeInsets.fromLTRB(24, 12, 24, 32),
+          child: SafeArea(
+            top: false,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 44,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: JT.border,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  'Confirm parcel payment before completion',
+                  style: GoogleFonts.poppins(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w600,
+                    color: JT.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  isCash
+                      ? 'Collect the parcel fare before closing the delivery.'
+                      : 'Payment is already settled for this parcel order.',
+                  style: GoogleFonts.poppins(
+                    fontSize: 13,
+                    height: 1.5,
+                    color: JT.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 18),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: JT.bgSoft,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: JT.border),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: _completedSummaryChip(
+                          'Payment',
+                          isCash ? 'Cash Payment' : 'Online Payment',
+                          isCash ? const Color(0xFFF59E0B) : JT.success,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _completedSummaryChip(
+                          'Fare',
+                          '₹${fare.toStringAsFixed(0)}',
+                          JT.primary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (isCash) ...[
+                  const SizedBox(height: 16),
+                  OutlinedButton.icon(
+                    onPressed: paymentConfirmed
+                        ? null
+                        : () => setS(() => paymentConfirmed = true),
+                    icon: Icon(
+                      paymentConfirmed
+                          ? Icons.check_circle_rounded
+                          : Icons.payments_rounded,
+                    ),
+                    label: Text(
+                      paymentConfirmed
+                          ? 'Cash collection confirmed'
+                          : 'Mark cash collected',
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size.fromHeight(52),
+                      foregroundColor: JT.success,
+                      side: BorderSide(
+                        color: JT.success.withValues(alpha: 0.35),
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: !paymentConfirmed
+                        ? null
+                        : () async {
+                            Navigator.of(ctx).pop();
+                            await _verifyDropOtp();
+                          },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: JT.primary,
+                      foregroundColor: Colors.white,
+                      minimumSize: const Size.fromHeight(56),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                    ),
+                    child: Text(
+                      'Complete delivery',
+                      style: GoogleFonts.poppins(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   void _showSnack(String msg, {bool error = false}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -585,23 +734,79 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
       ),
       body: _stage == _ParcelStage.completed
           ? _buildCompletedView()
-          : Column(children: [
-              _buildProgressBar(),
-              Expanded(child: SingleChildScrollView(
-                padding: const EdgeInsets.all(16),
-                child: Column(children: [
-                  _buildPackageSummary(),
-                  const SizedBox(height: 16),
-                  _buildInAppMapCard(),
-                  const SizedBox(height: 16),
-                  if (_stage == _ParcelStage.navigatingToPickup) _buildNavigatingToPickup(),
-                  if (_stage == _ParcelStage.atPickup) _buildAtPickup(),
-                  if (_stage == _ParcelStage.navigatingToDrop) _buildNavigatingToDrop(),
-                  if (_stage == _ParcelStage.atDrop) _buildAtDrop(),
-                  const SizedBox(height: 24),
-                ]),
-              )),
-            ]),
+          : LayoutBuilder(
+              builder: (context, constraints) {
+                final sheetMaxHeight =
+                    constraints.maxHeight > 820 ? 320.0 : 300.0;
+                return Stack(
+                  children: [
+                    Positioned.fill(
+                      child: GoogleMap(
+                        initialCameraPosition:
+                            CameraPosition(target: _mapCenter, zoom: 14),
+                        onMapCreated: (controller) {
+                          _mapController = controller;
+                          _syncMapForStage(fetchRoute: false);
+                        },
+                        myLocationEnabled: true,
+                        myLocationButtonEnabled: false,
+                        zoomControlsEnabled: false,
+                        mapToolbarEnabled: false,
+                        padding:
+                            EdgeInsets.only(bottom: sheetMaxHeight - 24),
+                        markers: _markers,
+                        polylines: _polylines,
+                      ),
+                    ),
+                    Positioned(
+                      left: 16,
+                      right: 16,
+                      top: 16,
+                      child: _buildProgressBar(),
+                    ),
+                    Align(
+                      alignment: Alignment.bottomCenter,
+                      child: Container(
+                        constraints:
+                            BoxConstraints(maxHeight: sheetMaxHeight),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: const BorderRadius.vertical(
+                            top: Radius.circular(24),
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.12),
+                              blurRadius: 24,
+                              offset: const Offset(0, -8),
+                            ),
+                          ],
+                        ),
+                        child: SingleChildScrollView(
+                          physics: const ClampingScrollPhysics(),
+                          padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                          child: Column(
+                            children: [
+                              _buildSheetHandle(),
+                              const SizedBox(height: 12),
+                              _buildPackageSummary(),
+                              const SizedBox(height: 16),
+                              if (_stage == _ParcelStage.navigatingToPickup)
+                                _buildNavigatingToPickup(),
+                              if (_stage == _ParcelStage.atPickup)
+                                _buildAtPickup(),
+                              if (_stage == _ParcelStage.navigatingToDrop)
+                                _buildNavigatingToDrop(),
+                              if (_stage == _ParcelStage.atDrop) _buildAtDrop(),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
     );
   }
 
@@ -639,6 +844,17 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
         Text(steps[currentStep],
           style: GoogleFonts.poppins(fontSize: 11, fontWeight: FontWeight.w500, color: JT.primary)),
       ]),
+    );
+  }
+
+  Widget _buildSheetHandle() {
+    return Container(
+      width: 44,
+      height: 4,
+      decoration: BoxDecoration(
+        color: JT.border,
+        borderRadius: BorderRadius.circular(4),
+      ),
     );
   }
 
@@ -691,6 +907,7 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
     );
   }
 
+  // ignore: unused_element
   Widget _buildInAppMapCard() {
     final heading = _isRerouting
         ? 'Rerouting'
@@ -1067,9 +1284,27 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               elevation: 0,
             ),
-              child: _loading
-                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                : Text('Verify & Pickup Parcel', style: GoogleFonts.poppins(fontWeight: FontWeight.w400, fontSize: 15)),
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 220),
+                child: _loading
+                    ? const SizedBox(
+                        key: ValueKey('pickup_loading'),
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          color: Colors.white,
+                          strokeWidth: 2,
+                        ),
+                      )
+                    : Text(
+                        'Verify & Pickup Parcel',
+                        key: const ValueKey('pickup_ready'),
+                        style: GoogleFonts.poppins(
+                          fontWeight: FontWeight.w400,
+                          fontSize: 15,
+                        ),
+                      ),
+              ),
             ),
           ),
         ]),
@@ -1219,7 +1454,15 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
           SizedBox(
             width: double.infinity,
             child: ElevatedButton(
-              onPressed: _loading ? null : _verifyDropOtp,
+              onPressed: _loading
+                  ? null
+                  : () {
+                      if (_dropIdx + 1 < _drops.length) {
+                        _verifyDropOtp();
+                        return;
+                      }
+                      _showParcelCompletionReviewSheet();
+                    },
               style: ElevatedButton.styleFrom(
                 backgroundColor: JT.warning,
               foregroundColor: Colors.white,
@@ -1227,11 +1470,29 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               elevation: 0,
             ),
-              child: _loading
-                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                : Text(
-                    _dropIdx + 1 < _drops.length ? 'Confirm Delivery → Next Stop' : 'Complete Delivery',
-                    style: GoogleFonts.poppins(fontWeight: FontWeight.w400, fontSize: 15)),
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 220),
+                child: _loading
+                    ? const SizedBox(
+                        key: ValueKey('drop_loading'),
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          color: Colors.white,
+                          strokeWidth: 2,
+                        ),
+                      )
+                    : Text(
+                        _dropIdx + 1 < _drops.length
+                            ? 'Confirm Delivery → Next Stop'
+                            : 'Complete Delivery',
+                        key: ValueKey('drop_${_dropIdx}_$_loading'),
+                        style: GoogleFonts.poppins(
+                          fontWeight: FontWeight.w400,
+                          fontSize: 15,
+                        ),
+                      ),
+              ),
             ),
           ),
         ]),
@@ -1254,8 +1515,8 @@ class _ParcelDeliveryScreenState extends State<ParcelDeliveryScreen>
         : paymentMethod == 'wallet'
             ? 'Wallet'
             : paymentMethod == 'upi'
-                ? 'UPI'
-                : 'Online';
+                ? 'Online Payment'
+                : 'Online Payment';
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),

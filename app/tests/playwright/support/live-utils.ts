@@ -3,7 +3,7 @@ import { io, type Socket } from "socket.io-client";
 import { createQaTag, runtime } from "./runtime";
 
 export function connectLiveSocket(token: string, userId: string, userType: "customer" | "driver") {
-  return io(runtime.apiBaseURL, {
+  const socket = io(runtime.apiBaseURL, {
     transports: ["websocket", "polling"],
     path: "/socket.io",
     query: {
@@ -22,6 +22,13 @@ export function connectLiveSocket(token: string, userId: string, userType: "cust
     reconnectionAttempts: 2,
     timeout: 20_000,
   });
+  socket.on("system:ping_request", (payload: { tripId?: string }) => {
+    socket.emit("system:ping_response", { tripId: payload?.tripId });
+  });
+  socket.on("ping_request", (payload: { tripId?: string }) => {
+    socket.emit("ping_response", { tripId: payload?.tripId });
+  });
+  return socket;
 }
 
 export async function waitForConnect(socket: Socket, timeoutMs = 20_000) {
@@ -34,6 +41,18 @@ export async function waitForConnect(socket: Socket, timeoutMs = 20_000) {
     socket.once("connect_error", (error) => {
       clearTimeout(timer);
       reject(error);
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`socket ready timeout after ${timeoutMs}ms`)), timeoutMs);
+    socket.once("socket:ready", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    socket.once("disconnect", (reason) => {
+      clearTimeout(timer);
+      reject(new Error(`socket disconnected before ready: ${reason}`));
     });
   });
 }

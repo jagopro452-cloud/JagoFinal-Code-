@@ -59,12 +59,24 @@ class _TrackingScreenState extends State<TrackingScreen>
 
   Timer? _pollTimer;
 
-  bool _isArriving = false; // "Pilot is about to arrive" flag
+  bool _isArriving = false; // "Driver is about to arrive" flag
 
   // Custom Top Banner state
   String? _bannerMessage;
   Color _bannerColor = JT.primary;
   Timer? _bannerTimer;
+
+  Widget _buildSheetHandle() {
+    return Container(
+      width: 44,
+      height: 4,
+      margin: const EdgeInsets.only(top: 10, bottom: 4),
+      decoration: BoxDecoration(
+        color: JT.border,
+        borderRadius: BorderRadius.circular(4),
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -250,7 +262,7 @@ class _TrackingScreenState extends State<TrackingScreen>
           update['driverName'] = driverMap['fullName'] ??
               driverMap['full_name'] ??
               driverMap['name'] ??
-              'Jago Pilot';
+              'Jago Driver';
           update['driverPhone'] =
               driverMap['phone'] ?? driverMap['mobile'] ?? '';
           update['driverRating'] =
@@ -268,14 +280,14 @@ class _TrackingScreenState extends State<TrackingScreen>
           update['vehicleName'] = driverMap['vehicleCategory'] ??
               driverMap['vehicle_category'] ??
               driverMap['vehicle_name'] ??
-              'Pilot';
+              'Driver';
           update['driverLat'] = driverMap['lat'];
           update['driverLng'] = driverMap['lng'];
           update['driverHeading'] =
               driverMap['heading'] ?? driverMap['driverHeading'];
         } else {
           update['driverName'] =
-              data['driverName'] ?? data['driver_name'] ?? 'Jago Pilot';
+              data['driverName'] ?? data['driver_name'] ?? 'Jago Driver';
           update['driverPhone'] = data['driverPhone'] ?? data['driver_phone'];
           update['driverRating'] = data['driverRating'] ?? data['driver_rating'];
           update['driverPhoto'] = data['driverPhoto'] ?? data['driver_photo'];
@@ -284,7 +296,7 @@ class _TrackingScreenState extends State<TrackingScreen>
           update['driverVehicleModel'] =
               data['driverVehicleModel'] ?? data['driver_vehicle_model'];
           update['vehicleName'] =
-              data['vehicleName'] ?? data['vehicle_name'] ?? 'Pilot';
+              data['vehicleName'] ?? data['vehicle_name'] ?? 'Driver';
         }
 
         if (_trip != null) {
@@ -306,7 +318,7 @@ class _TrackingScreenState extends State<TrackingScreen>
         );
       }
 
-      _showStatusBanner('Pilot accepted your ride', JT.primary);
+      _showStatusBanner('Driver accepted your ride', JT.primary);
       AlarmService().playChime();
       HapticFeedback.heavyImpact();
       _announceStatus('accepted');
@@ -351,7 +363,7 @@ class _TrackingScreenState extends State<TrackingScreen>
   void _showNoDriversDialog() {
     if (!mounted) return;
     setState(() => _status = 'cancelled');
-    _showStatusBanner('No pilots nearby. Try again!', const Color(0xFFDC2626));
+    _showStatusBanner('No drivers nearby. Try again!', const Color(0xFFDC2626));
   }
 
   Future<void> _startNearbyDriversPolling() async {
@@ -481,13 +493,13 @@ class _TrackingScreenState extends State<TrackingScreen>
     if (newStatus == 'accepted' || newStatus == 'driver_assigned') {
       _searchTimeoutTimer?.cancel();
       _nearbyDriversTimer?.cancel();
-      _showStatusBanner('Pilot accepted your ride', JT.primary);
+      _showStatusBanner('Driver accepted your ride', JT.primary);
       _announceStatus('accepted');
       _updateMapMarkers();
     } else if (newStatus == 'arrived') {
       _searchTimeoutTimer?.cancel();
       _nearbyDriversTimer?.cancel();
-      _showStatusBanner('Your pilot has arrived', const Color(0xFF10B981));
+      _showStatusBanner('Driver has arrived', const Color(0xFF10B981));
       _announceStatus('arrived');
       _updateMapMarkers();
     } else if (newStatus == 'in_progress' || newStatus == 'on_the_way') {
@@ -770,7 +782,7 @@ class _TrackingScreenState extends State<TrackingScreen>
     if (_driverLatLng != null &&
         _status != 'searching' &&
         _status != 'cancelled') {
-      final vName = (_trip?['vehicleName'] ?? 'Pilot').toString();
+      final vName = (_trip?['vehicleName'] ?? 'Driver').toString();
       newMarkers.add(Marker(
         markerId: const MarkerId('driver'),
         position: _driverLatLng!,
@@ -953,13 +965,13 @@ class _TrackingScreenState extends State<TrackingScreen>
     switch (status) {
       case 'driver_assigned':
       case 'accepted':
-        message = 'Pilot accepted your ride and is on the way.';
+        message = 'Driver accepted your ride and is on the way.';
         break;
       case 'arriving':
-        message = 'Your pilot is about to arrive at your location.';
+        message = 'Driver is about to arrive at your location.';
         break;
       case 'arrived':
-        message = 'Your pilot is arrived at the pickup location.';
+        message = 'Driver has arrived at the pickup location.';
         break;
       case 'in_progress':
       case 'on_the_way':
@@ -1018,7 +1030,7 @@ class _TrackingScreenState extends State<TrackingScreen>
           ),
         ]),
         content: Text(
-          'We haven\'t found a pilot yet. You can boost your fare to attract more drivers, or cancel the trip.',
+          'We haven\'t found a driver yet. You can boost your fare to attract more drivers, or cancel the trip.',
           style: GoogleFonts.poppins(
               fontSize: 13, color: const Color(0xFF6B7280), height: 1.5),
         ),
@@ -1076,7 +1088,7 @@ class _TrackingScreenState extends State<TrackingScreen>
           content: Row(children: [
             const Icon(Icons.bolt_rounded, color: Colors.white, size: 16),
             const SizedBox(width: 8),
-            Text('Fare boosted by ₹$amount! Searching for pilots...',
+            Text('Fare boosted by ₹$amount! Searching for drivers...',
                 style: GoogleFonts.poppins(
                     color: Colors.white,
                     fontWeight: FontWeight.w400,
@@ -1141,7 +1153,7 @@ class _TrackingScreenState extends State<TrackingScreen>
             height: 4,
             decoration: BoxDecoration(
                 color: const Color(0xFFE5E7EB),
-                borderRadius: BorderRadius.circular(2)),
+                borderRadius: BorderRadius.circular(4)),
           ),
           const SizedBox(height: 20),
           Row(children: [
@@ -1165,7 +1177,7 @@ class _TrackingScreenState extends State<TrackingScreen>
                           fontSize: 17,
                           fontWeight: FontWeight.w500,
                           color: JT.textPrimary)),
-                  Text('Add extra to attract more pilots',
+                  Text('Add extra to attract more drivers',
                       style: GoogleFonts.poppins(
                           fontSize: 12, color: const Color(0xFF6B7280))),
                 ])),
@@ -1409,10 +1421,10 @@ class _TrackingScreenState extends State<TrackingScreen>
         padding: const EdgeInsets.all(24),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           Container(
-              width: 40,
+              width: 44,
               height: 4,
               decoration: BoxDecoration(
-                  color: JT.border, borderRadius: BorderRadius.circular(2))),
+                  color: JT.border, borderRadius: BorderRadius.circular(4))),
           const SizedBox(height: 20),
           Row(children: [
             Container(
@@ -1458,7 +1470,7 @@ class _TrackingScreenState extends State<TrackingScreen>
     final otp =
         trip?['pickupOtp']?.toString() ?? trip?['pickup_otp']?.toString();
     final driverName =
-        trip?['driverName']?.toString() ?? trip?['driver_name']?.toString() ?? (_status != 'searching' ? 'Jago Pilot' : null);
+        trip?['driverName']?.toString() ?? trip?['driver_name']?.toString() ?? (_status != 'searching' ? 'Jago Driver' : null);
     final driverPhone =
         trip?['driverPhone']?.toString() ?? trip?['driver_phone']?.toString();
     final driverRating = trip?['driverRating'] ?? trip?['driver_rating'];
@@ -1483,7 +1495,7 @@ class _TrackingScreenState extends State<TrackingScreen>
         }
       },
       child: Scaffold(
-        backgroundColor: const Color(0xFFF5F3FF),
+        backgroundColor: Colors.white,
         body: Column(
           children: [
             // Global Header
@@ -1527,9 +1539,9 @@ class _TrackingScreenState extends State<TrackingScreen>
                   child: LayoutBuilder(
                     builder: (context, constraints) {
                       final panelMaxHeight =
-                          math.min(constraints.maxHeight * 0.56, 420.0);
+                          math.min(constraints.maxHeight * 0.34, 300.0);
                       final mapBottomPadding =
-                          math.min(panelMaxHeight * 0.72, 260.0);
+                          math.min(panelMaxHeight * 0.95, 240.0);
                       return Stack(children: [
                         GoogleMap(
                           initialCameraPosition:
@@ -1587,21 +1599,17 @@ class _TrackingScreenState extends State<TrackingScreen>
                             ),
                             child:
                                 Column(mainAxisSize: MainAxisSize.min, children: [
-                              Container(
-                                  width: 40,
-                                  height: 4,
-                                  margin:
-                                      const EdgeInsets.only(top: 10, bottom: 4),
-                                  decoration: BoxDecoration(
-                                      color: JT.border,
-                                      borderRadius: BorderRadius.circular(2))),
+                              _buildSheetHandle(),
                               Flexible(
-                                  child: SingleChildScrollView(
-                                physics: const ClampingScrollPhysics(),
-                                child: Padding(
-                                  padding:
-                                      const EdgeInsets.fromLTRB(20, 12, 20, 28),
-                                  child: Column(
+                                  child: AnimatedSwitcher(
+                                duration: const Duration(milliseconds: 220),
+                                child: SingleChildScrollView(
+                                  key: ValueKey(_status),
+                                  physics: const ClampingScrollPhysics(),
+                                  child: Padding(
+                                    padding:
+                                        const EdgeInsets.fromLTRB(20, 12, 20, 28),
+                                    child: Column(
                                       crossAxisAlignment:
                                           CrossAxisAlignment.start,
                                       children: [
@@ -1637,6 +1645,48 @@ class _TrackingScreenState extends State<TrackingScreen>
                                         ] else if (_status == 'searching') ...[
                                           _buildSearchingIndicator(
                                               statusInfo['color'] as Color),
+                                          const SizedBox(height: 16),
+                                        ],
+                                        if (_status != 'completed' &&
+                                            _status != 'cancelled' &&
+                                            _status != 'searching') ...[
+                                          Container(
+                                            width: double.infinity,
+                                            padding: const EdgeInsets.symmetric(
+                                                horizontal: 16, vertical: 12),
+                                            decoration: BoxDecoration(
+                                              color: const Color(0xFFF8FAFC),
+                                              borderRadius:
+                                                  BorderRadius.circular(16),
+                                              border: Border.all(
+                                                color: const Color(0xFFE2E8F0),
+                                              ),
+                                            ),
+                                            child: Row(
+                                              children: [
+                                                const Icon(
+                                                  Icons.shield_outlined,
+                                                  color: Color(0xFF0F172A),
+                                                  size: 18,
+                                                ),
+                                                const SizedBox(width: 10),
+                                                Expanded(
+                                                  child: Text(
+                                                    _status == 'arrived'
+                                                        ? 'Share the OTP only after the driver reaches your pickup point.'
+                                                        : 'Live route and ETA are being updated in real time.',
+                                                    style: GoogleFonts.poppins(
+                                                      fontSize: 12,
+                                                      fontWeight:
+                                                          FontWeight.w500,
+                                                      color:
+                                                          const Color(0xFF475569),
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
                                           const SizedBox(height: 16),
                                         ],
                                         if (trip != null) ...[
@@ -1683,6 +1733,7 @@ class _TrackingScreenState extends State<TrackingScreen>
                                           ),
                                         ],
                                       ]),
+                                  ),
                                 ),
                               )),
                             ]),
@@ -1705,7 +1756,6 @@ class _TrackingScreenState extends State<TrackingScreen>
             ),
           ],
         ),
-        bottomNavigationBar: _buildBottomNav(),
       ),
     );
   }
@@ -1747,9 +1797,7 @@ class _TrackingScreenState extends State<TrackingScreen>
   Widget _buildPremiumHeader(Map<String, dynamic> statusInfo, String? otp) {
     final showOtp = otp != null &&
         otp.isNotEmpty &&
-        (_status == 'driver_assigned' ||
-            _status == 'accepted' ||
-            _status == 'arrived');
+        _status == 'arrived';
     final eta = _trip?['etaMinutes']?.toString() ?? '5';
 
     return Column(
@@ -1976,7 +2024,7 @@ class _TrackingScreenState extends State<TrackingScreen>
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  vehicleModel.isNotEmpty ? vehicleModel : 'Jago Pilot',
+                  vehicleModel.isNotEmpty ? vehicleModel : 'Jago Driver',
                   style: GoogleFonts.poppins(
                       fontSize: 12, color: JT.textSecondary),
                   maxLines: 1,
@@ -2007,7 +2055,7 @@ class _TrackingScreenState extends State<TrackingScreen>
                 ),
               ),
               const SizedBox(height: 4),
-              const Text('• Verified Pilot',
+              const Text('• Verified Driver',
                   style: TextStyle(
                       fontSize: 10,
                       color: Colors.blue,
@@ -2100,13 +2148,13 @@ class _TrackingScreenState extends State<TrackingScreen>
           _buildPulsingCircles(color),
           const SizedBox(height: 16),
           Text(
-            'Finding your Pilot...',
+            'Finding your driver...',
             style: GoogleFonts.poppins(
                 fontSize: 16, fontWeight: FontWeight.w600, color: color),
           ),
           const SizedBox(height: 4),
           Text(
-            'Confirming nearest pilot availability',
+            'Confirming nearest driver availability',
             style: GoogleFonts.poppins(
                 fontSize: 12, color: color.withValues(alpha: 0.6)),
           ),
@@ -2299,7 +2347,7 @@ class _TrackingScreenState extends State<TrackingScreen>
     switch (status) {
       case 'searching':
         return {
-          'label': 'Finding the best Pilot for you...',
+          'label': 'Finding the best driver for you',
           'icon': Icons.radar_rounded,
           'color': const Color(0xFF2D8CFF)
         };
@@ -2307,28 +2355,28 @@ class _TrackingScreenState extends State<TrackingScreen>
       case 'accepted':
         return {
           'label': _isArriving
-              ? 'Your pilot is about to arrive'
-              : 'Pilot accepted your ride',
+              ? 'Driver is almost there'
+              : 'Driver assigned',
           'icon':
               _isArriving ? Icons.bolt_rounded : Icons.electric_bike_rounded,
           'color': const Color(0xFF2D8CFF)
         };
       case 'arrived':
         return {
-          'label': 'Your pilot is arrived',
+          'label': 'Driver has arrived',
           'icon': Icons.location_on_rounded,
           'color': const Color(0xFF10B981)
         };
       case 'in_progress':
       case 'on_the_way':
         return {
-          'label': 'Your ride is started',
+          'label': 'Ride in progress',
           'icon': Icons.auto_awesome_rounded,
           'color': const Color(0xFF2D8CFF)
         };
       case 'completed':
         return {
-          'label': 'Your ride is ended',
+          'label': 'Ride completed',
           'icon': Icons.check_circle_rounded,
           'color': JT.primary
         };
@@ -2565,6 +2613,7 @@ class _TrackingScreenState extends State<TrackingScreen>
     );
   }
 
+  // ignore: unused_element
   Widget _buildBottomNav() {
     return Container(
       decoration: BoxDecoration(

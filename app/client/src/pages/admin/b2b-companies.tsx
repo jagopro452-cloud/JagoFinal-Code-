@@ -180,7 +180,7 @@ function WalletModal({ company, open, onClose, onSave, saving }: any) {
         <div className="d-flex gap-2 justify-content-end pt-3 border-top mt-3">
           <button className="btn btn-outline-secondary" onClick={onClose}>Cancel</button>
           <button className={`btn ${type === "add" ? "btn-success" : "btn-danger"}`}
-            disabled={!amount || saving} onClick={() => onSave({ amount: Number(amount), type })}
+            disabled={!amount || saving} onClick={() => onSave({ amount: Number(amount), type: type === "add" ? "credit" : "deduct" })}
             data-testid="btn-confirm-wallet">
             {saving ? "…" : type === "add" ? "Add Funds" : "Deduct Funds"}
           </button>
@@ -192,7 +192,7 @@ function WalletModal({ company, open, onClose, onSave, saving }: any) {
 
 function WebhookModal({ company, open, onClose }: any) {
   const { toast } = useToast();
-  const [form, setForm] = useState({ webhookUrl: company?.webhookUrl || "", webhookSecret: company?.webhookSecret || "" });
+  const [form, setForm] = useState(() => ({ webhookUrl: company?.webhookUrl || "", webhookSecret: company?.webhookSecret || "" }));
   const [saving, setSaving] = useState(false);
 
   if (!open) return null;
@@ -505,7 +505,7 @@ export default function B2BCompaniesPage() {
       )}
 
       {webhookTarget && (
-        <WebhookModal company={webhookTarget} open={!!webhookTarget}
+        <WebhookModal key={webhookTarget.id} company={webhookTarget} open={!!webhookTarget}
           onClose={() => setWebhookTarget(null)} />
       )}
 

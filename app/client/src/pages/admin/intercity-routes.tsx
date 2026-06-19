@@ -202,6 +202,7 @@ export default function IntercityRoutesPage() {
   const remove = useMutation({
     mutationFn: (id: string) => apiRequest("DELETE", `/api/intercity-routes/${id}`),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/intercity-routes"] }); toast({ title: "Route deleted" }); },
+    onError: (e: any) => toast({ title: "Delete failed", description: e.message, variant: "destructive" }),
   });
 
   return (

@@ -1,5 +1,13 @@
+const path = require("node:path");
+const dotenv = require("dotenv");
+
+dotenv.config({ path: path.resolve(process.cwd(), ".env"), override: false });
+dotenv.config({ path: path.resolve(process.cwd(), ".env.playwright.local"), override: true });
+dotenv.config({ path: path.resolve(process.cwd(), ".env.staging"), override: true });
+dotenv.config({ path: path.resolve(process.cwd(), ".env.live"), override: true });
+
 const BASE_URL = (process.env.HEALTH_BASE_URL || process.env.APP_BASE_URL || "http://127.0.0.1:5000").replace(/\/$/, "");
-const OPS_API_KEY = process.env.OPS_API_KEY || "";
+const OPS_API_KEY = process.env.PW_OPS_API_KEY || process.env.OPS_API_KEY || process.env.ADMIN_RESET_KEY || "";
 
 async function getJson(path, headers = {}) {
   const res = await fetch(`${BASE_URL}${path}`, { headers });

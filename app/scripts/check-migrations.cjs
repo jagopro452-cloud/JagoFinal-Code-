@@ -12,8 +12,8 @@ const MIGRATION_DIRS = [
 ];
 
 const UNSAFE_PATTERNS = [
-  { re: /^\s*CREATE INDEX\s+(?!IF NOT EXISTS)/im, label: "CREATE INDEX without IF NOT EXISTS" },
-  { re: /^\s*CREATE UNIQUE INDEX\s+(?!IF NOT EXISTS)/im, label: "CREATE UNIQUE INDEX without IF NOT EXISTS" },
+  { re: /^\s*CREATE INDEX\s+(?!CONCURRENTLY\s+IF NOT EXISTS|IF NOT EXISTS)/im, label: "CREATE INDEX without IF NOT EXISTS" },
+  { re: /^\s*CREATE UNIQUE INDEX\s+(?!CONCURRENTLY\s+IF NOT EXISTS|IF NOT EXISTS)/im, label: "CREATE UNIQUE INDEX without IF NOT EXISTS" },
   { re: /^\s*CREATE TABLE\s+(?!IF NOT EXISTS)/im, label: "CREATE TABLE without IF NOT EXISTS" },
   { re: /^\s*CREATE SEQUENCE\s+(?!IF NOT EXISTS)/im, label: "CREATE SEQUENCE without IF NOT EXISTS" },
   { re: /^\s*CREATE TYPE\s+(?!IF NOT EXISTS)/im, label: "CREATE TYPE without IF NOT EXISTS" },

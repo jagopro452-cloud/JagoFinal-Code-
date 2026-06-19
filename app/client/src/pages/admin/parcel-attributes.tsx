@@ -166,11 +166,13 @@ export default function ParcelAttributesPage() {
   const remove = useMutation({
     mutationFn: (id: string) => apiRequest("DELETE", `/api/parcel-attributes/${id}`),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/parcel-attributes"] }); toast({ title: "Deleted" }); },
+    onError: (e: any) => toast({ title: "Delete failed", description: e.message, variant: "destructive" }),
   });
 
   const toggle = useMutation({
     mutationFn: ({ id, isActive }: any) => apiRequest("PUT", `/api/parcel-attributes/${id}`, { isActive, type: tab }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/parcel-attributes"] }),
+    onError: (e: any) => { queryClient.invalidateQueries({ queryKey: ["/api/parcel-attributes"] }); toast({ title: "Toggle failed", description: e.message, variant: "destructive" }); },
   });
 
   const seedDefaults = () => DEFAULT_CATEGORIES.forEach((cat, i) =>

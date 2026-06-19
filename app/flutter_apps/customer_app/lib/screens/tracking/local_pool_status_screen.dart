@@ -38,6 +38,37 @@ class _LocalPoolStatusScreenState extends State<LocalPoolStatusScreen> {
   StreamSubscription<Map<String, dynamic>>? _refundUpdateSub;
   StreamSubscription<Map<String, dynamic>>? _safetyUpdateSub;
 
+  Widget _buildSheetHandle() {
+    return Container(
+      width: 44,
+      height: 4,
+      decoration: BoxDecoration(
+        color: JT.border,
+        borderRadius: BorderRadius.circular(4),
+      ),
+    );
+  }
+
+  Widget _buildLoadingState() {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(
+            width: 44,
+            height: 44,
+            child: CircularProgressIndicator(color: JT.primary, strokeWidth: 2.5),
+          ),
+          const SizedBox(height: 14),
+          Text(
+            'Syncing your shared ride...',
+            style: GoogleFonts.poppins(fontSize: 13, color: JT.textSecondary),
+          ),
+        ],
+      ),
+    );
+  }
+
   bool _loading = true;
   bool _cancelling = false;
   String? _error;
@@ -74,7 +105,13 @@ class _LocalPoolStatusScreenState extends State<LocalPoolStatusScreen> {
       setState(() {
         _status = event['status']?.toString() ?? _status;
         if (_booking != null) {
-          if (_status == 'matched') {
+          if (_status == 'pending_driver_accept') {
+            _booking = {
+              ..._booking!,
+              'status': 'pending_driver_accept',
+              if (event['driver'] != null) 'driver': event['driver'],
+            };
+          } else if (_status == 'matched') {
             _booking = {
               ..._booking!,
               'status': 'matched',
@@ -84,6 +121,9 @@ class _LocalPoolStatusScreenState extends State<LocalPoolStatusScreen> {
             _booking = {..._booking!, 'status': 'picked_up'};
           } else if (_status == 'dropped') {
             _booking = {..._booking!, 'status': 'dropped'};
+          } else if (_status == 'searching') {
+            // driver_skipped or driver_confirm_timeout — back to searching, clear stale driver data
+            _booking = {..._booking!, 'status': 'searching'};
           } else if (_status == 'cancelled' || _status == 'search_timeout') {
             _booking = {..._booking!, 'status': 'cancelled'};
             _error = event['reason']?.toString() ?? event['message']?.toString();
@@ -254,6 +294,8 @@ class _LocalPoolStatusScreenState extends State<LocalPoolStatusScreen> {
 
   String get _statusTitle {
     switch (_status) {
+      case 'pending_driver_accept':
+        return 'Driver found — confirming';
       case 'matched':
         return 'Driver matched';
       case 'picked_up':
@@ -271,6 +313,8 @@ class _LocalPoolStatusScreenState extends State<LocalPoolStatusScreen> {
 
   String get _statusSubtitle {
     switch (_status) {
+      case 'pending_driver_accept':
+        return 'A driver has been found. Waiting for them to confirm your seat — this takes just a moment.';
       case 'matched':
         return 'Your pooled ride is confirmed. Reach pickup point and share OTP only after driver arrives.';
       case 'picked_up':
@@ -286,6 +330,193 @@ class _LocalPoolStatusScreenState extends State<LocalPoolStatusScreen> {
     }
   }
 
+  Widget _poolProgressCard() {
+    final states = <String>[
+      'searching',
+      'pending_driver_accept',
+      'matched',
+      'picked_up',
+      'dropped',
+    ];
+    final labels = <String, String>{
+      'searching': 'Searching',
+      'pending_driver_accept': 'Confirming',
+      'matched': 'Driver matched',
+      'picked_up': 'Onboard',
+      'dropped': 'Completed',
+    };
+    final activeIndex = states.indexOf(_status).clamp(0, states.length - 1);
+
+    return _card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Journey Progress',
+            style: GoogleFonts.poppins(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: JT.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: List.generate(states.length, (index) {
+              final done = index <= activeIndex;
+              return Expanded(
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 250),
+                        height: 6,
+                        decoration: BoxDecoration(
+                          color: done ? JT.primary : JT.border,
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                      ),
+                    ),
+                    if (index < states.length - 1) const SizedBox(width: 6),
+                  ],
+                ),
+              );
+            }),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: states.map((state) {
+              final idx = states.indexOf(state);
+              final done = idx <= activeIndex;
+              return Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: done
+                      ? JT.primary.withValues(alpha: 0.08)
+                      : JT.bgSoft,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: done
+                        ? JT.primary.withValues(alpha: 0.16)
+                        : JT.border,
+                  ),
+                ),
+                child: Text(
+                  labels[state] ?? state,
+                  style: GoogleFonts.poppins(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w600,
+                    color: done ? JT.primary : JT.textSecondary,
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _stopSequenceCard() {
+    return _card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Ride Sequence',
+            style: GoogleFonts.poppins(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: JT.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 12),
+          _sequenceNode(
+            index: 1,
+            title: 'Pickup point',
+            subtitle: widget.pickupAddress,
+            active: _status != 'dropped',
+          ),
+          const SizedBox(height: 10),
+          _sequenceNode(
+            index: 2,
+            title: 'Boarding OTP',
+            subtitle: _status == 'matched' || _status == 'picked_up' || _status == 'dropped'
+                ? 'Share OTP only after the pool driver reaches you.'
+                : 'OTP unlocks after the driver confirms your seat.',
+            active: _status == 'matched' || _status == 'picked_up' || _status == 'dropped',
+          ),
+          const SizedBox(height: 10),
+          _sequenceNode(
+            index: 3,
+            title: 'Drop point',
+            subtitle: widget.dropAddress,
+            active: _status == 'picked_up' || _status == 'dropped',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _sequenceNode({
+    required int index,
+    required String title,
+    required String subtitle,
+    required bool active,
+  }) {
+    final color = active ? JT.primary : JT.textSecondary;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            color: active ? JT.primary.withValues(alpha: 0.10) : JT.bgSoft,
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: Center(
+            child: Text(
+              '$index',
+              style: GoogleFonts.poppins(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: color,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: GoogleFonts.poppins(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: JT.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                subtitle,
+                style: GoogleFonts.poppins(
+                  fontSize: 12,
+                  color: JT.textSecondary,
+                  height: 1.45,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final driver = _booking?['driver'] is Map<String, dynamic>
@@ -296,7 +527,7 @@ class _LocalPoolStatusScreenState extends State<LocalPoolStatusScreen> {
     final otp = _booking?['boarding_otp']?.toString() ?? _booking?['boardingOtp']?.toString() ?? '----';
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF7FAFF),
+      backgroundColor: Colors.white,
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0,
@@ -311,54 +542,119 @@ class _LocalPoolStatusScreenState extends State<LocalPoolStatusScreen> {
         ),
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator(color: JT.primary))
+          ? _buildLoadingState()
           : RefreshIndicator(
               onRefresh: _load,
               color: JT.primary,
-              child: ListView(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-                children: [
-                  _headerCard(),
-                  const SizedBox(height: 14),
-                  _routeCard(),
-                  const SizedBox(height: 14),
-                  _liveMapCard(),
-                  const SizedBox(height: 14),
-                  _seatOverviewCard(seats, fare),
-                  const SizedBox(height: 14),
-                  _otpCard(otp),
-                  if (driver != null) ...[
-                    const SizedBox(height: 14),
-                    _driverCard(driver),
-                  ],
-                  if (_error != null && _status != 'cancelled' && _status != 'search_timeout') ...[
-                    const SizedBox(height: 14),
-                    _errorCard(),
-                  ],
-                  if (_status == 'matched' || _status == 'picked_up' || _status == 'dropped') ...[
-                    const SizedBox(height: 14),
-                    _poolActionsCard(),
-                  ],
-                  const SizedBox(height: 18),
-                  if (_status == 'searching' || _status == 'matched')
-                    SizedBox(
-                      height: 52,
-                      child: ElevatedButton(
-                        onPressed: _cancelling ? null : _openCancellationFlow,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.white,
-                          foregroundColor: Colors.red.shade600,
-                          elevation: 0,
-                          side: BorderSide(color: Colors.red.shade200),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                        ),
-                        child: Text(
-                          _cancelling ? 'Cancelling...' : 'Cancel Pool Booking',
-                          style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final sheetMaxHeight =
+                      constraints.maxHeight > 780 ? 360.0 : 330.0;
+                  return Stack(
+                    children: [
+                      Positioned.fill(
+                        child: ListView(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          children: [
+                            SizedBox(
+                              height: constraints.maxHeight,
+                              child: _liveMapCard(),
+                            ),
+                          ],
                         ),
                       ),
-                    ),
-                ],
+                      Align(
+                        alignment: Alignment.bottomCenter,
+                        child: Container(
+                          constraints:
+                              BoxConstraints(maxHeight: sheetMaxHeight),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: const BorderRadius.vertical(
+                              top: Radius.circular(24),
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.12),
+                                blurRadius: 24,
+                                offset: const Offset(0, -8),
+                              ),
+                            ],
+                          ),
+                          child: SingleChildScrollView(
+                            physics: const ClampingScrollPhysics(),
+                            padding:
+                                const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                            child: Column(
+                              children: [
+                                _buildSheetHandle(),
+                                const SizedBox(height: 12),
+                                _headerCard(),
+                                const SizedBox(height: 14),
+                                _poolProgressCard(),
+                                const SizedBox(height: 14),
+                                _stopSequenceCard(),
+                                const SizedBox(height: 14),
+                                _seatOverviewCard(seats, fare),
+                                const SizedBox(height: 14),
+                                _otpCard(otp),
+                                if (driver != null) ...[
+                                  const SizedBox(height: 14),
+                                  _driverCard(driver),
+                                ],
+                                const SizedBox(height: 14),
+                                _routeCard(),
+                                if (_error != null &&
+                                    _status != 'cancelled' &&
+                                    _status != 'search_timeout') ...[
+                                  const SizedBox(height: 14),
+                                  _errorCard(),
+                                ],
+                                if (_status == 'matched' ||
+                                    _status == 'picked_up' ||
+                                    _status == 'dropped') ...[
+                                  const SizedBox(height: 14),
+                                  _poolActionsCard(),
+                                ],
+                                const SizedBox(height: 18),
+                                if (_status == 'searching' ||
+                                    _status == 'pending_driver_accept' ||
+                                    _status == 'matched')
+                                  SizedBox(
+                                    height: 56,
+                                    child: ElevatedButton(
+                                      onPressed:
+                                          _cancelling ? null : _openCancellationFlow,
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: Colors.white,
+                                        foregroundColor: Colors.red.shade600,
+                                        elevation: 0,
+                                        side: BorderSide(
+                                          color: Colors.red.shade200,
+                                        ),
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius:
+                                              BorderRadius.circular(16),
+                                        ),
+                                      ),
+                                      child: Text(
+                                        _cancelling
+                                            ? 'Cancelling...'
+                                            : 'Cancel Pool Booking',
+                                        style: GoogleFonts.poppins(
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  );
+                },
               ),
             ),
     );

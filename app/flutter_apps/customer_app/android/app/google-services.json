@@ -9,6 +9,25 @@
       "client_info": {
         "mobilesdk_app_id": "1:918055085885:android:4820e883dc57d38ec88754",
         "android_client_info": {
+          "package_name": "com.mindwhile.jago_customer.debug"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAiMVYA_ppxeT344tkcoSsjeGGMaPU26eI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:918055085885:android:4820e883dc57d38ec88754",
+        "android_client_info": {
           "package_name": "com.mindwhile.jago_customer"
         }
       },

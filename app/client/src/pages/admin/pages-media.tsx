@@ -84,7 +84,7 @@ export default function PagesMediaPage() {
       toast({ title: "Saved successfully" });
       setEditingKey(null);
     },
-    onError: () => toast({ title: "Save failed", variant: "destructive" }),
+    onError: (e: any) => toast({ title: "Save failed", description: e.message, variant: "destructive" }),
   });
 
   const saveAll = useMutation({
@@ -97,7 +97,7 @@ export default function PagesMediaPage() {
       qc.invalidateQueries({ queryKey: ["/api/business-pages", vars.settingsType] });
       toast({ title: "All settings saved" });
     },
-    onError: () => toast({ title: "Save failed", variant: "destructive" }),
+    onError: (e: any) => toast({ title: "Save failed", description: e.message, variant: "destructive" }),
   });
 
   const changePw = useMutation({

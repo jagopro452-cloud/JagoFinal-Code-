@@ -24,7 +24,7 @@ export const runtime = {
   liveCustomerPhone2: process.env.PW_LIVE_CUSTOMER_PHONE_2 || "9000000002",
   liveDriverBikePhone: process.env.PW_LIVE_DRIVER_BIKE_PHONE || "9100000001",
   liveDriverAutoPhone: process.env.PW_LIVE_DRIVER_AUTO_PHONE || "9100000005",
-  liveDriverCabPhone: process.env.PW_LIVE_DRIVER_CAB_PHONE || "9100000007",
+  liveDriverCabPhone: process.env.PW_LIVE_DRIVER_CAB_PHONE || "9100000008",
   liveMobilePassword: process.env.PW_LIVE_MOBILE_PASSWORD || "",
   ridePickupLat: Number(process.env.PW_RIDE_PICKUP_LAT || "17.385"),
   ridePickupLng: Number(process.env.PW_RIDE_PICKUP_LNG || "78.4867"),
@@ -68,16 +68,18 @@ function isPlaceholderSecret(value: string | undefined) {
 
 export function getLiveCredentialBlockers() {
   const blockers: string[] = [];
+  const hasSeedBootstrapKey =
+    !isPlaceholderSecret(runtime.opsApiKey) || !isPlaceholderSecret(runtime.adminResetKey);
 
   if (isPlaceholderSecret(runtime.adminEmail)) {
     blockers.push("Admin email is missing or still using a placeholder value.");
   }
 
-  if (isPlaceholderSecret(runtime.adminPassword)) {
+  if (!hasSeedBootstrapKey && isPlaceholderSecret(runtime.adminPassword)) {
     blockers.push("Admin password is missing or still using a placeholder value.");
   }
 
-  if (isPlaceholderSecret(runtime.opsApiKey) && isPlaceholderSecret(runtime.adminResetKey)) {
+  if (!hasSeedBootstrapKey) {
     blockers.push("Neither ops API key nor admin reset key is configured for live QA seeding.");
   }
 

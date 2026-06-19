@@ -23,6 +23,7 @@ import { sendFcmNotification } from "./fcm";
 import { calculateRevenueBreakdown, settleRevenue } from "./revenue-engine";
 import { enforceDriverRevenuePolicy } from "./revenue-policy";
 import { assertSchemaObjectsOrThrow } from "./schema-health";
+import { getMatchingDriverCategoryIds, getVehicleCategoryMeta } from "./vehicle-matching";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -30,6 +31,7 @@ const MAX_DETOUR_KM = 2.5;        // max extra km to pick up a new passenger
 const MAX_MATCH_RADIUS_KM = 4;    // search for sessions within this radius
 const DIRECTION_TOLERANCE_DEG = 50; // bearing must match within ±50°
 const SEARCH_TIMEOUT_MIN = 5;     // cancel search if no match in 5 min
+const BOARDING_OTP_TTL_SECONDS = 45;
 const MATCHER_INTERVAL_MS = 20_000; // re-run matcher every 20s
 let matcherStarted = false;
 const DRIVER_ACCEPT_TIMEOUT_SEC = 45;
@@ -75,6 +77,29 @@ function normalizePoolKey(value: unknown): string {
     .replace(/&/g, "and")
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "");
+}
+
+function resolvePoolVehicleType(vc: any, seatsN: number): string {
+  const key = normalizePoolKey(vc?.vehicle_type || vc?.slug || vc?.name);
+  if (key === "pool_suv" || key.includes("suv")) return "pool_suv";
+  if (key === "pool_sedan" || key.includes("sedan")) return "pool_sedan";
+  if (key === "pool_mini" || key.includes("mini")) return "pool_mini";
+  return seatsN >= 6 ? "car_pool_6" : "car_pool_4";
+}
+
+async function buildPoolCategoryClause(vehicleCategoryId?: string | null) {
+  if (!vehicleCategoryId) return rawSql``;
+  const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const matchingIds = (await getMatchingDriverCategoryIds(vehicleCategoryId) || [vehicleCategoryId])
+    .filter((id) => uuidRe.test(id));
+  if (!matchingIds.length) return rawSql``;
+  if (matchingIds.length === 1) {
+    return rawSql`AND dps.vehicle_category_id = ${matchingIds[0]}::uuid`;
+  }
+  return rawSql`AND dps.vehicle_category_id IN (${rawSql.join(
+    matchingIds.map((id) => rawSql`${id}::uuid`),
+    rawSql`, `,
+  )})`;
 }
 
 function isPoolVehicleCategory(row: any): boolean {
@@ -374,6 +399,7 @@ async function findBestSession(
   const maxMatchRadiusKm = await getPoolSettingNumber("local_pool_match_radius_km", MAX_MATCH_RADIUS_KM);
   const maxDetourKm = await getPoolSettingNumber("local_pool_max_detour_km", MAX_DETOUR_KM);
   const directionToleranceDeg = await getPoolSettingNumber("local_pool_direction_tolerance_deg", DIRECTION_TOLERANCE_DEG);
+  const categoryClause = await buildPoolCategoryClause(vehicleCategoryId);
 
   const r = await rawDb.execute(rawSql`
     SELECT dps.id, dps.driver_id, dps.available_seats,
@@ -392,9 +418,7 @@ async function findBestSession(
           POWER(SIN((${pickupLng} - dps.current_lng::float) * PI()/360), 2)
         ))
       ) <= ${maxMatchRadiusKm}
-      ${vehicleCategoryId
-        ? rawSql`AND dps.vehicle_category_id = ${vehicleCategoryId}::uuid`
-        : rawSql``}
+      ${categoryClause}
     ORDER BY (
       6371 * 2 * ASIN(SQRT(
         POWER(SIN((${pickupLat} - dps.current_lat::float) * PI()/360), 2) +
@@ -673,7 +697,7 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
       }
 
       const vcR = await rawDb.execute(rawSql`
-        SELECT id, name, slug, type, service_type, vehicle_type, is_carpool, total_seats
+        SELECT id, name, type, service_type, vehicle_type, is_carpool, total_seats
         FROM vehicle_categories
         WHERE id = ${resolvedVehicleCategoryId}::uuid
         LIMIT 1
@@ -703,7 +727,7 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
       const categorySeats = parseInt(String(vc?.total_seats || 0));
       const cappedSeats = categorySeats > 0 ? Math.min(requestedSeats, categorySeats) : requestedSeats;
       const seatsN = cappedSeats >= 6 ? 6 : 4;
-      const poolVehicleType = seatsN === 6 ? "car_pool_6" : "car_pool_4";
+      const poolVehicleType = resolvePoolVehicleType(vc, seatsN);
 
       // Get driver's current location
       const locR = await rawDb.execute(rawSql`
@@ -1004,7 +1028,10 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
       // Verify driver owns the session for this request
       const r = await rawDb.execute(rawSql`
         UPDATE pool_ride_requests prr
-        SET status = 'picked_up', picked_up_at = NOW(), updated_at = NOW()
+        SET status = 'picked_up',
+            picked_up_at = NOW(),
+            boarding_otp_used_at = NOW(),
+            updated_at = NOW()
         FROM driver_pool_sessions dps
         WHERE prr.id = ${requestId}::uuid
           AND prr.session_id = dps.id
@@ -1012,9 +1039,39 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
           AND dps.status = 'active'
           AND prr.status = 'matched'
           AND prr.boarding_otp = ${otp}
+          AND prr.boarding_otp_used_at IS NULL
+          AND COALESCE(prr.boarding_otp_expires_at, NOW() + INTERVAL '1 second') > NOW()
         RETURNING prr.customer_id, prr.pickup_address, prr.drop_address, prr.session_id
       `);
-      if (!r.rows.length) return res.status(404).json(poolResponse(false, "POOL_PICKUP_FAILED", "Passenger not found, already picked up, or OTP invalid"));
+      if (!r.rows.length) {
+        const diag = await rawDb.execute(rawSql`
+          SELECT prr.status, prr.boarding_otp, prr.boarding_otp_expires_at, prr.boarding_otp_used_at
+          FROM pool_ride_requests prr
+          JOIN driver_pool_sessions dps ON dps.id = prr.session_id
+          WHERE prr.id = ${requestId}::uuid
+            AND dps.driver_id = ${driver.id}::uuid
+            AND dps.status = 'active'
+          LIMIT 1
+        `);
+        if (!diag.rows.length) {
+          return res.status(404).json(poolResponse(false, "POOL_PICKUP_FAILED", "Passenger not found"));
+        }
+
+        const row = diag.rows[0] as any;
+        if (row.boarding_otp_used_at || String(row.status || "") === "picked_up") {
+          return res.status(409).json(poolResponse(false, "OTP_ALREADY_USED", "Boarding OTP already used"));
+        }
+
+        if (row.boarding_otp_expires_at && new Date(String(row.boarding_otp_expires_at)).getTime() <= Date.now()) {
+          return res.status(410).json(poolResponse(false, "OTP_EXPIRED", "Boarding OTP expired"));
+        }
+
+        if (String(row.boarding_otp || "") !== otp) {
+          return res.status(400).json(poolResponse(false, "INVALID_OTP", "Invalid boarding OTP"));
+        }
+
+        return res.status(404).json(poolResponse(false, "POOL_PICKUP_FAILED", "Passenger not found, already picked up, or OTP invalid"));
+      }
 
       const p = r.rows[0] as any;
       io.to(`user:${p.customer_id}`).emit("pool:picked_up", {
@@ -1287,6 +1344,18 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
       if (!pickupLat || !pickupLng || !dropLat || !dropLng) {
         return res.status(400).json(poolResponse(false, "POOL_COORDS_REQUIRED", "Pickup and drop coordinates required"));
       }
+      if (!vehicleCategoryId) {
+        return res.status(400).json(poolResponse(false, "POOL_VEHICLE_REQUIRED", "Please select a pool vehicle type before booking"));
+      }
+      const poolCategoryMeta = await getVehicleCategoryMeta(String(vehicleCategoryId));
+      if (!poolCategoryMeta || !isPoolVehicleCategory({
+        vehicle_type: poolCategoryMeta.vehicleType,
+        service_type: poolCategoryMeta.serviceType,
+        is_carpool: poolCategoryMeta.isCarpool,
+        name: poolCategoryMeta.name,
+      })) {
+        return res.status(400).json(poolResponse(false, "POOL_VEHICLE_INVALID", "Selected vehicle is not a valid pool category"));
+      }
 
       const modeR = await rawDb.execute(rawSql`
         SELECT value FROM business_settings WHERE key_name = 'local_pool_mode' LIMIT 1
@@ -1350,7 +1419,7 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
            pickup_address, drop_address, seats_requested,
            fare_per_seat, total_fare, distance_km, commission_amount, gst_amount,
            insurance_amount, platform_deduction, revenue_model, revenue_breakdown, driver_earnings,
-           payment_method, status, searched_at, boarding_otp, cluster_key)
+           payment_method, status, searched_at, boarding_otp, boarding_otp_issued_at, boarding_otp_expires_at, cluster_key)
         VALUES
           (${customer.id}::uuid,
            ${vehicleCategoryId || null}${vehicleCategoryId ? rawSql`::uuid` : rawSql``},
@@ -1358,7 +1427,7 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
            ${pickupAddress || null}, ${dropAddress || null}, ${seats},
            ${farePerSeat}, ${totalFare}, ${distKm}, ${commissionAmount}, ${gstAmount},
            ${insuranceAmount}, ${platformDeduction}, ${revenueModel}, ${JSON.stringify(revenuePreview || {})}::jsonb, ${driverEarnings},
-           ${paymentMethod}, 'searching', NOW(), ${boardingOtp}, ${clusterKey})
+           ${paymentMethod}, 'searching', NOW(), ${boardingOtp}, NOW(), NOW() + INTERVAL '${rawSql.raw(String(BOARDING_OTP_TTL_SECONDS))} seconds', ${clusterKey})
         RETURNING id
       `);
       const requestId = String((r.rows[0] as any).id);
@@ -1928,12 +1997,18 @@ export function registerRollingPoolRoutes(app: Express, authApp: any, requireAdm
       const updates = Object.entries(req.body || {}).filter(([k]) => allowed.has(k));
       if (!updates.length) return res.status(400).json({ success: false, message: "No valid settings provided" });
 
-      for (const [key, value] of updates) {
-        await rawDb.execute(rawSql`
-          INSERT INTO business_settings (key_name, value) VALUES (${key}, ${String(value)})
-          ON CONFLICT (key_name) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
-        `);
-      }
+      await rawDb.transaction(async (tx) => {
+        for (const [key, value] of updates) {
+          await tx.execute(rawSql`
+            INSERT INTO business_settings (key_name, value, settings_type)
+            VALUES (${key}, ${String(value)}, 'local_pool_settings')
+            ON CONFLICT (key_name) DO UPDATE
+            SET value = EXCLUDED.value,
+                settings_type = EXCLUDED.settings_type,
+                updated_at = NOW()
+          `);
+        }
+      });
       res.json({ success: true, message: "Local pool settings updated" });
     } catch (e: any) {
       res.status(500).json({ success: false, message: e.message });

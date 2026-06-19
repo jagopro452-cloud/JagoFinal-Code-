@@ -37,6 +37,8 @@ class BookingScreen extends StatefulWidget {
   State<BookingScreen> createState() => _BookingScreenState();
 }
 
+enum _BookingStep { route, vehicle, farePayment, confirm }
+
 class _BookingScreenState extends State<BookingScreen> with TickerProviderStateMixin {
   GoogleMapController? _mapController;
   bool _loading = false;
@@ -62,6 +64,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
   final _receiverPhoneCtrl = TextEditingController();
   final _noteCtrl = TextEditingController();
   bool _popularForPickup = false;
+  _BookingStep _bookingStep = _BookingStep.route;
   
   Set<Polyline> _polylines = {};
   double _routedDistanceKm = 0.0;
@@ -1064,170 +1067,488 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F3FF),
-      body: Column(
-        children: [
-          // Global Header
-          SafeArea(
-            bottom: false,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  GestureDetector(
-                    onTap: () => Navigator.pop(context),
-                    child: JT.logoBlue(height: 56),
-                  ),
-                  Row(
-                    children: [
-                      _headerAction(Icons.account_balance_wallet_outlined),
-                      const SizedBox(width: 12),
-                      _headerAction(Icons.notifications_none_rounded),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-          
-          Expanded(
-            child: Container(
-              decoration: const BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.vertical(top: Radius.circular(32)),
-              ),
-              child: ClipRRect(
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(32)),
-                child: Stack(
-                  children: [
-                    GoogleMap(
-                      initialCameraPosition: CameraPosition(target: _pickupLatLng, zoom: 14),
-                      onMapCreated: (c) {
-                        _mapController = c;
-                        _fitMapToRoute();
-                      },
-                      markers: {
-                        Marker(markerId: const MarkerId('p'), position: _pickupLatLng, icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure)),
-                        Marker(markerId: const MarkerId('d'), position: _destLatLng, icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed)),
-                      },
-                      polylines: _polylines,
-                      zoomControlsEnabled: false,
-                      myLocationButtonEnabled: false,
-                      mapToolbarEnabled: false,
+      backgroundColor: JT.bg,
+      body: StreamBuilder<Map<String, VehicleStatus>>(
+        stream: _vehicleStatusService.watchVehicleStatuses(),
+        builder: (context, snapshot) {
+          final statuses = snapshot.data ?? {};
+          final visibleFares = _visibleFareEntries(statuses);
+          final canContinueFromVehicle =
+              !_estimating && visibleFares.isNotEmpty && _selectedFareIndex < _allFares.length;
+          final canContinueFromFare = !_loading && !_estimating;
+
+          return Stack(
+            children: [
+              Positioned.fill(
+                child: GoogleMap(
+                  initialCameraPosition: CameraPosition(target: _pickupLatLng, zoom: 14),
+                  onMapCreated: (c) {
+                    _mapController = c;
+                    _fitMapToRoute();
+                  },
+                  markers: {
+                    Marker(
+                      markerId: const MarkerId('pickup'),
+                      position: _pickupLatLng,
+                      icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
                     ),
-                    
-                    // Floating Address Card
-                    Positioned(
-                      top: 20, left: 20, right: 20,
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(20),
-                          boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.1), blurRadius: 20, offset: const Offset(0, 8))],
-                        ),
-                        child: Column(
+                    Marker(
+                      markerId: const MarkerId('destination'),
+                      position: _destLatLng,
+                      icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+                    ),
+                  },
+                  polylines: _polylines,
+                  zoomControlsEnabled: false,
+                  myLocationButtonEnabled: false,
+                  mapToolbarEnabled: false,
+                  compassEnabled: false,
+                  padding: const EdgeInsets.only(bottom: 320, top: 104),
+                ),
+              ),
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: SafeArea(
+                  bottom: false,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
                           children: [
-                            _addressRow(Icons.circle, const Color(0xFF6366F1), widget.pickup),
-                            const Divider(height: 1, indent: 56, endIndent: 20),
-                            _addressRow(Icons.location_on, const Color(0xFFEF4444), widget.destination),
-                          ],
-                        ),
-                      ),
-                    ),
-
-                    // Draggable Sheet
-                    DraggableScrollableSheet(
-                      initialChildSize: 0.45,
-                      minChildSize: 0.35,
-                      maxChildSize: 0.9,
-                      builder: (context, scrollController) {
-                        return Container(
-                          decoration: const BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.vertical(top: Radius.circular(32)),
-                            boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 20, spreadRadius: 2)],
-                          ),
-                          child: StreamBuilder<Map<String, VehicleStatus>>(
-                            stream: _vehicleStatusService.watchVehicleStatuses(),
-                            builder: (context, snapshot) {
-                              final statuses = snapshot.data ?? {};
-                              final visibleFares = _allFares;
-                              final canBook = !_loading && !_estimating && visibleFares.isNotEmpty;
-
-                              return Container(
+                            GestureDetector(
+                              onTap: () => Navigator.pop(context),
+                              child: Container(
+                                width: 48,
+                                height: 48,
                                 decoration: BoxDecoration(
                                   color: Colors.white,
-                                  borderRadius: const BorderRadius.only(
-                                    topLeft: Radius.circular(32),
-                                    topRight: Radius.circular(32),
-                                  ),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: Colors.black.withValues(alpha: 0.1),
-                                      blurRadius: 20,
-                                      offset: const Offset(0, -5),
-                                    ),
-                                  ],
+                                  borderRadius: BorderRadius.circular(16),
+                                  boxShadow: JT.cardShadow,
+                                ),
+                                child: const Icon(Icons.arrow_back_rounded, color: JT.textPrimary),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(20),
+                                  boxShadow: JT.cardShadow,
                                 ),
                                 child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Container(
-                                      width: 48, height: 5,
-                                      margin: const EdgeInsets.symmetric(vertical: 14),
-                                      decoration: BoxDecoration(
-                                        color: Colors.grey.shade300,
-                                        borderRadius: BorderRadius.circular(10),
+                                    Text(
+                                      _bookingStepTitle,
+                                      style: GoogleFonts.poppins(
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.w600,
+                                        color: JT.textPrimary,
                                       ),
                                     ),
-                                    Expanded(
-                                      child: ListView(
-                                        controller: scrollController,
-                                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                                        children: [
-                                          _buildVehicleSelector(statuses),
-                                          const SizedBox(height: 24),
-                                          _buildPaymentSection(),
-                                          const SizedBox(height: 24),
-                                          Container(
-                                            decoration: BoxDecoration(
-                                              borderRadius: BorderRadius.circular(16),
-                                              boxShadow: [
-                                                BoxShadow(
-                                                  color: const Color(0xFF2D8CFF).withValues(alpha: 0.3),
-                                                  blurRadius: 15,
-                                                  offset: const Offset(0, 8),
-                                                ),
-                                              ],
-                                            ),
-                                            child: JT.gradientButton(
-                                              label: visibleFares.isEmpty ? 'No vehicles available' : 'Confirm Ride',
-                                              loading: _loading,
-                                              onTap: canBook ? () => _goToRideForWhomScreen() : () {},
-                                              radius: 16,
-                                              height: 60,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 20),
-                                        ],
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      _bookingStepSubtitle,
+                                      style: GoogleFonts.poppins(
+                                        fontSize: 12,
+                                        color: JT.textSecondary,
                                       ),
                                     ),
                                   ],
                                 ),
-                              );
-                            },
-                          ),
-                        );
-                      },
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        _buildStepProgressBar(),
+                      ],
                     ),
+                  ),
+                ),
+              ),
+              Align(
+                alignment: Alignment.bottomCenter,
+                child: Container(
+                  constraints: const BoxConstraints(maxHeight: 360),
+                  decoration: const BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                    boxShadow: [BoxShadow(color: Color(0x22000000), blurRadius: 24)],
+                  ),
+                  child: SafeArea(
+                    top: false,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Center(child: _buildSheetHandle()),
+                          const SizedBox(height: 16),
+                          Expanded(
+                            child: AnimatedSwitcher(
+                              duration: const Duration(milliseconds: 260),
+                              child: _buildStepBody(statuses, visibleFares),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          SizedBox(
+                            width: double.infinity,
+                            height: 56,
+                            child: ElevatedButton(
+                              onPressed: _loading
+                                  ? null
+                                  : () => _advanceBookingStep(
+                                        canContinueFromVehicle:
+                                            canContinueFromVehicle,
+                                        canContinueFromFare:
+                                            canContinueFromFare,
+                                      ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: JT.primary,
+                                foregroundColor: Colors.white,
+                                disabledBackgroundColor: JT.border,
+                                disabledForegroundColor: JT.textSecondary,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                                elevation: 0,
+                              ),
+                              child: AnimatedSwitcher(
+                                duration: const Duration(milliseconds: 220),
+                                transitionBuilder: (child, animation) =>
+                                    FadeTransition(
+                                  opacity: animation,
+                                  child: ScaleTransition(
+                                    scale: Tween<double>(
+                                      begin: 0.98,
+                                      end: 1,
+                                    ).animate(animation),
+                                    child: child,
+                                  ),
+                                ),
+                                child: _loading
+                                    ? const SizedBox(
+                                        key: ValueKey('booking_loading'),
+                                        width: 22,
+                                        height: 22,
+                                        child: CircularProgressIndicator(
+                                          color: Colors.white,
+                                          strokeWidth: 2.4,
+                                        ),
+                                      )
+                                    : Text(
+                                        key: ValueKey('booking_${_bookingStep.name}'),
+                                        _bookingStepCta(
+                                          canContinueFromVehicle:
+                                              canContinueFromVehicle,
+                                          canContinueFromFare:
+                                              canContinueFromFare,
+                                        ),
+                                        style: GoogleFonts.poppins(
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  String get _bookingStepTitle {
+    switch (_bookingStep) {
+      case _BookingStep.route:
+        return 'Choose your route';
+      case _BookingStep.vehicle:
+        return 'Choose your ride';
+      case _BookingStep.farePayment:
+        return 'Review fare & payment';
+      case _BookingStep.confirm:
+        return 'Confirm your trip';
+    }
+  }
+
+  String get _bookingStepSubtitle {
+    switch (_bookingStep) {
+      case _BookingStep.route:
+        return 'Verify pickup and destination before continuing.';
+      case _BookingStep.vehicle:
+        return 'Select one vehicle option that fits this trip.';
+      case _BookingStep.farePayment:
+        return 'Pick how you want to pay and check the final fare.';
+      case _BookingStep.confirm:
+        return 'Double-check your trip details before booking.';
+    }
+  }
+
+  String _bookingStepCta({
+    required bool canContinueFromVehicle,
+    required bool canContinueFromFare,
+  }) {
+    switch (_bookingStep) {
+      case _BookingStep.route:
+        return 'Continue';
+      case _BookingStep.vehicle:
+        return canContinueFromVehicle ? 'Choose Vehicle' : 'No Vehicles Available';
+      case _BookingStep.farePayment:
+        return canContinueFromFare ? 'Review Ride' : 'Please Wait';
+      case _BookingStep.confirm:
+        return 'Confirm Ride';
+    }
+  }
+
+  void _advanceBookingStep({
+    required bool canContinueFromVehicle,
+    required bool canContinueFromFare,
+  }) {
+    if (_loading) return;
+    HapticFeedback.selectionClick();
+    switch (_bookingStep) {
+      case _BookingStep.route:
+        setState(() => _bookingStep = _BookingStep.vehicle);
+        break;
+      case _BookingStep.vehicle:
+        if (canContinueFromVehicle) {
+          setState(() => _bookingStep = _BookingStep.farePayment);
+        }
+        break;
+      case _BookingStep.farePayment:
+        if (canContinueFromFare) {
+          setState(() => _bookingStep = _BookingStep.confirm);
+        }
+        break;
+      case _BookingStep.confirm:
+        HapticFeedback.mediumImpact();
+        _goToRideForWhomScreen();
+        break;
+    }
+  }
+
+  Widget _buildSheetHandle() {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 220),
+      width: 44,
+      height: 4,
+      decoration: BoxDecoration(
+        color: JT.border,
+        borderRadius: BorderRadius.circular(4),
+      ),
+    );
+  }
+
+  Widget _buildStepProgressBar() {
+    final steps = _BookingStep.values;
+    final current = steps.indexOf(_bookingStep);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: JT.cardShadow,
+      ),
+      child: Row(
+        children: List.generate(steps.length, (index) {
+          final isDone = index < current;
+          final isActive = index == current;
+          return Expanded(
+            child: Row(
+              children: [
+                Expanded(
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 220),
+                    height: 6,
+                    decoration: BoxDecoration(
+                      color: isDone || isActive ? JT.primary : JT.border,
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                  ),
+                ),
+                if (index < steps.length - 1) const SizedBox(width: 6),
+              ],
+            ),
+          );
+        }),
+      ),
+    );
+  }
+
+  Widget _buildStepBody(
+    Map<String, VehicleStatus> statuses,
+    List<MapEntry<int, Map<String, dynamic>>> visibleFares,
+  ) {
+    switch (_bookingStep) {
+      case _BookingStep.route:
+        return SingleChildScrollView(
+          key: const ValueKey('route'),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildStepSectionTitle('Route'),
+              const SizedBox(height: 12),
+              Container(
+                decoration: BoxDecoration(
+                  color: JT.surface,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: JT.border),
+                ),
+                child: Column(
+                  children: [
+                    _addressRow(Icons.circle_rounded, JT.primary, widget.pickup),
+                    const Divider(height: 1, indent: 52, endIndent: 16),
+                    _addressRow(Icons.location_on_rounded, JT.error, widget.destination),
                   ],
                 ),
               ),
+              const SizedBox(height: 16),
+              _buildInlineInfoCard(
+                icon: Icons.route_rounded,
+                title: '${_distanceKm.toStringAsFixed(1)} km route',
+                subtitle: 'Map stays visible while you choose the ride.',
+              ),
+            ],
+          ),
+        );
+      case _BookingStep.vehicle:
+        return SingleChildScrollView(
+          key: const ValueKey('vehicle'),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildStepSectionTitle('Vehicle selection'),
+              const SizedBox(height: 12),
+              _buildVehicleSelector(statuses),
+            ],
+          ),
+        );
+      case _BookingStep.farePayment:
+        return SingleChildScrollView(
+          key: const ValueKey('farePayment'),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildStepSectionTitle('Fare & payment'),
+              const SizedBox(height: 12),
+              if (_fare != null) _buildFareBreakdown(_fare!),
+              const SizedBox(height: 16),
+              _buildPaymentSection(),
+            ],
+          ),
+        );
+      case _BookingStep.confirm:
+        return SingleChildScrollView(
+          key: const ValueKey('confirm'),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildStepSectionTitle('Trip summary'),
+              const SizedBox(height: 12),
+              _buildInlineInfoCard(
+                icon: _iconForVehicle(_vehicleName),
+                title: _vehicleName,
+                subtitle: 'Estimated fare ₹${_finalFare.toStringAsFixed(0)} • ${_paymentMethod.toUpperCase()}',
+              ),
+              const SizedBox(height: 12),
+              _buildInlineInfoCard(
+                icon: Icons.alt_route_rounded,
+                title: _shortLocation(widget.pickup),
+                subtitle: _shortLocation(widget.destination),
+              ),
+              const SizedBox(height: 12),
+              _buildInlineInfoCard(
+                icon: _bookForSomeone ? Icons.person_rounded : Icons.person_outline_rounded,
+                title: _bookForSomeone
+                    ? (_passengerNameCtrl.text.trim().isEmpty ? 'Ride for someone else' : _passengerNameCtrl.text.trim())
+                    : 'Ride for yourself',
+                subtitle: _bookForSomeone
+                    ? (_passengerPhoneCtrl.text.trim().isEmpty ? 'Passenger details will be added next' : _passengerPhoneCtrl.text.trim())
+                    : 'You can edit rider details on the next step.',
+              ),
+            ],
+          ),
+        );
+    }
+  }
+
+  Widget _buildStepSectionTitle(String title) {
+    return Text(
+      title,
+      style: GoogleFonts.poppins(
+        fontSize: 16,
+        fontWeight: FontWeight.w600,
+        color: JT.textPrimary,
+      ),
+    );
+  }
+
+  Widget _buildInlineInfoCard({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+  }) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: JT.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: JT.border),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: JT.primary.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, color: JT.primary, size: 20),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: GoogleFonts.poppins(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: JT.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  subtitle,
+                  style: GoogleFonts.poppins(
+                    fontSize: 12,
+                    color: JT.textSecondary,
+                  ),
+                ),
+              ],
             ),
           ),
         ],
       ),
-      bottomNavigationBar: _buildBottomNav(),
     );
   }
 
@@ -1247,7 +1568,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
         const SizedBox(width: 8),
         Expanded(child: _payBtn('wallet', Icons.account_balance_wallet_rounded, 'Wallet')),
         const SizedBox(width: 8),
-        Expanded(child: _payBtn('upi', Icons.qr_code_scanner_rounded, 'UPI')),
+        Expanded(child: _payBtn('upi', Icons.qr_code_scanner_rounded, 'Online')),
       ]),
       if (_paymentMethod == 'wallet') ...[
         const SizedBox(height: 8),
@@ -1295,7 +1616,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
             const Icon(Icons.lock_rounded, color: _blue, size: 15),
             const SizedBox(width: 8),
             const Expanded(child: Text(
-              'Secure payment via Razorpay — UPI, Cards, Netbanking accepted',
+              'Secure payment via Razorpay — online payments accepted',
               style: TextStyle(fontSize: 12, color: JT.primary, fontWeight: FontWeight.w500),
             )),
           ]),
@@ -1334,7 +1655,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
             const SizedBox(height: 6),
             Text(
               label,
-              style: GoogleFonts.outfit(
+              style: GoogleFonts.poppins(
                 fontSize: 13,
                 fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
                 color: selected ? lavender : Colors.grey.shade600,
@@ -1528,7 +1849,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
             const SizedBox(height: 12),
             Text(
               'No vehicles available',
-              style: GoogleFonts.outfit(
+              style: GoogleFonts.poppins(
                 color: const Color(0xFF0F172A),
                 fontSize: 17,
                 fontWeight: FontWeight.w700,
@@ -1629,7 +1950,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
                           children: [
                             Text(
                               name,
-                              style: GoogleFonts.outfit(
+                              style: GoogleFonts.poppins(
                                 fontSize: 18, 
                                 fontWeight: FontWeight.w700, 
                                 color: const Color(0xFF1E293B)
@@ -1644,7 +1965,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
                                   borderRadius: BorderRadius.circular(6),
                                 ),
                                 child: Text('FASTEST', 
-                                  style: GoogleFonts.outfit(color: blueColor, fontSize: 9, fontWeight: FontWeight.w800)),
+                                  style: GoogleFonts.poppins(color: blueColor, fontSize: 9, fontWeight: FontWeight.w800)),
                               ),
                             ],
                           ],
@@ -1652,7 +1973,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
                         const SizedBox(height: 4),
                         Text(
                           subtitle,
-                          style: GoogleFonts.outfit(
+                          style: GoogleFonts.poppins(
                             color: isSelected ? selColor : const Color(0xFF64748B), 
                             fontSize: 13, 
                             fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400
@@ -1668,7 +1989,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
                     children: [
                       Text(
                         '₹${displayFare.toStringAsFixed(0)}',
-                        style: GoogleFonts.outfit(
+                        style: GoogleFonts.poppins(
                           fontSize: 22, 
                           fontWeight: FontWeight.w800, 
                           color: const Color(0xFF1E293B)
@@ -1986,6 +2307,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     );
   }
 
+  // ignore: unused_element
   Widget _headerAction(IconData icon) {
     return Container(
       width: 48,
@@ -2001,6 +2323,7 @@ class _BookingScreenState extends State<BookingScreen> with TickerProviderStateM
     );
   }
 
+  // ignore: unused_element
   Widget _buildBottomNav() {
     return Container(
       decoration: BoxDecoration(

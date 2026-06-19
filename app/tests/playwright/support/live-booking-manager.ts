@@ -80,11 +80,15 @@ export async function createManagedRideBooking(
   client: LiveClient,
   bookingKind: string,
   buildPayload: (session: MobileSession) => Record<string, unknown>,
+  preferredCustomer?: ManagedCustomer["session"] | ManagedCustomer,
 ) {
   await enforceGlobalBookingCooldown();
 
   const candidates = await getManagedCustomers(client);
-  const preferred = await pickCustomerForRideBooking(client, bookingKind);
+  const preferredPhone = extractPreferredCustomerPhone(preferredCustomer);
+  const preferred = preferredCustomer
+    ? candidates.find((candidate) => candidate.session.user.phone === preferredPhone) || await pickCustomerForRideBooking(client, bookingKind)
+    : await pickCustomerForRideBooking(client, bookingKind);
   const ordered = [
     preferred,
     ...candidates.filter((candidate) => candidate.session.user.phone !== preferred.session.user.phone),
@@ -111,15 +115,28 @@ export async function createManagedRideBooking(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const isRateLimited = /RATE_LIMIT_EXCEEDED|Too many bookings/i.test(message);
-      if (!isRateLimited) {
+      const hasActiveTrip = /ACTIVE_TRIP_EXISTS|active trip in progress/i.test(message);
+      if (!isRateLimited && !hasActiveTrip) {
         throw error;
       }
       lastError = error as Error;
-      await recordLiveNote(`Ride booking budget hit for ${candidate.session.user.phone} during ${bookingKind}; trying another QA customer.`);
+      await recordLiveNote(
+        hasActiveTrip
+          ? `Ride booking candidate ${candidate.session.user.phone} still has an active trip during ${bookingKind}; trying another QA customer.`
+          : `Ride booking budget hit for ${candidate.session.user.phone} during ${bookingKind}; trying another QA customer.`,
+      );
     }
   }
 
   throw lastError || new Error(`Unable to allocate a booking slot for ${bookingKind}.`);
+}
+
+function extractPreferredCustomerPhone(preferredCustomer?: ManagedCustomer["session"] | ManagedCustomer) {
+  if (!preferredCustomer) return null;
+  if ("session" in preferredCustomer) {
+    return preferredCustomer.session.user.phone;
+  }
+  return preferredCustomer.user.phone;
 }
 
 async function enforceGlobalBookingCooldown() {
