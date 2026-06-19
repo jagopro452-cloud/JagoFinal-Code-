@@ -9,3 +9,16 @@ app/test-results/
 
 # Local nested worktree used for production recovery history.
 jago-Updates-23-04-jago/
+
+# QA artifacts — exclude from release pushes
+app/qa-evidence/
+app/qa-temp/
+app/scratch/
+app/undefined/
+app/server-local*.log
+app/server-otp-cert.log
+app/server-local-cert.log
+deploy-worktree/
+clean-discovery-deploy/
+jago_app-main/
+jago-25-04-jagoupdate/
