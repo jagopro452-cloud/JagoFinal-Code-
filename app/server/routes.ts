@@ -7982,16 +7982,46 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       `);
       if (existing.rows.length) return res.status(409).json({ message: "Account already exists. Please login." });
       const passwordHash = await hashPassword(passwordStr);
-      const initialVerificationStatus = userType === "driver" ? "pending" : "approved";
-      const insertRes = await rawDb.execute(rawSql`
-        INSERT INTO users (full_name, name, phone, mobile, email, user_type, is_active, wallet_balance, password_hash, verification_status)
-        VALUES (${nameStr}, ${nameStr}, ${phoneStr}, ${phoneStr}, ${emailStr}, ${userType}, true, 0, ${passwordHash}, ${initialVerificationStatus})
-        RETURNING *
-      `);
-      // Set referral_code separately (handles DB where column may not exist yet)
-      const refCode = 'JAGOPRO' + phoneStr.slice(-6);
-      await rawDb.execute(rawSql`UPDATE users SET referral_code=${refCode} WHERE phone=${phoneStr} AND user_type=${userType}`).catch(dbCatch("db"));
-      const user = camelize(insertRes.rows[0]) as any;
+      const initialVerificationStatus = userType === "driver" ? "pending" : "verified";
+      let insertRow: any;
+      try {
+        const insertRes = await rawDb.execute(rawSql`
+          INSERT INTO users (full_name, phone, email, user_type, is_active, password_hash, verification_status)
+          VALUES (${nameStr}, ${phoneStr}, ${emailStr}, ${userType}, true, ${passwordHash}, ${initialVerificationStatus})
+          RETURNING *
+        `);
+        insertRow = insertRes.rows[0];
+      } catch (insertErr: any) {
+        const insertMsg = String(insertErr?.message || insertErr || "");
+        if (!/column|does not exist/i.test(insertMsg)) throw insertErr;
+        const insertRes = await rawDb.execute(rawSql`
+          INSERT INTO users (full_name, phone, user_type, is_active, password_hash)
+          VALUES (${nameStr}, ${phoneStr}, ${userType}, true, ${passwordHash})
+          RETURNING *
+        `);
+        insertRow = insertRes.rows[0];
+      }
+      const refCode = "JAGOPRO" + phoneStr.slice(-6);
+      await rawDb.execute(rawSql`
+        UPDATE users SET
+          name = COALESCE(NULLIF(name, ''), ${nameStr}),
+          mobile = COALESCE(NULLIF(mobile, ''), ${phoneStr}),
+          full_name = COALESCE(NULLIF(full_name, ''), ${nameStr}),
+          email = COALESCE(email, ${emailStr}),
+          wallet_balance = COALESCE(wallet_balance, 0),
+          verification_status = COALESCE(NULLIF(verification_status, ''), ${initialVerificationStatus}),
+          referral_code = COALESCE(NULLIF(referral_code, ''), ${refCode}),
+          updated_at = NOW()
+        WHERE id = ${String((insertRow as any).id)}::uuid
+      `).catch(dbCatch("db"));
+      if (userType === "customer") {
+        await rawDb.execute(rawSql`
+          INSERT INTO customer_profiles (user_id, created_at, updated_at)
+          VALUES (${String((insertRow as any).id)}::uuid, NOW(), NOW())
+          ON CONFLICT (user_id) DO NOTHING
+        `).catch(dbCatch("db"));
+      }
+      const user = camelize(insertRow) as any;
       const deviceId = String(req.body?.deviceId || req.get("x-device-id") || `cust-${crypto.randomUUID()}`).trim();
       const session = await issueAppSession(user.id, user.userType, {
         deviceId,
