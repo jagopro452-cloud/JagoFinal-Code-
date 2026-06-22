@@ -3806,12 +3806,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.post("/api/zones", requireAdminAuth, async (req, res) => {
     try {
+      const name = String(req.body?.name || "").trim();
+      if (!name) return res.status(400).json({ message: "Zone name is required" });
       if (req.body.coordinates !== undefined && !validateZoneCoordinates(req.body.coordinates)) {
         return res.status(400).json({ message: "Invalid zone coordinates ï¿½ must be a valid GeoJSON Polygon or MultiPolygon" });
       }
       const zone = await storage.createZone(req.body);
       res.status(201).json(zone);
     } catch (e: any) {
+      console.error("[zones] create failed:", formatDbError(e));
       res.status(500).json({ message: safeErrMsg(e) });
     }
   });

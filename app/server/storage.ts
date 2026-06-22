@@ -201,22 +201,71 @@ export class DatabaseStorage implements IStorage {
     await db.delete(vehicleCategories).where(eq(vehicleCategories.id, id));
   }
 
+  private mapZoneRow(row: any): Zone {
+    return {
+      id: String(row.id),
+      name: String(row.name || ""),
+      coordinates: row.coordinates ?? null,
+      latitude: row.latitude != null ? Number(row.latitude) : null,
+      longitude: row.longitude != null ? Number(row.longitude) : null,
+      radiusKm: row.radius_km != null ? Number(row.radius_km) : 5,
+      serviceType: String(row.service_type || "both"),
+      surgeFactor: row.surge_factor != null ? Number(row.surge_factor) : 1,
+      isActive: row.is_active !== false,
+      createdAt: row.created_at ? new Date(row.created_at) : null,
+    } as Zone;
+  }
+
   async getZones(): Promise<Zone[]> {
-    return db.select().from(zones).orderBy(zones.name);
+    const result = await db.execute(sql`
+      SELECT id, name, coordinates, latitude, longitude, radius_km, service_type, surge_factor, is_active, created_at
+      FROM zones
+      ORDER BY name
+    `);
+    return (result.rows as any[]).map((row) => this.mapZoneRow(row));
   }
 
   async createZone(data: Partial<Zone>): Promise<Zone> {
-    const [created] = await db.insert(zones).values(data as any).returning();
-    return created;
+    const body = data as any;
+    const result = await db.execute(sql`
+      INSERT INTO zones (name, coordinates, latitude, longitude, radius_km, service_type, surge_factor, is_active)
+      VALUES (
+        ${String(body.name || "").trim()},
+        ${body.coordinates ?? null},
+        ${body.latitude ?? null},
+        ${body.longitude ?? null},
+        ${body.radiusKm ?? body.radius_km ?? 5},
+        ${body.serviceType ?? body.service_type ?? "both"},
+        ${body.surgeFactor ?? body.surge_factor ?? 1},
+        ${body.isActive !== undefined ? !!body.isActive : true}
+      )
+      RETURNING id, name, coordinates, latitude, longitude, radius_km, service_type, surge_factor, is_active, created_at
+    `);
+    return this.mapZoneRow(result.rows[0]);
   }
 
   async updateZone(id: string, data: Partial<Zone>): Promise<Zone> {
-    const [updated] = await db.update(zones).set(data as any).where(eq(zones.id, id)).returning();
-    return updated;
+    const body = data as any;
+    const result = await db.execute(sql`
+      UPDATE zones
+      SET
+        name = COALESCE(${body.name != null ? String(body.name).trim() : null}, name),
+        coordinates = COALESCE(${body.coordinates !== undefined ? body.coordinates : null}, coordinates),
+        latitude = COALESCE(${body.latitude !== undefined ? body.latitude : null}, latitude),
+        longitude = COALESCE(${body.longitude !== undefined ? body.longitude : null}, longitude),
+        radius_km = COALESCE(${body.radiusKm !== undefined ? body.radiusKm : (body.radius_km !== undefined ? body.radius_km : null)}, radius_km),
+        service_type = COALESCE(${body.serviceType ?? body.service_type ?? null}, service_type),
+        surge_factor = COALESCE(${body.surgeFactor !== undefined ? body.surgeFactor : (body.surge_factor !== undefined ? body.surge_factor : null)}, surge_factor),
+        is_active = COALESCE(${body.isActive !== undefined ? !!body.isActive : null}, is_active)
+      WHERE id = ${id}::uuid
+      RETURNING id, name, coordinates, latitude, longitude, radius_km, service_type, surge_factor, is_active, created_at
+    `);
+    if (!result.rows.length) throw new Error("Zone not found");
+    return this.mapZoneRow(result.rows[0]);
   }
 
   async deleteZone(id: string): Promise<void> {
-    await db.delete(zones).where(eq(zones.id, id));
+    await db.execute(sql`DELETE FROM zones WHERE id = ${id}::uuid`);
   }
 
   async getTripFares(): Promise<any[]> {
