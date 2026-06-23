@@ -8,6 +8,7 @@
 import { db as rawDb } from "./db";
 import { sql as rawSql } from "drizzle-orm";
 import { assertSchemaObjectsOrThrow } from "./schema-health";
+import { getZoneAtLocation, serviceMatchesZoneType } from "./zone-service";
 
 // ════════════════════════════════════════════════════════════════════════════
 //  DB TABLE INIT
@@ -79,63 +80,68 @@ export interface DynamicService {
   revenueModel: string;
 }
 
+export interface LocationServicesResult {
+  services: DynamicService[];
+  inZone: boolean;
+  zoneId: string | null;
+  zoneName: string | null;
+  message: string | null;
+}
+
 /**
  * Get services available at a given location.
- * Falls back to globally active services if no city match.
+ * Only returns services when lat/lng is inside an active admin zone polygon.
  */
 export async function getServicesForLocation(
   lat?: number, lng?: number
-): Promise<{ services: DynamicService[]; city: string | null }> {
-  let cityName: string | null = null;
+): Promise<LocationServicesResult> {
+  const empty: LocationServicesResult = {
+    services: [],
+    inZone: false,
+    zoneId: null,
+    zoneName: null,
+    message: "We are coming soon to your area. JAGO services are available only inside configured service zones.",
+  };
 
-  if (lat && lng) {
-    const city = await detectCity(lat, lng);
-    cityName = city?.cityName || null;
+  if (!lat || !lng || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return { ...empty, message: "Enable location to see services available in your area." };
   }
 
-  let query;
-  if (cityName) {
-    // Get services active in this city
-    query = rawSql`
-      SELECT ps.service_key as key, ps.service_name as name, ps.icon, ps.color,
-        ps.description, COALESCE(ps.short_description, '') as short_description,
-        COALESCE(ps.image_url, '') as image_url, COALESCE(ps.eta_label, '') as eta_label,
-        ps.service_category as category, ps.revenue_model
-      FROM platform_services ps
-      INNER JOIN city_services cs ON cs.service_key = ps.service_key
-      WHERE ps.service_status = 'active'
-        AND cs.city_name = ${cityName}
-        AND cs.is_active = true
-      ORDER BY ps.sort_order ASC
-    `;
-  } else {
-    // No city match — return globally active services
-    query = rawSql`
-      SELECT service_key as key, service_name as name, icon, color,
-        description, COALESCE(short_description, '') as short_description,
-        COALESCE(image_url, '') as image_url, COALESCE(eta_label, '') as eta_label,
-        service_category as category, revenue_model
-      FROM platform_services
-      WHERE service_status = 'active'
-      ORDER BY sort_order ASC
-    `;
-  }
+  const zone = await getZoneAtLocation(lat, lng);
+  if (!zone) return empty;
 
-  const r = await rawDb.execute(query);
-  const services: DynamicService[] = (r.rows as any[]).map(row => ({
-    key: row.key,
-    name: row.name,
-    icon: row.icon || '🚗',
-    color: row.color || '#2F80ED',
-    description: row.description || '',
-    shortDescription: row.short_description || '',
-    imageUrl: row.image_url || '',
-    etaLabel: row.eta_label || '',
-    category: row.category || 'rides',
-    revenueModel: row.revenue_model || 'commission',
-  }));
+  const r = await rawDb.execute(rawSql`
+    SELECT service_key as key, service_name as name, icon, color,
+      description, COALESCE(short_description, '') as short_description,
+      COALESCE(image_url, '') as image_url, COALESCE(eta_label, '') as eta_label,
+      service_category as category, revenue_model
+    FROM platform_services
+    WHERE service_status = 'active'
+    ORDER BY sort_order ASC
+  `);
 
-  return { services, city: cityName };
+  const services: DynamicService[] = (r.rows as any[])
+    .filter(row => serviceMatchesZoneType(row.category, row.key, zone.serviceType))
+    .map(row => ({
+      key: row.key,
+      name: row.name,
+      icon: row.icon || '🚗',
+      color: row.color || '#2D8CFF',
+      description: row.description || '',
+      shortDescription: row.short_description || '',
+      imageUrl: row.image_url || '',
+      etaLabel: row.eta_label || '',
+      category: row.category || 'rides',
+      revenueModel: row.revenue_model || 'commission',
+    }));
+
+  return {
+    services,
+    inZone: true,
+    zoneId: zone.id,
+    zoneName: zone.name,
+    message: services.length ? null : "Services in this zone are being configured. Please check back soon.",
+  };
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -165,42 +171,25 @@ export interface ParcelVehicleType {
  */
 export async function getParcelVehiclesForLocation(
   lat?: number, lng?: number
-): Promise<{ vehicles: ParcelVehicleType[]; city: string | null }> {
-  let cityName: string | null = null;
-
-  if (lat && lng) {
-    const city = await detectCity(lat, lng);
-    cityName = city?.cityName || null;
+): Promise<{ vehicles: ParcelVehicleType[]; city: string | null; inZone: boolean }> {
+  if (!lat || !lng) {
+    return { vehicles: [], city: null, inZone: false };
   }
 
-  let query;
-  if (cityName) {
-    query = rawSql`
-      SELECT pv.vehicle_key as key, pv.name, pv.subtitle, pv.icon,
-        COALESCE(pv.image_url, '') as image_url, pv.capacity_label,
-        pv.max_weight_kg, pv.suitable_items, pv.accent_color,
-        pv.base_fare, pv.per_km, pv.per_kg, pv.load_charge,
-        COALESCE(cpv.eta_minutes, 5) as eta_minutes
-      FROM parcel_vehicle_types pv
-      LEFT JOIN city_parcel_vehicles cpv
-        ON cpv.vehicle_key = pv.vehicle_key AND cpv.city_name = ${cityName}
-      WHERE pv.is_active = true
-        AND (cpv.is_active IS NULL OR cpv.is_active = true)
-      ORDER BY pv.sort_order ASC
-    `;
-  } else {
-    query = rawSql`
-      SELECT vehicle_key as key, name, subtitle, icon,
-        COALESCE(image_url, '') as image_url, capacity_label,
-        max_weight_kg, suitable_items, accent_color,
-        base_fare, per_km, per_kg, load_charge, 5 as eta_minutes
-      FROM parcel_vehicle_types
-      WHERE is_active = true
-      ORDER BY sort_order ASC
-    `;
+  const zone = await getZoneAtLocation(lat, lng);
+  if (!zone || !serviceMatchesZoneType("parcel", "parcel_delivery", zone.serviceType)) {
+    return { vehicles: [], city: null, inZone: false };
   }
 
-  const r = await rawDb.execute(query);
+  const r = await rawDb.execute(rawSql`
+    SELECT vehicle_key as key, name, subtitle, icon,
+      COALESCE(image_url, '') as image_url, capacity_label,
+      max_weight_kg, suitable_items, accent_color,
+      base_fare, per_km, per_kg, load_charge, 5 as eta_minutes
+    FROM parcel_vehicle_types
+    WHERE is_active = true
+    ORDER BY sort_order ASC
+  `);
   const vehicles: ParcelVehicleType[] = (r.rows as any[]).map(row => ({
     key: row.key,
     name: row.name,
@@ -210,7 +199,7 @@ export async function getParcelVehiclesForLocation(
     capacityLabel: row.capacity_label || '',
     maxWeightKg: Number(row.max_weight_kg) || 10,
     suitableItems: row.suitable_items || '',
-    accentColor: row.accent_color || '#2F7BFF',
+    accentColor: row.accent_color || '#16A34A',
     baseFare: Number(row.base_fare) || 40,
     perKm: Number(row.per_km) || 12,
     perKg: Number(row.per_kg) || 4,
@@ -218,7 +207,7 @@ export async function getParcelVehiclesForLocation(
     etaMinutes: Number(row.eta_minutes) || 5,
   }));
 
-  return { vehicles, city: cityName };
+  return { vehicles, city: zone.name, inZone: true };
 }
 
 /**
@@ -341,7 +330,7 @@ export async function getDriverEligibleServices(
       key: row.key, name: row.name, subtitle: row.subtitle || '', icon: row.icon || '📦',
       imageUrl: row.image_url || '', capacityLabel: row.capacity_label || '',
       maxWeightKg: Number(row.max_weight_kg) || 10, suitableItems: row.suitable_items || '',
-      accentColor: row.accent_color || '#2F7BFF', baseFare: Number(row.base_fare) || 40,
+      accentColor: row.accent_color || '#16A34A', baseFare: Number(row.base_fare) || 40,
       perKm: Number(row.per_km) || 12, perKg: Number(row.per_kg) || 4,
       loadCharge: Number(row.load_charge) || 0, etaMinutes: Number(row.eta_minutes) || 5,
     }));
@@ -355,20 +344,36 @@ export async function getDriverEligibleServices(
 // ════════════════════════════════════════════════════════════════════════════
 
 export async function getCitiesWithServices(): Promise<any[]> {
-  const r = await rawDb.execute(rawSql`
-    SELECT cs.city_name, cs.city_lat, cs.city_lng, cs.radius_km,
-      json_agg(json_build_object(
-        'service_key', cs.service_key,
-        'is_active', cs.is_active,
-        'service_name', COALESCE(ps.service_name, cs.service_key),
-        'icon', COALESCE(ps.icon, '🚗')
-      ) ORDER BY ps.sort_order) as services
-    FROM city_services cs
-    LEFT JOIN platform_services ps ON ps.service_key = cs.service_key
-    GROUP BY cs.city_name, cs.city_lat, cs.city_lng, cs.radius_km
-    ORDER BY cs.city_name
-  `);
-  return r.rows as any[];
+  try {
+    const r = await rawDb.execute(rawSql`
+      SELECT cs.city_name, cs.city_lat, cs.city_lng, cs.radius_km,
+        json_agg(json_build_object(
+          'service_key', cs.service_key,
+          'is_active', cs.is_active,
+          'service_name', COALESCE(ps.service_name, cs.service_key),
+          'icon', COALESCE(ps.icon, '🚗')
+        ) ORDER BY ps.sort_order) as services
+      FROM city_services cs
+      LEFT JOIN platform_services ps ON ps.service_key = cs.service_key
+      GROUP BY cs.city_name, cs.city_lat, cs.city_lng, cs.radius_km
+      ORDER BY cs.city_name
+    `);
+    return r.rows as any[];
+  } catch {
+    const r = await rawDb.execute(rawSql`
+      SELECT city_name, city_lat, city_lng, radius_km,
+        json_agg(json_build_object(
+          'service_key', service_key,
+          'is_active', is_active,
+          'service_name', service_key,
+          'icon', '🚗'
+        ) ORDER BY service_key) as services
+      FROM city_services
+      GROUP BY city_name, city_lat, city_lng, radius_km
+      ORDER BY city_name
+    `);
+    return r.rows as any[];
+  }
 }
 
 export async function addCityService(
@@ -439,7 +444,7 @@ export async function addParcelVehicle(data: Record<string, any>): Promise<any> 
     VALUES
       (${data.vehicle_key}, ${data.name}, ${data.subtitle || ''}, ${data.icon || '📦'},
        ${data.image_url || ''}, ${data.capacity_label || ''}, ${data.max_weight_kg || 10},
-       ${data.suitable_items || ''}, ${data.accent_color || '#2F7BFF'},
+       ${data.suitable_items || ''}, ${data.accent_color || '#16A34A'},
        ${data.base_fare || 40}, ${data.per_km || 12}, ${data.per_kg || 4},
        ${data.load_charge || 0}, ${data.is_active !== false}, ${data.sort_order || 99})
     RETURNING *

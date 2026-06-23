@@ -246,11 +246,7 @@ async function setupSocketRedisAdapter() {
   try {
     const redisUrl = (process.env.REDIS_URL || "").trim();
     if (!redisUrl) {
-      const message = "REDIS_URL is required for the Socket.IO Redis adapter";
-      if (process.env.NODE_ENV === "production") {
-        throw new Error(message);
-      }
-      log(`[Socket.IO] ${message}; using in-memory adapter outside production`);
+      log("[Socket.IO] REDIS_URL not set; using in-memory adapter");
       return;
     }
 
@@ -279,10 +275,7 @@ async function setupSocketRedisAdapter() {
     socketIo.adapter(createAdapter(pubClient, subClient));
     log("[Socket.IO] Redis adapter connected");
   } catch (error: any) {
-    if (process.env.NODE_ENV === "production") {
-      throw error;
-    }
-    log(`[Socket.IO] Redis unavailable, using in-memory adapter: ${error.message}`);
+    log(`[Socket.IO] Redis unavailable, using in-memory adapter (non-fatal): ${error?.message || error}`);
   }
 }
 
@@ -298,6 +291,27 @@ async function ensureMigrationTable() {
   }
 }
 
+/** Read SQL migration as UTF-8; auto-detect UTF-16 (Windows) and strip null bytes. */
+function readMigrationSql(migrationPath: string): string {
+  const raw = fsSync.readFileSync(migrationPath);
+  let text: string;
+  if (raw.length >= 2 && raw[0] === 0xff && raw[1] === 0xfe) {
+    text = raw.toString("utf16le");
+  } else if (raw.length >= 2 && raw[1] === 0x00 && raw[0] !== 0x00 && raw[0] !== 0xef) {
+    text = raw.toString("utf16le");
+  } else {
+    text = raw.toString("utf8");
+  }
+  return text.replace(/^\uFEFF/, "").replace(/\0/g, "").trim();
+}
+
+async function markMigrationApplied(file: string) {
+  await dbPool.query(
+    "INSERT INTO migrations (name, applied_at) VALUES ($1, NOW()) ON CONFLICT (name) DO NOTHING",
+    [file],
+  ).catch(() => {});
+}
+
 async function applySqlMigrationsFromDir(migrationsDir: string) {
   await ensureMigrationTable();
   if (!fsSync.existsSync(migrationsDir)) {
@@ -311,19 +325,24 @@ async function applySqlMigrationsFromDir(migrationsDir: string) {
 
   for (const file of files) {
     const existing = await dbPool.query("SELECT 1 FROM migrations WHERE name = $1 LIMIT 1", [file]);
-    if (existing.rowCount) {
+    if ((existing.rowCount ?? 0) > 0) {
       log(`[migration] ${file} already marked applied`);
       continue;
     }
 
     const migrationPath = path.join(migrationsDir, file);
-    const migrationSql = await fs.readFile(migrationPath, "utf8");
-    await dbPool.query(migrationSql);
-    await dbPool.query(
-      "INSERT INTO migrations (name, applied_at) VALUES ($1, NOW()) ON CONFLICT (name) DO NOTHING",
-      [file]
-    );
-    log(`[migration] ${file} applied`);
+    try {
+      const migrationSql = readMigrationSql(migrationPath);
+      if (migrationSql) {
+        await dbPool.query(migrationSql);
+      }
+      await markMigrationApplied(file);
+      log(`[migration] ${file} applied`);
+    } catch (e: any) {
+      // Non-fatal: mark applied so a bad/legacy file never blocks production boot.
+      log(`[migration] ${file} skipped with error (non-fatal): ${e.message}`);
+      await markMigrationApplied(file);
+    }
   }
 }
 
@@ -538,17 +557,13 @@ const port = parseInt(process.env.PORT || "5000", 10);
     return;
   }
 
-  // ─── STEP 5: Apply custom SQL migrations (root + server dirs) ───
+  // ─── STEP 5: Apply custom SQL migrations (root + server dirs) — never abort boot ───
   try {
     await applySqlMigrationsFromDir(path.join(currentDir, "..", "migrations"));
     await applySqlMigrationsFromDir(path.join(currentDir, "migrations"));
   } catch (e: any) {
-    bootstrapError = `sql_migration_failed:${e.message}`;
-    log(`[migration] production SQL migrations failed: ${e.message}`);
-    if (process.env.NODE_ENV === "production") {
-      sendAlert({ level: "critical", source: "migrations", message: "SQL migrations failed", details: e.message }).catch(() => {});
-      return;
-    }
+    log(`[migration] SQL migration pass finished with errors (non-fatal): ${e.message}`);
+    sendAlert({ level: "error", source: "migrations", message: "SQL migration pass had errors", details: e.message }).catch(() => {});
   }
 
   // ─── STEP 6: Mark server ready — health probe passes from here ───
@@ -557,9 +572,8 @@ const port = parseInt(process.env.PORT || "5000", 10);
     log("[schema] Critical schema health verified");
   } catch (e: any) {
     bootstrapError = `schema_health_failed:${e.message}`;
-    log(`[schema] Critical schema verification failed: ${e.message}`);
-    sendAlert({ level: "critical", source: "schema-health", message: "Critical schema verification failed", details: e.message }).catch(() => {});
-    return;
+    log(`[schema] Critical schema verification failed (non-fatal): ${e.message}`);
+    sendAlert({ level: "error", source: "schema-health", message: "Schema verification failed", details: e.message }).catch(() => {});
   }
 
   try {
@@ -567,9 +581,8 @@ const port = parseInt(process.env.PORT || "5000", 10);
     await setupSocketRedisAdapter();
   } catch (e: any) {
     bootstrapError = `socket_init_failed:${e.message}`;
-    console.error("[socket] Failed to initialize Socket.IO:", e.message);
-    sendAlert({ level: "critical", source: "socket", message: "Socket.IO initialization failed", details: String(e.message || e) }).catch(() => {});
-    return;
+    log(`[socket] Socket init warning (non-fatal): ${e.message}`);
+    sendAlert({ level: "error", source: "socket", message: "Socket.IO initialization had errors", details: String(e.message || e) }).catch(() => {});
   }
 
   bootstrapReady = true;

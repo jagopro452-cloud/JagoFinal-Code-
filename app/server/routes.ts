@@ -197,6 +197,8 @@ import {
   updateParcelVehicle,
   addParcelVehicle,
 } from "./dynamic-services";
+import { detectZoneId, getZoneAtLocation } from "./zone-service";
+import { normalizeGender } from "./gender-matching";
 import { registerRollingPoolRoutes } from "./rolling-pool";
 import { ensureOutstationPoolV2Schema, registerOutstationPoolV2Routes } from "./outstation-pool-v2";
 import {
@@ -204,7 +206,7 @@ import {
   isDriverEligibleForDispatch,
   resolveDispatchRequirementsFromTrip,
 } from "./dispatch-eligibility";
-import { assertDriverCanAcceptRideTrip } from "./revenue-policy";
+import { assertDriverCanAcceptRideTrip, enforceDriverRevenuePolicy } from "./revenue-policy";
 import {
   startAIMobilityBrain,
   getCurrentMetrics,
@@ -692,44 +694,6 @@ function pointInPolygon(lat: number, lng: number, ring: number[][]): boolean {
     if (((yi > lat) !== (yj > lat)) && (lng < ((xj - xi) * (lat - yi) / (yj - yi) + xi))) inside = !inside;
   }
   return inside;
-}
-
-/** Auto-detect which DB zone a lat/lng falls inside. Returns zone UUID or null.
- *  Pass 1: polygon (GeoJSON) ï¿½ exact boundary check.
- *  Pass 2: radius fallback ï¿½ if zone has center lat/lng set, check haversine distance = radius_km.
- */
-async function detectZoneId(lat: number, lng: number): Promise<string | null> {
-  if (!lat || !lng) return null;
-  try {
-    const zones = await rawDb.execute(rawSql`
-      SELECT id, coordinates, latitude, longitude, radius_km FROM zones WHERE is_active=true
-    `);
-    // Pass 1: polygon-based detection (most accurate)
-    for (const z of zones.rows as any[]) {
-      if (!z.coordinates) continue;
-      try {
-        const geo = JSON.parse(z.coordinates);
-        if (geo.type === 'Polygon' && geo.coordinates?.[0]) {
-          if (pointInPolygon(lat, lng, geo.coordinates[0])) return z.id as string;
-        } else if (geo.type === 'MultiPolygon') {
-          for (const poly of geo.coordinates) {
-            if (poly?.[0] && pointInPolygon(lat, lng, poly[0])) return z.id as string;
-          }
-        }
-      } catch { }
-    }
-    // Pass 2: radius-based fallback for zones without polygon
-    for (const z of zones.rows as any[]) {
-      if (z.coordinates) continue; // already checked in pass 1
-      const cLat = Number(z.latitude);
-      const cLng = Number(z.longitude);
-      if (!cLat || !cLng) continue;
-      const d = haversineKm(lat, lng, cLat, cLng);
-      const r = Number(z.radius_km || 5);
-      if (d <= r) return z.id as string;
-    }
-  } catch { }
-  return null;
 }
 
 function computeEtaMinutes(distanceKm: number, avgSpeedKmph = 25): number {
@@ -2711,7 +2675,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         rawDb.execute(rawSql`
           SELECT COUNT(*)::int AS active_subscriptions
           FROM driver_subscriptions
-          WHERE status = 'active' AND end_date >= CURRENT_DATE
+          WHERE COALESCE(status, CASE WHEN is_active = true THEN 'active' ELSE 'inactive' END) = 'active'
+            AND (end_date IS NULL OR end_date >= CURRENT_DATE)
         `).catch(() => ({ rows: [{ active_subscriptions: 0 }] as any[] })),
         // Carpool stats
         rawDb.execute(rawSql`
@@ -5011,6 +4976,31 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           name: String(row.name || "Discount Offer"),
           amount: discountAmount,
           originalAmount: discountAmount,
+        };
+      }
+    }
+
+    // Monthly pass: apply plan discount when rides remain
+    const passR = await rawDb.execute(rawSql`
+      SELECT plan_name, rides_total, rides_used, discount_pct
+      FROM monthly_passes
+      WHERE user_id=${userId}::uuid
+        AND is_active=true
+        AND valid_until >= CURRENT_DATE
+        AND rides_used < rides_total
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).catch(() => ({ rows: [] as any[] }));
+    if (passR.rows.length) {
+      const pass = passR.rows[0] as any;
+      const pct = parseFloat(pass.discount_pct) || 15;
+      const passAmount = normalizeMoney(normalizedFare * pct / 100);
+      if (passAmount > 0 && (!best || passAmount > best.amount)) {
+        best = {
+          source: "monthly_pass",
+          name: String(pass.plan_name || "Monthly Pass"),
+          amount: passAmount,
+          originalAmount: passAmount,
         };
       }
     }
@@ -7526,31 +7516,49 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // GET matching algorithm stats
   app.get("/api/matching/stats", async (_req, res) => {
     try {
-      const r = await rawDb.execute(rawSql`
-        SELECT
-          COUNT(*) FILTER (WHERE user_type='driver' AND gender='female') as female_drivers,
-          COUNT(*) FILTER (WHERE user_type='driver' AND gender='male') as male_drivers,
-          COUNT(*) FILTER (WHERE user_type='customer' AND gender='female') as female_customers,
-          COUNT(*) FILTER (WHERE user_type='customer' AND prefer_female_driver=true) as prefer_female_customers
-        FROM users WHERE user_type IN ('driver','customer')
-      `);
+      let statsRow: any = {};
+      try {
+        const r = await rawDb.execute(rawSql`
+          SELECT
+            COUNT(*) FILTER (WHERE user_type='driver' AND gender='female') as female_drivers,
+            COUNT(*) FILTER (WHERE user_type='driver' AND gender='male') as male_drivers,
+            COUNT(*) FILTER (WHERE user_type='customer' AND gender='female') as female_customers,
+            COUNT(*) FILTER (WHERE user_type='customer' AND prefer_female_driver=true) as prefer_female_customers
+          FROM users WHERE user_type IN ('driver','customer')
+        `);
+        statsRow = r.rows[0] || {};
+      } catch {
+        const r = await rawDb.execute(rawSql`
+          SELECT
+            COUNT(*) FILTER (WHERE user_type='driver' AND gender='female') as female_drivers,
+            COUNT(*) FILTER (WHERE user_type='driver' AND gender='male') as male_drivers,
+            COUNT(*) FILTER (WHERE user_type='customer' AND gender='female') as female_customers,
+            0::int as prefer_female_customers
+          FROM users WHERE user_type IN ('driver','customer')
+        `);
+        statsRow = r.rows[0] || {};
+      }
       const settings = await rawDb.execute(rawSql`
         SELECT key_name, value FROM business_settings WHERE settings_type='safety_settings'
-      `);
+      `).catch(() => ({ rows: [] as any[] }));
       const settingsMap = Object.fromEntries((settings.rows as any[]).map((s: any) => [s.key_name, s.value]));
-      res.json({ stats: camelize(r.rows[0] || {}), settings: settingsMap });
+      res.json({ stats: camelize(statsRow), settings: settingsMap });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
   // GET available drivers with matching algorithm applied
   app.get("/api/matching/drivers", async (req, res) => {
     try {
-      const { customerGender, vehicleCategoryId } = req.query;
+      const { customerGender, vehicleCategoryId, preferredGender, preferFemaleDriver } = req.query;
       const settings = await rawDb.execute(rawSql`
         SELECT key_name, value FROM business_settings WHERE key_name IN ('female_to_female_matching','vehicle_type_matching')
       `);
       const sMap = Object.fromEntries((settings.rows as any[]).map((s: any) => [s.key_name, s.value]));
-      const femalePriority = sMap['female_to_female_matching'] === '1' && customerGender === 'female';
+      const femalePriority = sMap['female_to_female_matching'] === '1' && (
+        customerGender === 'female'
+        || preferredGender === 'female'
+        || preferFemaleDriver === 'true'
+      );
       const vehicleMatch = sMap['vehicle_type_matching'] === '1' && vehicleCategoryId;
 
       let r;
@@ -7963,7 +7971,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // -- PASSWORD-BASED REGISTER -----------------------------------------------
   app.post("/api/app/register", loginLimiter, async (req, res) => {
     try {
-      const { phone, password, fullName, userType = "customer", email } = req.body;
+      const { phone, password, fullName, userType = "customer", email, gender: rawGender } = req.body;
       if (!phone || !password || !fullName) return res.status(400).json({ message: "Phone, password and name are required" });
       if (!['customer', 'driver'].includes(userType)) return res.status(400).json({ message: "Invalid user type" });
       const phoneStr = String(phone).replace(/\D/g, "").slice(-10);
@@ -7976,6 +7984,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/.test(passwordStr)) {
         return res.status(400).json({ message: "Password must be at least 8 characters and include upper, lower and number" });
       }
+      const gender = normalizeGender(rawGender);
+      const preferFemaleDriver = gender === "female" || req.body.preferFemaleDriver === true;
       const existing = await rawDb.execute(rawSql`
         SELECT id
         FROM users
@@ -8022,6 +8032,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           INSERT INTO customer_profiles (user_id, created_at, updated_at)
           VALUES (${String((insertRow as any).id)}::uuid, NOW(), NOW())
           ON CONFLICT (user_id) DO NOTHING
+        `).catch(dbCatch("db"));
+        if (gender) {
+          await rawDb.execute(rawSql`
+            UPDATE users SET gender = ${gender}, prefer_female_driver = ${preferFemaleDriver}, updated_at = NOW()
+            WHERE id = ${String((insertRow as any).id)}::uuid
+          `).catch(dbCatch("db"));
+          if (preferFemaleDriver) {
+            await rawDb.execute(rawSql`
+              INSERT INTO user_preferences (user_id, preferred_gender, updated_at)
+              VALUES (${String((insertRow as any).id)}::uuid, 'female', NOW())
+              ON CONFLICT (user_id) DO UPDATE SET preferred_gender = 'female', updated_at = NOW()
+            `).catch(dbCatch("db"));
+          }
+        }
+      } else if (userType === "driver" && gender) {
+        await rawDb.execute(rawSql`
+          UPDATE users SET gender = ${gender}, updated_at = NOW()
+          WHERE id = ${String((insertRow as any).id)}::uuid
         `).catch(dbCatch("db"));
       }
       const user = camelize(insertRow) as any;
@@ -10649,6 +10677,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ).catch(() => null);
         if (automaticDiscount && automaticDiscount.amount > 0) {
           discountAmount = automaticDiscount.amount;
+        }
+        if (automaticDiscount?.source === "monthly_pass") {
+          await rawDb.execute(rawSql`
+            UPDATE monthly_passes
+            SET rides_used = rides_used + 1
+            WHERE user_id=${customer.id}::uuid
+              AND is_active=true
+              AND valid_until >= CURRENT_DATE
+              AND rides_used < rides_total
+          `).catch(dbCatch("db"));
         }
       }
       const finalFareAfterDiscount = Math.max(0, computedFare - discountAmount);
@@ -13854,7 +13892,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // Accept both dateOfBirth (camelCase) and dob (Flutter sends 'dob')
       const dateOfBirth = req.body.dateOfBirth || req.body.dob || null;
       const { city, vehicleBrand, vehicleColor, vehicleYear, licenseNumber, licenseExpiry,
-        vehicleNumber, vehicleModel, vehicleType, selfieImage } = req.body;
+        vehicleNumber, vehicleModel, vehicleType, selfieImage, gender: rawGender } = req.body;
       // Accept both 'name' (Flutter) and 'fullName' for driver full name update
       const fullName = req.body.fullName || req.body.name || null;
       const password = req.body.password || null;
@@ -13875,6 +13913,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         suv: 'suv',
       };
       const rideServiceKey = rideServiceByVehicle[canonicalVehicleType] || null;
+      const driverGender = normalizeGender(rawGender);
       const canCarryParcel = ['bike', 'auto'].includes(canonicalVehicleType);
       const serviceEligibility = [
         ...(rideServiceKey ? [rideServiceKey] : []),
@@ -13905,6 +13944,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           license_expiry = COALESCE(${licenseExpiry || null}, license_expiry),
           vehicle_number = COALESCE(${vehicleNumber || null}, vehicle_number),
           vehicle_model = COALESCE(${vehicleModel || null}, vehicle_model),
+          gender = COALESCE(${driverGender || null}, gender),
           selfie_image = COALESCE(${selfieImage || null}, selfie_image),
           password_hash = COALESCE(${passwordHash || null}, password_hash),
           verification_status = CASE WHEN user_type='driver' AND verification_status NOT IN ('approved', 'rejected') THEN 'pending' ELSE verification_status END,
@@ -15018,6 +15058,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     try {
       const user = await requireAppAuth(req, res); if (!user) return;
       const { quietRide, acPreferred, musicOff, wheelchairAccessible, extraLuggage, preferredGender } = req.body;
+      const preferFemale = String(preferredGender || "").toLowerCase() === "female";
       await rawDb.execute(rawSql`
         INSERT INTO user_preferences (user_id, quiet_ride, ac_preferred, music_off, wheelchair_accessible, extra_luggage, preferred_gender)
         VALUES (${user.id}::uuid, ${!!quietRide}, ${acPreferred !== false}, ${!!musicOff}, ${!!wheelchairAccessible}, ${!!extraLuggage}, ${preferredGender || 'any'})
@@ -15026,6 +15067,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           wheelchair_accessible=${!!wheelchairAccessible}, extra_luggage=${!!extraLuggage},
           preferred_gender=${preferredGender || 'any'}, updated_at=NOW()
       `);
+      await rawDb.execute(rawSql`
+        UPDATE users SET prefer_female_driver = ${preferFemale}, updated_at = NOW()
+        WHERE id = ${user.id}::uuid
+      `).catch(dbCatch("db"));
       res.json({ success: true, message: "Preferences saved! Applied to your next ride." });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
@@ -15096,9 +15141,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   // 5. MONTHLY PASS
   // ??????????????????????????????????????????????????????????????????
   const MONTHLY_PLANS = [
-    { name: 'JAGO Pro Basic', rides: 20, price: 699, discount: '15%' },
-    { name: 'JAGO Pro Plus', rides: 40, price: 1199, discount: '25%' },
-    { name: 'JAGO Pro', rides: 80, price: 1999, discount: '35%' },
+    { name: 'JAGO Pro Basic', rides: 20, price: 699, discountPct: 15, discount: '15%' },
+    { name: 'JAGO Pro Plus', rides: 40, price: 1199, discountPct: 25, discount: '25%' },
+    { name: 'JAGO Pro', rides: 80, price: 1999, discountPct: 35, discount: '35%' },
   ];
 
   app.get("/api/app/customer/monthly-pass", async (req, res) => {
@@ -15130,8 +15175,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       await rawDb.execute(rawSql`UPDATE users SET wallet_balance = wallet_balance - ${plan.price} WHERE id=${user.id}::uuid`);
       await rawDb.execute(rawSql`UPDATE monthly_passes SET is_active=false WHERE user_id=${user.id}::uuid`);
       await rawDb.execute(rawSql`
-        INSERT INTO monthly_passes (user_id, rides_total, rides_used, amount_paid, plan_name)
-        VALUES (${user.id}::uuid, ${plan.rides}, 0, ${plan.price}, ${plan.name})
+        INSERT INTO monthly_passes (user_id, rides_total, rides_used, amount_paid, plan_name, discount_pct, valid_until, is_active)
+        VALUES (${user.id}::uuid, ${plan.rides}, 0, ${plan.price}, ${plan.name}, ${plan.discountPct}, CURRENT_DATE + INTERVAL '30 days', true)
       `);
       // Bonus coins for buying pass
       const bonusCoins = plan.rides * 5;
@@ -15818,7 +15863,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       gstPctNum = safeFloat(revenueSettings.parcel_gst_rate, 18);
       cacheSet(parcelCommissionCache, 'parcel_delivery_gst', gstPctNum);
     }
-    const commRate = commPctNum / 100;
     const gstRate = gstPctNum / 100;
 
     // 4. Zone surge multiplier (cached, applies to base+distance+weight, not loadCharge/GST)
@@ -15846,8 +15890,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     const customerFare = Math.ceil(Math.max(rawFare, minFare));
     const gstAmt = Math.ceil(customerFare * gstRate);
     const grandTotal = customerFare + gstAmt;
-    const commAmt = Math.ceil(customerFare * commRate);
-    const driverEarnings = Math.max(0, customerFare - commAmt);
+    // Align quote commission with unified revenue engine (same as delivery settlement)
+    const parcelBreakdown = await calculateRevenueBreakdown(customerFare, "parcel").catch(() => null);
+    const commAmt = parcelBreakdown?.total ?? Math.ceil(customerFare * (commPctNum / 100));
+    const driverEarnings = parcelBreakdown?.driverEarnings ?? Math.max(0, customerFare - commAmt);
+    const effectiveCommPct = parcelBreakdown?.commissionPct ?? commPctNum;
 
     console.log(
       `[PARCEL_FARE] vehicle=${vehicleCategory} zoneId=${zoneId || 'none'} ` +
@@ -15861,7 +15908,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       distFare: Math.ceil(distFareRaw * surgeMult),
       weightFare: Math.ceil(weightFareRaw * surgeMult),
       customerFare, gstAmt, grandTotal,
-      commPct: commPctNum, commAmt, driverEarnings,
+      commPct: effectiveCommPct, commAmt, driverEarnings,
+      revenueBreakdown: parcelBreakdown,
     };
   }
 
@@ -16353,6 +16401,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   app.post("/api/app/driver/parcel/:id/accept", authApp, requireDriver, async (req, res) => {
     try {
       const driverId = (req as any).currentUser?.id;
+      await enforceDriverRevenuePolicy(driverId, "parcel");
       const activeRide = await rawDb.execute(rawSql`
         SELECT id
         FROM trip_requests
@@ -18932,9 +18981,22 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       const lat = req.query.lat ? Number(req.query.lat) : undefined;
       const lng = req.query.lng ? Number(req.query.lng) : undefined;
       if (!query) return res.status(400).json({ message: "query required" });
-      const predictions = (await searchPlaces(query, sessionToken, lat, lng)).map((p: any) => ({
-        ...p,
-        serviceable: p?.serviceable !== false,
+      const predictionsRaw = await searchPlaces(query, sessionToken, lat, lng);
+      const predictions = await Promise.all(predictionsRaw.map(async (p: any) => {
+        let serviceable = false;
+        let zoneName: string | null = null;
+        const pLat = Number(p?.lat);
+        const pLng = Number(p?.lng);
+        if (Number.isFinite(pLat) && Number.isFinite(pLng) && pLat !== 0 && pLng !== 0) {
+          const zone = await getZoneAtLocation(pLat, pLng);
+          serviceable = zone !== null;
+          zoneName = zone?.name ?? null;
+        }
+        return {
+          ...p,
+          serviceable,
+          zoneName,
+        };
       }));
       const serviceableZoneNames = Array.from(new Set(
         predictions
@@ -18961,7 +19023,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       if (!placeId) return res.status(400).json({ message: "placeId required" });
       const details = await getPlaceDetails(placeId, sessionToken);
       if (!details) return res.status(404).json({ message: "Place not found" });
-      res.json(details);
+      const zone = await getZoneAtLocation(details.lat, details.lng);
+      res.json({
+        ...details,
+        serviceable: zone !== null,
+        inZone: zone !== null,
+        zoneName: zone?.name ?? null,
+      });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -18973,7 +19041,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       if (!lat || !lng) return res.status(400).json({ message: "lat and lng required" });
       const result = await reverseGeocode(lat, lng);
       if (!result) return res.status(404).json({ message: "Address not found" });
-      res.json(result);
+      const zone = await getZoneAtLocation(lat, lng);
+      res.json({
+        ...result,
+        serviceable: zone !== null,
+        inZone: zone !== null,
+        zoneName: zone?.name ?? null,
+        message: zone
+          ? null
+          : "We are coming soon to your area. JAGO services are available only inside configured service zones.",
+      });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -19296,13 +19373,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   //  DYNAMIC SERVICES & PARCEL VEHICLES ï¿½ ENDPOINTS
   // --------------------------------------------------------------------------
 
-  // App: Get services available at a location (city-based filtering)
+  // App: Get services available at a location (zone-based filtering)
   app.get("/api/app/services/location", async (req, res) => {
     try {
       const lat = req.query.lat ? Number(req.query.lat) : undefined;
       const lng = req.query.lng ? Number(req.query.lng) : undefined;
-      const services = await getServicesForLocation(lat, lng);
-      res.json({ services });
+      const result = await getServicesForLocation(lat, lng);
+      res.json(result);
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -19312,7 +19389,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       const lat = req.query.lat ? Number(req.query.lat) : undefined;
       const lng = req.query.lng ? Number(req.query.lng) : undefined;
       const result = await getParcelVehiclesForLocation(lat, lng);
-      res.json({ vehicles: result.vehicles, city: result.city });
+      res.json({ vehicles: result.vehicles, city: result.city, inZone: result.inZone });
     } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
   });
 
@@ -19408,7 +19485,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     try {
       const cities = await getCitiesWithServices();
       res.json({ cities });
-    } catch (e: any) { res.status(500).json({ message: safeErrMsg(e) }); }
+    } catch (e: any) {
+      console.error("[admin/city-services]", e?.message || e);
+      res.json({ cities: [] });
+    }
   });
 
   app.post("/api/admin/city-services/add", requireAdminAuth, async (req, res) => {

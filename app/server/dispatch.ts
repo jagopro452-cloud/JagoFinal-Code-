@@ -14,6 +14,7 @@ import { io } from "./socket";
 import { notifyDriverNewRide } from "./fcm";
 import { type DriverMatchScore } from "./ai";
 import { findParcelCapableDrivers } from "./parcel-advanced";
+import { sortDriversByGenderPriority } from "./gender-matching";
 import {
   buildDispatchRequirementsFromTripInput,
   findEligibleDriversForDispatch,
@@ -454,9 +455,13 @@ async function searchAndDispatchNextRadius(session: DispatchSession): Promise<vo
           avgResponseTimeSec: 60,
           score: Math.round(score * 1000) / 1000,
           fcmToken: row.fcm_token || undefined,
+          driverGender: row.gender ? String(row.gender).toLowerCase() : null,
         };
       });
       drivers.sort((a, b) => b.score - a.score);
+      if (session.requirements.prioritizeFemaleDrivers) {
+        drivers = sortDriversByGenderPriority(drivers, true) as DriverMatchScore[];
+      }
     } else {
       drivers = await findDriversInRadius(
         session.pickupLat,
@@ -850,9 +855,19 @@ async function findDriversInRadius(
         avgResponseTimeSec: Math.round(avgResp),
         score: Math.round(score * 1000) / 1000,
         fcmToken: row.fcmToken || undefined,
+        driverGender: row.driverGender || null,
       };
     });
-    scoredStrict.sort((a, b) => b.score - a.score);
+    if (requirements.prioritizeFemaleDrivers) {
+      scoredStrict.sort((a, b) => {
+        const aFemale = String(a.driverGender || "").toLowerCase() === "female" ? 0 : 1;
+        const bFemale = String(b.driverGender || "").toLowerCase() === "female" ? 0 : 1;
+        if (aFemale !== bFemale) return aFemale - bFemale;
+        return b.score - a.score;
+      });
+    } else {
+      scoredStrict.sort((a, b) => b.score - a.score);
+    }
     return scoredStrict;
   }
 

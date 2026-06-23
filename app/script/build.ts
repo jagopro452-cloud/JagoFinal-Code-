@@ -10,10 +10,23 @@ function run(command: string) {
 }
 
 function readGitSha() {
-  return execSync("git rev-parse HEAD", {
-    stdio: ["ignore", "pipe", "ignore"],
-    env: process.env,
-  }).toString().trim();
+  const fromEnv =
+    process.env.GIT_SHA ||
+    process.env.DEPLOYMENT_SHA ||
+    process.env.SOURCE_COMMIT_HASH ||
+    process.env.GITHUB_SHA ||
+    process.env.COMMIT_SHA;
+  if (fromEnv?.trim()) return fromEnv.trim();
+  try {
+    return execSync("git rev-parse HEAD", {
+      stdio: ["ignore", "pipe", "ignore"],
+      env: process.env,
+    })
+      .toString()
+      .trim();
+  } catch {
+    return "unknown";
+  }
 }
 
 run("vite build");
@@ -53,6 +66,7 @@ const rootMigrationsSrc = path.resolve("migrations");
 const rootMigrationsDest = path.resolve("dist", "drizzle-migrations");
 
 if (fs.existsSync(serverMigrationsSrc)) {
+  fs.rmSync(serverMigrationsDest, { recursive: true, force: true });
   fs.mkdirSync(serverMigrationsDest, { recursive: true });
   fs.cpSync(serverMigrationsSrc, serverMigrationsDest, { recursive: true });
 }

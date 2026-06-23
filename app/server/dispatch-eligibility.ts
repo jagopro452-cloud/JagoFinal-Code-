@@ -7,6 +7,11 @@ import {
   normalizeVehicleKey,
 } from "./vehicle-matching";
 import { driverHasActiveSubscription, getRidesRevenueModel } from "./revenue-policy";
+import {
+  isFemaleDriverPriorityEnabled,
+  shouldPrioritizeFemaleDrivers,
+  sortDriversByGenderPriority,
+} from "./gender-matching";
 
 export interface DispatchRequirements {
   tripId?: string;
@@ -24,6 +29,10 @@ export interface DispatchRequirements {
   requiresPool: boolean;
   requiresOutstation: boolean;
   requiresIntercity: boolean;
+  customerGender: string | null;
+  preferredDriverGender: string | null;
+  preferFemaleDriver: boolean;
+  prioritizeFemaleDrivers: boolean;
 }
 
 export interface DriverDispatchProfile {
@@ -123,6 +132,10 @@ export async function buildDispatchRequirementsFromTripInput(input: {
   parcelVehicleCategory?: string | null;
   seatsBooked?: number | string | null;
   city?: string | null;
+  customerGender?: string | null;
+  preferredDriverGender?: string | null;
+  preferFemaleDriver?: boolean;
+  prioritizeFemaleDrivers?: boolean;
 }): Promise<DispatchRequirements> {
   const tripType = String(input.tripType || "normal");
   const categoryMeta = input.vehicleCategoryId
@@ -136,6 +149,15 @@ export async function buildDispatchRequirementsFromTripInput(input: {
   // Expand to all equivalent category UUIDs (bike↔bike_ride, mini_car↔cab, etc.)
   // so dispatch never misses drivers registered under a sibling category row.
   const strictCategoryIds = await getMatchingDriverCategoryIds(input.vehicleCategoryId || null);
+  const settingEnabled = input.prioritizeFemaleDrivers === undefined
+    ? await isFemaleDriverPriorityEnabled()
+    : true;
+  const prioritizeFemaleDrivers = input.prioritizeFemaleDrivers ?? shouldPrioritizeFemaleDrivers({
+    settingEnabled,
+    customerGender: input.customerGender,
+    preferredDriverGender: input.preferredDriverGender,
+    preferFemaleDriver: input.preferFemaleDriver,
+  });
 
   return {
     tripId: input.tripId,
@@ -155,27 +177,54 @@ export async function buildDispatchRequirementsFromTripInput(input: {
     requiresPool: dispatchServiceType === "carpool",
     requiresOutstation: normalizeVehicleKey(tripType) === "outstation" || normalizeVehicleKey(tripType) === "outstation_pool",
     requiresIntercity: normalizeVehicleKey(tripType) === "intercity",
+    customerGender: input.customerGender ? String(input.customerGender).toLowerCase() : null,
+    preferredDriverGender: input.preferredDriverGender ? String(input.preferredDriverGender).toLowerCase() : null,
+    preferFemaleDriver: !!input.preferFemaleDriver,
+    prioritizeFemaleDrivers,
   };
 }
 
 export async function resolveDispatchRequirementsFromTrip(tripId: string): Promise<DispatchRequirements | null> {
-  const tripR = await rawDb.execute(rawSql`
-    SELECT
-      t.id,
-      t.trip_type,
-      t.vehicle_category_id,
-      t.seats_booked,
-      COALESCE(t.vehicle_type_name, vc.name, '') as vehicle_category_name,
-      COALESCE(u.city, '') as city_name
-    FROM trip_requests t
-    LEFT JOIN vehicle_categories vc ON vc.id = t.vehicle_category_id
-    LEFT JOIN users u ON u.id = t.customer_id
-    WHERE t.id = ${tripId}::uuid
-    LIMIT 1
-  `).catch(() => ({ rows: [] as any[] }));
+  let row: any = null;
+  try {
+    const tripR = await rawDb.execute(rawSql`
+      SELECT
+        t.id,
+        t.trip_type,
+        t.vehicle_category_id,
+        t.seats_booked,
+        COALESCE(t.vehicle_type_name, vc.name, '') as vehicle_category_name,
+        COALESCE(u.city, '') as city_name,
+        COALESCE(u.gender, '') as customer_gender,
+        COALESCE(u.prefer_female_driver, false) as prefer_female_driver,
+        COALESCE(up.preferred_gender, 'any') as preferred_driver_gender
+      FROM trip_requests t
+      LEFT JOIN vehicle_categories vc ON vc.id = t.vehicle_category_id
+      LEFT JOIN users u ON u.id = t.customer_id
+      LEFT JOIN user_preferences up ON up.user_id = t.customer_id
+      WHERE t.id = ${tripId}::uuid
+      LIMIT 1
+    `);
+    row = tripR.rows[0];
+  } catch {
+    const tripR = await rawDb.execute(rawSql`
+      SELECT
+        t.id,
+        t.trip_type,
+        t.vehicle_category_id,
+        t.seats_booked,
+        COALESCE(t.vehicle_type_name, vc.name, '') as vehicle_category_name,
+        COALESCE(u.city, '') as city_name
+      FROM trip_requests t
+      LEFT JOIN vehicle_categories vc ON vc.id = t.vehicle_category_id
+      LEFT JOIN users u ON u.id = t.customer_id
+      WHERE t.id = ${tripId}::uuid
+      LIMIT 1
+    `).catch(() => ({ rows: [] as any[] }));
+    row = tripR.rows[0];
+  }
 
-  if (!tripR.rows.length) return null;
-  const row = tripR.rows[0] as any;
+  if (!row) return null;
   return buildDispatchRequirementsFromTripInput({
     tripId,
     tripType: row.trip_type,
@@ -183,6 +232,9 @@ export async function resolveDispatchRequirementsFromTrip(tripId: string): Promi
     vehicleCategoryName: row.vehicle_category_name,
     seatsBooked: row.seats_booked,
     city: row.city_name || null,
+    customerGender: row.customer_gender || null,
+    preferredDriverGender: row.preferred_driver_gender || null,
+    preferFemaleDriver: row.prefer_female_driver === true,
   });
 }
 
@@ -373,7 +425,7 @@ export async function findEligibleDriversForDispatch(input: {
 
   const candidates = await rawDb.execute(rawSql`
     SELECT
-      u.id, u.full_name, u.phone, u.rating, u.city,
+      u.id, u.full_name, u.phone, u.rating, u.city, u.gender,
       u.is_active, u.is_locked, u.current_trip_id, u.verification_status, u.is_online,
       dl.is_online as dl_online, dl.lat, dl.lng, dl.updated_at,
       dd.vehicle_category_id as vehicle_category_id,
@@ -588,17 +640,30 @@ export async function findEligibleDriversForDispatch(input: {
       behaviorScore: Number(row.behavior_score) || 50,
       fcmToken: row.fcm_token || undefined,
       seatCapacity: profile.seatCapacity,
+      driverGender: row.gender ? String(row.gender).toLowerCase() : null,
     });
-    if (filtered.length >= limit) break;
+  }
+
+  let result = filtered;
+  if (requirements.prioritizeFemaleDrivers) {
+    result = sortDriversByGenderPriority(filtered, true).slice(0, limit);
+    if (requirements.tripId) {
+      const femaleCount = result.filter((d) => String(d.driverGender || "").toLowerCase() === "female").length;
+      console.log(
+        `[DISPATCH] trip=${requirements.tripId} female-priority active eligible=${filtered.length} femaleInQueue=${femaleCount}`,
+      );
+    }
+  } else {
+    result = filtered.slice(0, limit);
   }
 
   if (requirements.tripId) {
     console.log(
-      `[DISPATCH_DEBUG] trip=${requirements.tripId} strict-filtered=${filtered.length}`,
+      `[DISPATCH_DEBUG] trip=${requirements.tripId} strict-filtered=${result.length}`,
     );
   }
 
-  return filtered;
+  return result;
 }
 
 export async function getDriverEligibleServiceSnapshot(driverId: string): Promise<{

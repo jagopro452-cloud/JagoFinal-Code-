@@ -1,5 +1,69 @@
 import { pool } from "./db";
 
+/** Auto-repair tables/indexes that block boot on legacy production DBs. */
+export async function ensureBootstrapSchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS booking_intents (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      customer_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      status VARCHAR(40) NOT NULL DEFAULT 'initiated',
+      quoted_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+      payment_method VARCHAR(40),
+      trip_type VARCHAR(40) NOT NULL DEFAULT 'normal',
+      payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      razorpay_order_id VARCHAR(120),
+      razorpay_payment_id VARCHAR(120),
+      trip_id UUID,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `).catch(() => {});
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS commission_settlements (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      driver_id UUID REFERENCES users(id) ON DELETE SET NULL,
+      trip_id UUID,
+      settlement_type VARCHAR(50) DEFAULT 'commission',
+      commission_amount NUMERIC(12, 2) DEFAULT 0,
+      gst_amount NUMERIC(12, 2) DEFAULT 0,
+      total_amount NUMERIC(12, 2) DEFAULT 0,
+      direction VARCHAR(20) DEFAULT 'debit',
+      balance_before NUMERIC(12, 2) DEFAULT 0,
+      balance_after NUMERIC(12, 2) DEFAULT 0,
+      service_type VARCHAR(50),
+      payment_method VARCHAR(30),
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `).catch(() => {});
+
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_ledger_entries_trip_id ON ledger_entries(trip_id)`).catch(() => {});
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_booking_intents_customer ON booking_intents(customer_id)`).catch(() => {});
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_trip_requests_booking_intent
+    ON trip_requests(booking_intent_id) WHERE booking_intent_id IS NOT NULL
+  `).catch(() => {});
+
+  await pool.query(`
+    ALTER TABLE customer_payments ADD COLUMN IF NOT EXISTS booking_intent_id UUID
+  `).catch(() => {});
+  await pool.query(`
+    ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS booking_intent_id UUID
+  `).catch(() => {});
+  await pool.query(`
+    ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS coupon_code VARCHAR(50)
+  `).catch(() => {});
+  await pool.query(`
+    ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS discount_amount NUMERIC(12, 2) DEFAULT 0
+  `).catch(() => {});
+  await pool.query(`
+    ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS original_fare NUMERIC(12, 2) DEFAULT 0
+  `).catch(() => {});
+  await pool.query(`
+    ALTER TABLE trip_requests ADD COLUMN IF NOT EXISTS commission_amount NUMERIC(12, 2) DEFAULT 0
+  `).catch(() => {});
+}
+
 type TableColumnCheck = {
   table: string;
   columns: string[];
@@ -153,6 +217,7 @@ async function assertForeignKeysExist(checks: Array<{ table: string; column: str
 }
 
 export async function verifyCriticalSchemaOrThrow() {
+  await ensureBootstrapSchema();
   await assertSchemaObjectsOrThrow({
     tables: requiredTables,
     columns: requiredColumns,
